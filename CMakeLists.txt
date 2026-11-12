@@ -1,0 +1,45 @@
+cmake_minimum_required(VERSION 3.24)
+
+project(wperf VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+add_library(wperf_core STATIC
+    src/common.cpp
+    src/logger.cpp
+    src/state.cpp
+    src/etw.cpp
+    src/ipc.cpp
+    src/elevation.cpp
+    src/crash.cpp
+)
+target_include_directories(wperf_core PUBLIC src)
+target_compile_definitions(wperf_core PUBLIC
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    _WIN32_WINNT=0x0A00
+)
+target_compile_options(wperf_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32)
+
+add_executable(wperf src/main.cpp src/commands.cpp)
+target_compile_options(wperf PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf PRIVATE wperf_core)
+
+add_executable(wperf_cpu_burn tests/workloads/cpu_burn.cpp)
+target_compile_definitions(wperf_cpu_burn PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(wperf_cpu_burn PRIVATE /W4 /permissive- /utf-8 /EHsc)
+
+enable_testing()
+
+add_executable(wperf_unit_tests tests/unit_tests.cpp)
+target_compile_options(wperf_unit_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_unit_tests PRIVATE wperf_core)
+add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
+add_test(NAME cli_version COMMAND wperf --version)
+add_test(NAME cli_list COMMAND wperf list)
+add_test(NAME cli_doctor COMMAND wperf doctor)

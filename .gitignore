@@ -1,0 +1,8 @@
+build/
+out/
+.vs/
+*.user
+*.etl
+*.dmp
+*.log
+artifacts/

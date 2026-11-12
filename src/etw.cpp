@@ -1,0 +1,312 @@
+#include "etw.h"
+
+#include "common.h"
+
+#include <algorithm>
+#include <vector>
+
+namespace wperf {
+namespace {
+
+constexpr ULONG kPropertiesBufferSize = 64 * 1024;
+constexpr size_t kAlignment = 8;
+
+size_t AlignUp(size_t value, size_t alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+std::vector<BYTE> MakePropertiesBuffer(size_t extra_bytes) {
+    return std::vector<BYTE>(sizeof(EVENT_TRACE_PROPERTIES) + extra_bytes, 0);
+}
+
+PEVENT_TRACE_PROPERTIES InitializeProperties(std::vector<BYTE>& buffer,
+                                             const std::wstring& logger_name,
+                                             const std::wstring& log_file) {
+    auto* properties = reinterpret_cast<PEVENT_TRACE_PROPERTIES>(buffer.data());
+    properties->Wnode.BufferSize = static_cast<ULONG>(buffer.size());
+    properties->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+    properties->Wnode.ClientContext = 1;
+    properties->BufferSize = 64;
+    properties->MinimumBuffers = 4;
+    properties->MaximumBuffers = 64;
+    properties->FlushTimer = 1;
+    properties->LogFileMode = EVENT_TRACE_FILE_MODE_SEQUENTIAL;
+    properties->EnableFlags = EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
+                              EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
+
+    const size_t log_offset = sizeof(EVENT_TRACE_PROPERTIES);
+    const size_t logger_offset = AlignUp(log_offset + (log_file.size() + 1) * sizeof(wchar_t),
+                                         kAlignment);
+    properties->LogFileNameOffset = static_cast<ULONG>(log_offset);
+    properties->LoggerNameOffset = static_cast<ULONG>(logger_offset);
+
+    wchar_t* log_destination =
+        reinterpret_cast<wchar_t*>(buffer.data() + properties->LogFileNameOffset);
+    wcscpy_s(log_destination, log_file.size() + 1, log_file.c_str());
+    wchar_t* logger_destination =
+        reinterpret_cast<wchar_t*>(buffer.data() + properties->LoggerNameOffset);
+    wcscpy_s(logger_destination, logger_name.size() + 1, logger_name.c_str());
+    return properties;
+}
+
+std::wstring LastErrorWith(const wchar_t* operation, ULONG code) {
+    return std::wstring(operation) + L" failed (" + std::to_wstring(code) +
+           L"): " + FormatWindowsError(code);
+}
+
+}  // namespace
+
+EtwSession::~EtwSession() {
+    std::wstring ignored;
+    Stop(&ignored);
+}
+
+bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
+    if (IsActive()) {
+        if (error != nullptr) {
+            *error = L"ETW session is already active";
+        }
+        return false;
+    }
+    if (options.session_name.empty() || options.output_path.empty()) {
+        if (error != nullptr) {
+            *error = L"session name and output path are required";
+        }
+        return false;
+    }
+
+    const std::wstring log_file = options.output_path.wstring();
+    const size_t log_bytes = (log_file.size() + 1) * sizeof(wchar_t);
+    const size_t logger_bytes = (options.session_name.size() + 1) * sizeof(wchar_t);
+    const size_t log_offset = sizeof(EVENT_TRACE_PROPERTIES);
+    const size_t logger_offset = AlignUp(log_offset + log_bytes, kAlignment);
+    const size_t total_size = logger_offset + logger_bytes;
+    auto buffer = MakePropertiesBuffer(total_size - sizeof(EVENT_TRACE_PROPERTIES));
+    auto* properties = InitializeProperties(buffer, options.session_name, log_file);
+    properties->BufferSize = options.buffer_size_kb;
+    properties->MinimumBuffers = options.minimum_buffers;
+    properties->MaximumBuffers = options.maximum_buffers;
+    properties->MaximumFileSize = options.maximum_file_size_mb;
+    properties->FlushTimer = options.flush_timer_seconds;
+    properties->EnableFlags = options.enable_flags;
+    properties->LogFileMode =
+        EVENT_TRACE_FILE_MODE_SEQUENTIAL | EVENT_TRACE_USE_GLOBAL_SEQUENCE;
+
+    TRACEHANDLE handle = 0;
+    const ULONG start_result =
+        StartTraceW(&handle, options.session_name.c_str(), properties);
+    if (start_result != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"StartTraceW", start_result);
+        }
+        return false;
+    }
+
+    handle_ = handle;
+    name_ = options.session_name;
+
+    TRACE_PROFILE_INTERVAL interval{};
+    interval.Source = 0;
+    interval.Interval = options.profile_interval_100ns;
+    ULONG returned = 0;
+    const ULONG query_result = TraceQueryInformation(
+        0, TraceSampledProfileIntervalInfo, &original_interval_,
+        sizeof(original_interval_), &returned);
+    original_interval_valid_ = query_result == ERROR_SUCCESS;
+
+    const ULONG interval_result = TraceSetInformation(
+        0, TraceSampledProfileIntervalInfo, &interval, sizeof(interval));
+    if (interval_result != ERROR_SUCCESS) {
+        std::wstring stop_error;
+        Stop(&stop_error);
+        if (error != nullptr) {
+            *error = LastErrorWith(L"TraceSetInformation(profile interval)",
+                                   interval_result);
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool EtwSession::Stop(std::wstring* error) {
+    if (!IsActive()) {
+        return true;
+    }
+
+    std::vector<BYTE> buffer(kPropertiesBufferSize, 0);
+    auto* properties = reinterpret_cast<PEVENT_TRACE_PROPERTIES>(buffer.data());
+    properties->Wnode.BufferSize = static_cast<ULONG>(buffer.size());
+    const ULONG stop_result = ControlTraceW(handle_, name_.c_str(), properties,
+                                            EVENT_TRACE_CONTROL_STOP);
+
+    if (original_interval_valid_) {
+        TraceSetInformation(0, TraceSampledProfileIntervalInfo, &original_interval_,
+                            sizeof(original_interval_));
+        original_interval_valid_ = false;
+    }
+
+    handle_ = 0;
+    name_.clear();
+    if (stop_result != ERROR_SUCCESS && stop_result != ERROR_WMI_INSTANCE_NOT_FOUND) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"ControlTraceW(stop)", stop_result);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool EtwSession::IsActive() const {
+    return handle_ != 0;
+}
+
+const std::wstring& EtwSession::Name() const {
+    return name_;
+}
+
+std::vector<ProfileSource> QueryProfileSources(std::wstring* error) {
+    std::vector<ProfileSource> result;
+    ULONG required = 0;
+    ULONG query_result = TraceQueryInformation(
+        0, TraceProfileSourceListInfo, nullptr, 0, &required);
+    if (query_result != ERROR_INSUFFICIENT_BUFFER &&
+        query_result != ERROR_BAD_LENGTH && query_result != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"TraceQueryInformation(profile sources)",
+                                   query_result);
+        }
+        return result;
+    }
+    if (required == 0) {
+        return result;
+    }
+
+    std::vector<BYTE> buffer(required, 0);
+    query_result = TraceQueryInformation(0, TraceProfileSourceListInfo, buffer.data(),
+                                         static_cast<ULONG>(buffer.size()), &required);
+    if (query_result != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"TraceQueryInformation(profile sources)",
+                                   query_result);
+        }
+        return result;
+    }
+
+    size_t offset = 0;
+    while (offset + sizeof(PROFILE_SOURCE_INFO) <= buffer.size()) {
+        const auto* source =
+            reinterpret_cast<const PROFILE_SOURCE_INFO*>(buffer.data() + offset);
+        result.push_back(ProfileSource{
+            source->Source,
+            source->MinInterval,
+            source->MaxInterval,
+            std::wstring(source->Description),
+        });
+        if (source->NextEntryOffset == 0) {
+            break;
+        }
+        offset += source->NextEntryOffset;
+    }
+    return result;
+}
+
+uint32_t QueryMaxLoggers(std::wstring* error) {
+    ULONG value = 0;
+    ULONG returned = 0;
+    const ULONG result = TraceQueryInformation(
+        0, TraceMaxLoggersQuery, &value, sizeof(value), &returned);
+    if (result != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"TraceQueryInformation(max loggers)", result);
+        }
+        return 0;
+    }
+    return value;
+}
+
+uint32_t QueryMaxPmcCounters(std::wstring* error) {
+    ULONG value = 0;
+    ULONG returned = 0;
+    const ULONG result = TraceQueryInformation(
+        0, TraceMaxPmcCounterQuery, &value, sizeof(value), &returned);
+    if (result != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"TraceQueryInformation(max PMC counters)",
+                                   result);
+        }
+        return 0;
+    }
+    return value;
+}
+
+std::vector<std::wstring> QueryActiveSessions(std::wstring* error) {
+    std::vector<std::wstring> result;
+    ULONG count = 0;
+    ULONG query_result = QueryAllTracesW(nullptr, 0, &count);
+    if (query_result != ERROR_SUCCESS && query_result != ERROR_MORE_DATA) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"QueryAllTracesW(count)", query_result);
+        }
+        return result;
+    }
+    if (count == 0) {
+        return result;
+    }
+
+    std::vector<std::vector<BYTE>> buffers(
+        count, std::vector<BYTE>(kPropertiesBufferSize, 0));
+    std::vector<PEVENT_TRACE_PROPERTIES> properties(count, nullptr);
+    for (size_t index = 0; index < count; ++index) {
+        properties[index] =
+            reinterpret_cast<PEVENT_TRACE_PROPERTIES>(buffers[index].data());
+        properties[index]->Wnode.BufferSize = kPropertiesBufferSize;
+    }
+
+    query_result = QueryAllTracesW(properties.data(), count, &count);
+    if (query_result != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"QueryAllTracesW", query_result);
+        }
+        return result;
+    }
+
+    for (size_t index = 0; index < count; ++index) {
+        const auto* item = properties[index];
+        if (item->LoggerNameOffset != 0 &&
+            item->LoggerNameOffset < buffers[index].size()) {
+            const wchar_t* name = reinterpret_cast<const wchar_t*>(
+                buffers[index].data() + item->LoggerNameOffset);
+            if (name[0] != L'\0') {
+                result.emplace_back(name);
+            }
+        }
+    }
+    return result;
+}
+
+bool SessionExists(const std::wstring& session_name) {
+    std::vector<BYTE> buffer(kPropertiesBufferSize, 0);
+    auto* properties = reinterpret_cast<PEVENT_TRACE_PROPERTIES>(buffer.data());
+    properties->Wnode.BufferSize = static_cast<ULONG>(buffer.size());
+    const ULONG result = ControlTraceW(0, session_name.c_str(), properties,
+                                       EVENT_TRACE_CONTROL_QUERY);
+    return result == ERROR_SUCCESS;
+}
+
+bool StopSessionByName(const std::wstring& session_name, std::wstring* error) {
+    std::vector<BYTE> buffer(kPropertiesBufferSize, 0);
+    auto* properties = reinterpret_cast<PEVENT_TRACE_PROPERTIES>(buffer.data());
+    properties->Wnode.BufferSize = static_cast<ULONG>(buffer.size());
+    const ULONG result = ControlTraceW(0, session_name.c_str(), properties,
+                                       EVENT_TRACE_CONTROL_STOP);
+    if (result != ERROR_SUCCESS && result != ERROR_WMI_INSTANCE_NOT_FOUND) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"ControlTraceW(stop by name)", result);
+        }
+        return false;
+    }
+    return true;
+}
+
+}  // namespace wperf
