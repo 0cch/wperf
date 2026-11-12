@@ -31,7 +31,7 @@ target_compile_definitions(wperf_core PUBLIC
     _WIN32_WINNT=0x0A00
 )
 target_compile_options(wperf_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
-target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi mincore)
+target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi)
 
 add_executable(wperf src/main.cpp src/commands.cpp)
 target_compile_options(wperf PRIVATE /W4 /permissive- /utf-8 /EHsc)

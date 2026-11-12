@@ -63,6 +63,8 @@ EtwSession::~EtwSession() {
     Stop(&ignored);
 }
 
+ULONG ConfigureLbrCompat(CONTROLTRACE_ID trace_id, TRACE_LBR_CONFIGURATION configuration,
+                         const CLASSIC_EVENT_ID* events, ULONG event_count);
 bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     if (IsActive()) {
         if (error != nullptr) {
@@ -166,7 +168,7 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         CLASSIC_EVENT_ID lbr_event{};
         lbr_event.EventGuid = kPerfInfoGuid;
         lbr_event.Type = 46;
-        const ULONG lbr_result = TraceConfigureLastBranchRecord(
+        const ULONG lbr_result = ConfigureLbrCompat(
             handle_, TRACE_LBR_CONFIGURATION_CALLSTACK_ENABLE, &lbr_event, 1);
         if (lbr_result != ERROR_SUCCESS) {
             std::wstring stop_error;
@@ -181,6 +183,24 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     return true;
 }
 
+ULONG ConfigureLbrCompat(CONTROLTRACE_ID trace_id, TRACE_LBR_CONFIGURATION configuration,
+                         const CLASSIC_EVENT_ID* events, ULONG event_count) {
+    using ConfigureLbrFn = ULONG(WINAPI*)(CONTROLTRACE_ID, TRACE_LBR_CONFIGURATION,
+                                           const CLASSIC_EVENT_ID*, ULONG);
+    HMODULE module = GetModuleHandleW(L"advapi32.dll");
+    if (module == nullptr) {
+        module = GetModuleHandleW(L"kernelbase.dll");
+    }
+    if (module == nullptr) {
+        return ERROR_NOT_SUPPORTED;
+    }
+    const auto function = reinterpret_cast<ConfigureLbrFn>(
+        GetProcAddress(module, "TraceConfigureLastBranchRecord"));
+    if (function == nullptr) {
+        return ERROR_NOT_SUPPORTED;
+    }
+    return function(trace_id, configuration, events, event_count);
+}
 bool EtwSession::Stop(std::wstring* error) {
     if (!IsActive()) {
         return true;
