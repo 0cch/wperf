@@ -45,6 +45,8 @@ enable_testing()
 
 add_executable(wperf_unit_tests tests/unit_tests.cpp)
 target_compile_options(wperf_unit_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_compile_definitions(wperf_unit_tests PRIVATE
+    WPERF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 target_link_libraries(wperf_unit_tests PRIVATE wperf_core)
 add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
 add_test(NAME cli_version COMMAND wperf --version)
