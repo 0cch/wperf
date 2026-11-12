@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(wperf VERSION 0.1.0 LANGUAGES CXX)
+project(wperf VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase")
+add_compile_options(/Zi)
+add_link_options(/DEBUG)
 
 add_library(wperf_core STATIC
     src/common.cpp
@@ -14,6 +17,10 @@ add_library(wperf_core STATIC
     src/ipc.cpp
     src/elevation.cpp
     src/crash.cpp
+    src/trace_model.cpp
+    src/etl_reader.cpp
+    src/symbolizer.cpp
+    src/cpu_report.cpp
 )
 target_include_directories(wperf_core PUBLIC src)
 target_compile_definitions(wperf_core PUBLIC
@@ -43,3 +50,5 @@ add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
 add_test(NAME cli_version COMMAND wperf --version)
 add_test(NAME cli_list COMMAND wperf list)
 add_test(NAME cli_doctor COMMAND wperf doctor)
+add_test(NAME cli_report_help COMMAND wperf report --help)
+add_test(NAME cli_buildid_help COMMAND wperf buildid-list --help)

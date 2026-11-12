@@ -60,6 +60,40 @@ bool LaunchWorkerProcess(const std::wstring& executable,
     return true;
 }
 
+bool LaunchTargetProcess(const std::vector<std::wstring>& command,
+                         ProcessLaunchResult& result,
+                         std::wstring* error) {
+    result = {};
+    if (command.empty()) {
+        if (error != nullptr) {
+            *error = L"target command is empty";
+        }
+        return false;
+    }
+
+    const std::wstring command_line = JoinCommandLineArguments(command);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(nullptr, const_cast<wchar_t*>(command_line.c_str()), nullptr,
+                        nullptr, TRUE, 0, nullptr, nullptr, &startup, &process)) {
+        const DWORD code = GetLastError();
+        result.error_code = code;
+        if (error != nullptr) {
+            *error = L"CreateProcessW(target) failed: " +
+                     FormatWindowsError(code);
+        }
+        return false;
+    }
+    CloseHandle(process.hThread);
+    result.process = process.hProcess;
+    result.process_id = process.dwProcessId;
+    return true;
+}
 bool IsProcessRunning(uint32_t process_id) {
     if (process_id == 0) {
         return false;

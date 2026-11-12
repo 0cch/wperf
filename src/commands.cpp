@@ -1,18 +1,22 @@
 #include "commands.h"
 
 #include "common.h"
+#include "cpu_report.h"
 #include "crash.h"
 #include "elevation.h"
+#include "etl_reader.h"
 #include "etw.h"
 #include "ipc.h"
 #include "logger.h"
 #include "state.h"
+#include "symbolizer.h"
 
 #include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -281,11 +285,15 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     const std::wstring state_path = OptionValue(arguments, L"--state");
     const std::wstring correlation_id = OptionValue(arguments, L"--correlation");
     const std::wstring duration_text = OptionValue(arguments, L"--duration-ms", L"5000");
+    const std::wstring interval_text =
+        OptionValue(arguments, L"--profile-interval", L"10000");
     uint64_t duration_ms = 5000;
+    uint32_t profile_interval = 10000;
     if (pipe_path.empty() || nonce.empty() || session_name.empty() ||
         output.empty() || log_path.empty() || guard_log.empty() ||
         state_path.empty() || correlation_id.empty() ||
-        !ParseUnsigned(duration_text, duration_ms)) {
+        !ParseUnsigned(duration_text, duration_ms) ||
+        !ParseUint32(interval_text, profile_interval)) {
         PrintError(L"invalid internal worker arguments");
         return 2;
     }
@@ -331,6 +339,7 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     TraceOptions trace_options;
     trace_options.session_name = session_name;
     trace_options.output_path = output;
+    trace_options.profile_interval_100ns = profile_interval;
     if (!session.Start(trace_options, &error)) {
         logger.Log(LogLevel::Error, L"WORKER_READY", error);
         state.phase = L"INTERNAL_ERROR";
@@ -385,8 +394,8 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     state_store.Write(state, nullptr);
     pipe.SendLine(L"PHASE GUARD_STARTED " + std::to_wstring(guard.process_id), nullptr);
 
-    const ULONGLONG deadline = GetTickCount64() + duration_ms;
-    while (GetTickCount64() < deadline) {
+    const ULONGLONG deadline = duration_ms == 0 ? 0 : GetTickCount64() + duration_ms;
+    while (deadline == 0 || GetTickCount64() < deadline) {
         if (pipe.HasData()) {
             std::wstring line;
             if (!pipe.ReceiveLine(line, 1000, &error)) {
@@ -488,9 +497,13 @@ int RunGuard(const std::vector<std::wstring>& arguments) {
 }
 
 struct RecordOptions {
-    uint64_t duration_ms = 5000;
+    uint64_t duration_ms = 0;
+    bool duration_explicit = false;
+    uint32_t profile_interval_100ns = 10000;
     std::filesystem::path output;
     std::wstring requested_session;
+    std::optional<uint32_t> pid;
+    std::vector<std::wstring> target;
     bool elevate = false;
 };
 
@@ -498,6 +511,11 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
                         RecordOptions& options, std::wstring& error) {
     for (size_t index = 0; index < arguments.size(); ++index) {
         const std::wstring& argument = arguments[index];
+        if (argument == L"--") {
+            options.target.assign(arguments.begin() + static_cast<ptrdiff_t>(index + 1),
+                                  arguments.end());
+            break;
+        }
         if (argument == L"--elevate") {
             options.elevate = true;
         } else if (argument == L"--duration" || argument == L"-d") {
@@ -507,6 +525,7 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
                 error = L"--duration requires milliseconds";
                 return false;
             }
+            options.duration_explicit = true;
         } else if (argument == L"--output" || argument == L"-o") {
             if (index + 1 >= arguments.size()) {
                 error = L"--output requires a path";
@@ -521,21 +540,42 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
             options.requested_session = arguments[++index];
         } else if (argument == L"--profile") {
             if (index + 1 >= arguments.size() || arguments[++index] != L"cpu") {
-                error = L"M1 only supports --profile cpu";
+                error = L"M2 only supports --profile cpu";
                 return false;
             }
+        } else if (argument == L"--freq" || argument == L"-F") {
+            uint64_t frequency = 0;
+            if (index + 1 >= arguments.size() ||
+                !ParseUnsigned(arguments[++index], frequency) || frequency == 0 ||
+                frequency > 100000) {
+                error = L"--freq requires HZ between 1 and 100000";
+                return false;
+            }
+            options.profile_interval_100ns =
+                static_cast<uint32_t>(std::max<uint64_t>(1, 10000000 / frequency));
+        } else if (argument == L"--pid" || argument == L"-p") {
+            uint32_t pid = 0;
+            if (index + 1 >= arguments.size() ||
+                !ParseUint32(arguments[++index], pid)) {
+                error = L"--pid requires a process id";
+                return false;
+            }
+            options.pid = pid;
         } else if (argument == L"--help" || argument == L"-h") {
-            std::wcout << L"Usage: wperf record [--elevate] [--duration MS] "
-                          L"[-o FILE] [--session NAME]\n";
+            std::wcout << L"Usage: wperf record [--elevate] [-F HZ] [-p PID] "
+                          L"[--duration MS] [-o FILE] [--] command\n";
             return false;
         } else {
             error = L"unknown record option: " + argument;
             return false;
         }
     }
+    if (options.pid.has_value() && !options.target.empty()) {
+        error = L"--pid and a target command are mutually exclusive";
+        return false;
+    }
     return true;
 }
-
 int RunRecord(const std::vector<std::wstring>& arguments) {
     RecordOptions options;
     std::wstring error;
@@ -545,6 +585,10 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
             return 2;
         }
         return 0;
+    }
+    if (options.duration_ms == 0 && !options.duration_explicit &&
+        !options.pid.has_value() && options.target.empty()) {
+        options.duration_ms = 5000;
     }
 
     bool elevated = false;
@@ -615,6 +659,7 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         L"--guard-log", guard_log,
         L"--state", state_path,
         L"--correlation", correlation_id,
+        L"--profile-interval", std::to_wstring(options.profile_interval_100ns),
         L"--duration-ms", std::to_wstring(options.duration_ms),
     };
 
@@ -663,13 +708,51 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         return 9;
     }
 
+    ProcessLaunchResult target_launch;
+    HANDLE observed_process = nullptr;
+    uint32_t observed_pid = 0;
+    if (!options.target.empty()) {
+        if (!LaunchTargetProcess(options.target, target_launch, &error)) {
+            pipe.SendLine(L"STOP", nullptr);
+            PrintError(error);
+            WaitForProcessExit(launch.process, 10000, target_launch.error_code);
+            CloseHandle(launch.process);
+            return 8;
+        }
+        observed_process = target_launch.process;
+        observed_pid = target_launch.process_id;
+    } else if (options.pid.has_value()) {
+        observed_pid = *options.pid;
+        observed_process = OpenProcess(
+            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, observed_pid);
+        if (observed_process == nullptr) {
+            pipe.SendLine(L"STOP", nullptr);
+            PrintError(L"cannot open target pid " + std::to_wstring(observed_pid));
+            WaitForProcessExit(launch.process, 10000, target_launch.error_code);
+            CloseHandle(launch.process);
+            return 8;
+        }
+    }
+    if (observed_pid != 0) {
+        state.target_pid = observed_pid;
+        state_store.Write(state, nullptr);
+    }
+
     g_interrupt_requested.store(false);
     SetConsoleCtrlHandler(ConsoleControlHandler, TRUE);
     bool finished = false;
     int worker_result = 9;
     bool stop_sent = false;
-    const ULONGLONG deadline = GetTickCount64() + options.duration_ms + 60000;
-    while (GetTickCount64() < deadline) {
+    DWORD target_exit_code = 0;
+    const ULONGLONG deadline =
+        options.duration_ms == 0 ? 0 : GetTickCount64() + options.duration_ms + 60000;
+    while (deadline == 0 || GetTickCount64() < deadline) {
+        if (observed_process != nullptr && !stop_sent &&
+            WaitForSingleObject(observed_process, 0) == WAIT_OBJECT_0) {
+            GetExitCodeProcess(observed_process, &target_exit_code);
+            stop_sent = true;
+            pipe.SendLine(L"STOP", nullptr);
+        }
         if (g_interrupt_requested.load() && !stop_sent) {
             stop_sent = true;
             pipe.SendLine(L"STOP", nullptr);
@@ -721,6 +804,12 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
     DWORD process_exit = 0;
     WaitForProcessExit(launch.process, 15000, process_exit);
     CloseHandle(launch.process);
+    if (observed_process != nullptr) {
+        if (target_exit_code == 0) {
+            GetExitCodeProcess(observed_process, &target_exit_code);
+        }
+        CloseHandle(observed_process);
+    }
 
     state.phase = finished ? L"FINISHED" : L"WORKER_LOST";
     state.error_code = static_cast<uint32_t>(worker_result);
@@ -728,11 +817,185 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
     if (worker_result == 0 && finished) {
         std::wcout << L"trace: " << output.wstring() << L"\n";
     }
+    if (target_exit_code != 0 && target_exit_code != STILL_ACTIVE) {
+        return static_cast<int>(target_exit_code);
+    }
     return worker_result;
 }
 
 }  // namespace
 
+int RunBuildIdList(const std::vector<std::wstring>& arguments) {
+    std::filesystem::path input;
+    for (size_t index = 0; index < arguments.size(); ++index) {
+        if (arguments[index] == L"-i" || arguments[index] == L"--input") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            input = arguments[++index];
+        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
+            std::wcout << L"Usage: wperf buildid-list -i FILE\n";
+            return 0;
+        }
+    }
+    if (input.empty()) {
+        PrintError(L"buildid-list requires -i FILE");
+        return 2;
+    }
+
+    TraceData trace;
+    std::wstring error;
+    if (!ReadEtwFile(input, trace, &error)) {
+        PrintError(error);
+        return 6;
+    }
+    for (const auto& image : trace.images) {
+        if (image.path.empty()) {
+            continue;
+        }
+        std::wcout << std::hex << std::setw(16) << std::setfill(L'0') << image.base
+                   << L" " << std::setw(8) << image.size << std::dec
+                   << std::setfill(L' ') << L" pid=" << image.pid
+                   << L" timestamp=" << image.timestamp
+                   << L" checksum=" << image.checksum << L" " << image.path << L"\n";
+    }
+    return 0;
+}
+int RunReport(const std::vector<std::wstring>& arguments) {
+    std::filesystem::path input;
+    std::wstring symbol_path;
+    CpuReportOptions report_options;
+    for (size_t index = 0; index < arguments.size(); ++index) {
+        const std::wstring& argument = arguments[index];
+        if (argument == L"-i" || argument == L"--input") {
+            if (index + 1 >= arguments.size()) {
+                PrintError(L"--input requires a trace file");
+                return 2;
+            }
+            input = arguments[++index];
+        } else if (argument == L"--pid") {
+            uint32_t pid = 0;
+            if (index + 1 >= arguments.size() ||
+                !ParseUint32(arguments[++index], pid)) {
+                PrintError(L"--pid requires a process id");
+                return 2;
+            }
+            report_options.pid = pid;
+        } else if (argument == L"--tid") {
+            uint32_t tid = 0;
+            if (index + 1 >= arguments.size() ||
+                !ParseUint32(arguments[++index], tid)) {
+                PrintError(L"--tid requires a thread id");
+                return 2;
+            }
+            report_options.tid = tid;
+        } else if (argument == L"--comm") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            report_options.comm_filter = arguments[++index];
+        } else if (argument == L"--dso") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            report_options.dso_filter = arguments[++index];
+        } else if (argument == L"--symbol") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            report_options.symbol_filter = arguments[++index];
+        } else if (argument == L"--symbol-path") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            symbol_path = arguments[++index];
+        } else if (argument == L"--percent-limit") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            report_options.percent_limit = wcstod(arguments[++index].c_str(), nullptr);
+        } else if (argument == L"--folded") {
+            report_options.folded = true;
+        } else if (argument == L"--call-graph") {
+            report_options.call_tree = true;
+            if (index + 1 < arguments.size() &&
+                (arguments[index + 1] == L"caller" || arguments[index + 1] == L"callee" ||
+                 arguments[index + 1] == L"both")) {
+                ++index;
+            }
+        } else if (argument == L"--csv") {
+            report_options.csv = true;
+        } else if (argument == L"--json") {
+            report_options.json = true;
+        } else if (argument == L"--sort") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            const std::wstring value = arguments[++index];
+            size_t start = 0;
+            while (start < value.size()) {
+                const size_t comma = value.find(L',', start);
+                report_options.sort_fields.push_back(
+                    value.substr(start, comma == std::wstring::npos
+                                            ? std::wstring::npos
+                                            : comma - start));
+                if (comma == std::wstring::npos) {
+                    break;
+                }
+                start = comma + 1;
+            }
+        } else if (argument == L"--fields") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            ++index;
+        } else if (argument == L"--help" || argument == L"-h") {
+            std::wcout << L"Usage: wperf report -i FILE [--pid PID] [--tid TID] "
+                          L"[--comm TEXT] [--dso TEXT] [--symbol TEXT] "
+                          L"[--percent-limit N] [--folded|--call-graph] [--csv|--json]\n";
+            return 0;
+        } else {
+            PrintError(L"unknown report option: " + argument);
+            return 2;
+        }
+    }
+
+    if (input.empty()) {
+        PrintError(L"report requires -i FILE");
+        return 2;
+    }
+    if (input.is_relative()) {
+        input = std::filesystem::absolute(input);
+    }
+
+    TraceData trace;
+    std::wstring error;
+    if (!ReadEtwFile(input, trace, &error)) {
+        PrintError(error);
+        return 6;
+    }
+
+    Symbolizer symbolizer;
+    std::wstring symbol_error;
+    const bool symbols_ready = symbolizer.Initialize(symbol_path, &symbol_error);
+    if (!symbols_ready && !symbol_error.empty()) {
+        std::wcerr << L"wperf: symbolization disabled: " << symbol_error << L"\n";
+    }
+    for (const auto& image : trace.images) {
+        symbolizer.AddModule(image);
+    }
+
+
+    std::wcerr << L"events=" << trace.quality.events_total
+               << L" unknown=" << trace.quality.unknown_events
+               << L" samples=" << trace.quality.samples_total
+               << L" stack_events=" << trace.quality.stack_events_total
+               << L" samples_without_stack=" << trace.quality.samples_without_stack
+               << L" lost=" << trace.quality.lost_events
+               << L"\n";
+    WriteCpuReport(trace, symbolizer, report_options, std::wcout);
+    return trace.samples.empty() ? 6 : 0;
+}
 void PrintUsage() {
     std::wcout
         << L"wperf " << kVersion << L"\n\n"
@@ -742,9 +1005,12 @@ void PrintUsage() {
         << L"  doctor     Check environment and wperf state\n"
         << L"  test       Run a lightweight self-test\n"
         << L"  record     Capture a system ETW trace\n"
+        << L"  report     Analyze an ETL trace\n"
+        << L"  buildid-list List module identities from an ETL\n"
         << L"  recover    Stop a stale wperf ETW session\n"
         << L"  version    Print version\n\n"
-        << L"Record: --elevate --duration MS -o FILE --session NAME\n"
+        << L"Record: --elevate -F HZ -p PID --duration MS -o FILE -- command\n"
+        << L"Report: -i FILE --pid PID --folded --call-graph --csv --json\n"
         << L"Doctor: --bundle DIR\n";
 }
 
@@ -778,6 +1044,12 @@ int RunCommandLine(const std::vector<std::wstring>& arguments) {
     }
     if (command == L"record") {
         return RunRecord(rest);
+    }
+    if (command == L"report") {
+        return RunReport(rest);
+    }
+    if (command == L"buildid-list") {
+        return RunBuildIdList(rest);
     }
     if (command == L"--internal-elevated-worker") {
         return RunWorker(rest);

@@ -18,6 +18,9 @@ bool LaunchWorkerProcess(const std::wstring& executable,
                          bool request_elevation,
                          ProcessLaunchResult& result,
                          std::wstring* error = nullptr);
+bool LaunchTargetProcess(const std::vector<std::wstring>& command,
+                         ProcessLaunchResult& result,
+                         std::wstring* error = nullptr);
 bool IsProcessRunning(uint32_t process_id);
 bool WaitForProcessExit(HANDLE process, uint32_t timeout_ms, DWORD& exit_code);
 

@@ -1,4 +1,5 @@
 #include "common.h"
+#include "cpu_report.h"
 #include "elevation.h"
 #include "etw.h"
 #include "ipc.h"
@@ -6,6 +7,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -60,6 +62,35 @@ void TestEtwQuery() {
     Check(!sources.empty(), L"profile source list");
 }
 
+void TestCpuReportSynthetic() {
+    wperf::TraceData trace;
+    trace.quality.samples_total = 1;
+    trace.pointer_size = 8;
+    wperf::ProcessRecord process;
+    process.pid = 42;
+    process.image_name = L"app.exe";
+    trace.processes.push_back(process);
+    wperf::ImageRecord image;
+    image.pid = 42;
+    image.base = 0x1000;
+    image.size = 0x1000;
+    image.path = L"app.exe";
+    trace.images.push_back(image);
+    wperf::SampleRecord sample;
+    sample.pid = 42;
+    sample.tid = 7;
+    sample.cpu = 0;
+    sample.instruction_pointer = 0x1010;
+    sample.stack = {0x1010, 0x1000};
+    trace.samples.push_back(sample);
+
+    wperf::Symbolizer symbolizer;
+    wperf::CpuReportOptions options;
+    std::wostringstream output;
+    wperf::WriteCpuReport(trace, symbolizer, options, output);
+    Check(output.str().find(L"app.exe") != std::wstring::npos,
+          L"CPU report resolves synthetic image");
+}
 void TestWorkerIpcFailurePath() {
     const std::wstring correlation_id = wperf::NewId();
     const std::wstring nonce = wperf::NewId();
@@ -134,6 +165,7 @@ int wmain() {
     TestQuoteArgument();
     TestStateRoundTrip();
     TestEtwQuery();
+    TestCpuReportSynthetic();
     TestWorkerIpcFailurePath();
     if (g_failures == 0) {
         std::wcout << L"wperf unit tests: PASS\n";

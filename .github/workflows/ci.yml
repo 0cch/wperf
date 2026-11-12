@@ -17,3 +17,5 @@ jobs:
         run: ctest --test-dir build -C Release --output-on-failure
       - name: M1 smoke
         run: pwsh -NoProfile -File .\scripts\m1_smoke.ps1 -SkipRecord
+      - name: M2/M3 smoke
+        run: pwsh -NoProfile -File .\scripts\m2_smoke.ps1 -SkipRecord

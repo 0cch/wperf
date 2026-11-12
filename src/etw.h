@@ -28,6 +28,7 @@ struct TraceOptions {
     ULONG enable_flags = EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
                          EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
     uint32_t profile_interval_100ns = 10000;
+    bool enable_stack_tracing = true;
 };
 
 class EtwSession {

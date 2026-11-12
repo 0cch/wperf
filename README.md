@@ -2,10 +2,12 @@
 
 Lightweight Windows profiling and tracing CLI built on ETW.
 
-Current milestones: **M0 feasibility + M1 foundation**.
+Current milestones: **M0-M3 implemented** (CPU sampling, stackwalk, PDB report).
 
 - M0 capability probe: [docs/M0.md](docs/M0.md), [docs/M0_RESULTS.md](docs/M0_RESULTS.md)
-- M1 foundation: [docs/M1.md](docs/M1.md)\n- M2-M7 execution roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
+- M1 foundation: [docs/M1.md](docs/M1.md)
+- M2/M3 implementation status: [docs/M2_M3.md](docs/M2_M3.md)
+- M2-M7 execution roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
 
 ## Build
 

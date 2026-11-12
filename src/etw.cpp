@@ -10,6 +10,8 @@ namespace {
 
 constexpr ULONG kPropertiesBufferSize = 64 * 1024;
 constexpr size_t kAlignment = 8;
+const GUID kPerfInfoGuid = {0xce1dbfb4, 0x137e, 0x4da6,
+                            {0x87, 0xb0, 0x3f, 0x59, 0xaa, 0x10, 0x2c, 0xbc}};
 
 size_t AlignUp(size_t value, size_t alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
@@ -90,7 +92,8 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     properties->FlushTimer = options.flush_timer_seconds;
     properties->EnableFlags = options.enable_flags;
     properties->LogFileMode =
-        EVENT_TRACE_FILE_MODE_SEQUENTIAL | EVENT_TRACE_USE_GLOBAL_SEQUENCE;
+        EVENT_TRACE_FILE_MODE_SEQUENTIAL | EVENT_TRACE_USE_GLOBAL_SEQUENCE |
+        EVENT_TRACE_SYSTEM_LOGGER_MODE;
 
     TRACEHANDLE handle = 0;
     const ULONG start_result =
@@ -124,6 +127,23 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
                                    interval_result);
         }
         return false;
+    }
+
+    if (options.enable_stack_tracing) {
+        CLASSIC_EVENT_ID stack_event{};
+        stack_event.EventGuid = kPerfInfoGuid;
+        stack_event.Type = 46;
+        const ULONG stack_result = TraceSetInformation(
+            handle_, TraceStackTracingInfo, &stack_event, sizeof(stack_event));
+        if (stack_result != ERROR_SUCCESS) {
+            std::wstring stop_error;
+            Stop(&stop_error);
+            if (error != nullptr) {
+                *error = LastErrorWith(L"TraceSetInformation(stack tracing)",
+                                       stack_result);
+            }
+            return false;
+        }
     }
 
     return true;
