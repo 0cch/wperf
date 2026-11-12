@@ -57,6 +57,7 @@ private:
 };
 
 ULONG TraceFlagsForProfile(std::wstring_view profile);
+ULONG TraceFlagsForLiveFilter(std::wstring_view filter);
 std::vector<ProfileSource> QueryProfileSources(std::wstring* error = nullptr);
 uint32_t QueryMaxLoggers(std::wstring* error = nullptr);
 uint32_t QueryMaxPmcCounters(std::wstring* error = nullptr);
