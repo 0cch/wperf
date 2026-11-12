@@ -97,7 +97,8 @@ LiveTopCapture::~LiveTopCapture() {
 }
 
 bool LiveTopCapture::Start(std::wstring session_name,
-                           std::wstring profile_source, std::wstring* error) {
+                           std::wstring profile_source, ULONG enable_flags,
+                           std::wstring* error) {
     if (running_.load()) {
         if (error != nullptr) {
             *error = L"live top capture is already running";
@@ -113,8 +114,11 @@ bool LiveTopCapture::Start(std::wstring session_name,
     TraceOptions options;
     options.session_name = session_name;
     options.realtime = true;
-    options.enable_flags = EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
-                           EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
+    options.enable_flags =
+        enable_flags != 0
+            ? enable_flags
+            : (EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
+               EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE);
     options.profile_interval_100ns = 10000;
     options.enable_stack_tracing = false;
     options.buffer_size_kb = 64;
@@ -271,8 +275,9 @@ void LiveTopCapture::OnEvent(PEVENT_RECORD record) {
         IsEqualGUID(record->EventHeader.ProviderId, kImageGuid)) {
         ParseImage(record);
     } else if (thread_event) {
-        ParseThread(record);
-        if (event_code == 36 || event_code == 50) {
+        if (event_code >= 1 && event_code <= 4) {
+            ParseThread(record);
+        } else if (event_code == 36 || event_code == 50) {
             ParseEvent(record, event_code == 36 ? TraceEventKind::ContextSwitch
                                                 : TraceEventKind::ReadyThread);
         }

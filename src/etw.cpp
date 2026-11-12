@@ -278,6 +278,27 @@ ULONG TraceFlagsForProfile(std::wstring_view profile) {
     }
     return flags;
 }
+ULONG TraceFlagsForLiveFilter(std::wstring_view filter) {
+    ULONG flags = EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
+                  EVENT_TRACE_FLAG_IMAGE_LOAD;
+    if (filter == L"sched") {
+        flags |= EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER;
+    } else if (filter == L"syscall") {
+        flags |= EVENT_TRACE_FLAG_SYSTEMCALL;
+    } else if (filter == L"pagefault" || filter == L"vm") {
+        flags |= EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
+    } else if (filter == L"io") {
+        flags |= EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_FILE_IO |
+                 EVENT_TRACE_FLAG_FILE_IO | EVENT_TRACE_FLAG_FILE_IO_INIT;
+    } else if (filter == L"all" || filter.empty()) {
+        flags |= EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER |
+                 EVENT_TRACE_FLAG_SYSTEMCALL | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS |
+                 EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_FILE_IO |
+                 EVENT_TRACE_FLAG_FILE_IO | EVENT_TRACE_FLAG_FILE_IO_INIT;
+    }
+    return flags;
+}
+
 std::vector<ProfileSource> QueryProfileSources(std::wstring* error) {
     std::vector<ProfileSource> result;
     ULONG required = 0;

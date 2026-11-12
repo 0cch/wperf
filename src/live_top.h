@@ -21,8 +21,8 @@ public:
     LiveTopCapture(const LiveTopCapture&) = delete;
     LiveTopCapture& operator=(const LiveTopCapture&) = delete;
 
-    bool Start(std::wstring session_name, std::wstring profile_source = L"cpu",
-               std::wstring* error = nullptr);
+    bool Start(std::wstring session_name, std::wstring profile_source,
+               ULONG enable_flags, std::wstring* error = nullptr);
     TraceData Snapshot();
     void Stop();
     bool Running() const;

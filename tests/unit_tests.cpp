@@ -277,7 +277,29 @@ void TestGoldenCpuStackReplay() {
           L"golden stacks prefer exact matches");
 }
 
+void TestLiveTraceFlags() {
+    const ULONG base = EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
+                       EVENT_TRACE_FLAG_IMAGE_LOAD;
+    Check((wperf::TraceFlagsForLiveFilter(L"sched") &
+           (EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER)) ==
+              (EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER),
+          L"live sched enables context switches");
+    Check((wperf::TraceFlagsForLiveFilter(L"syscall") &
+           EVENT_TRACE_FLAG_SYSTEMCALL) != 0,
+          L"live syscall enables system calls");
+    Check((wperf::TraceFlagsForLiveFilter(L"pagefault") &
+           EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS) != 0,
+          L"live pagefault enables page faults");
+    Check((wperf::TraceFlagsForLiveFilter(L"io") &
+           (EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_FILE_IO)) ==
+              (EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_FILE_IO),
+          L"live io enables disk and file IO");
+    Check((wperf::TraceFlagsForLiveFilter(L"sched") & base) == base,
+          L"live filters retain process/thread/image flags");
+}
+
 void TestLiveWorkerControlPlane() {
+
     const std::filesystem::path worker_executable =
         std::filesystem::path(wperf::GetExecutablePath()).parent_path() /
         L"wperf.exe";
@@ -399,6 +421,7 @@ int wmain() {
     TestTruncatedEtwFiles();
     TestThreadAndProcessIntervals();
     TestSymbolizerPdbIdentity();
+    TestLiveTraceFlags();
     TestLiveWorkerControlPlane();
     TestGoldenCpuStackReplay();
     TestWorkerIpcFailurePath();

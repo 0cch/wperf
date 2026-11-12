@@ -144,7 +144,10 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     }
 
     LiveTopCapture capture;
-    if (!capture.Start(session_name, profile_source, &error)) {
+    const ULONG enable_flags = mode == L"top"
+                                   ? TraceFlagsForProfile(L"cpu")
+                                   : TraceFlagsForLiveFilter(event_filter);
+    if (!capture.Start(session_name, profile_source, enable_flags, &error)) {
         pipe.SendLine(L"ERROR " + error, nullptr);
         pipe.SendLine(L"FINISHED 4", nullptr);
         return 4;
