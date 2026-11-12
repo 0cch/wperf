@@ -99,8 +99,7 @@ if (-not $SkipXperf -and $xperf) {
             "-SetProfInt", "10000",
             "-BufferSize", "256",
             "-MaxBuffers", "64",
-            "-FileMode", "Circular",
-            "-MaxFile", "1024",
+            "-FileMode", "Sequential",
             "-f", $etl
         )
         $started = $false
