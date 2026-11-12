@@ -51,6 +51,7 @@ private:
     bool original_interval_valid_ = false;
 };
 
+ULONG TraceFlagsForProfile(std::wstring_view profile);
 std::vector<ProfileSource> QueryProfileSources(std::wstring* error = nullptr);
 uint32_t QueryMaxLoggers(std::wstring* error = nullptr);
 uint32_t QueryMaxPmcCounters(std::wstring* error = nullptr);

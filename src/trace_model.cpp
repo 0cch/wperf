@@ -4,6 +4,29 @@
 
 namespace wperf {
 
+const wchar_t* TraceEventKindName(TraceEventKind kind) {
+    switch (kind) {
+        case TraceEventKind::ContextSwitch:
+            return L"context-switch";
+        case TraceEventKind::ReadyThread:
+            return L"ready-thread";
+        case TraceEventKind::SyscallEnter:
+            return L"syscall-enter";
+        case TraceEventKind::SyscallExit:
+            return L"syscall-exit";
+        case TraceEventKind::PageFault:
+            return L"page-fault";
+        case TraceEventKind::DiskIo:
+            return L"disk-io";
+        case TraceEventKind::FileIo:
+            return L"file-io";
+        case TraceEventKind::Unknown:
+            return L"unknown";
+    }
+    return L"unknown";
+}
+
+
 const ProcessRecord* FindProcess(const TraceData& trace, uint32_t pid,
                                  uint64_t timestamp_ns) {
     const ProcessRecord* best = nullptr;
@@ -24,6 +47,25 @@ const ProcessRecord* FindProcess(const TraceData& trace, uint32_t pid,
     return best;
 }
 
+const ThreadRecord* FindThread(const TraceData& trace, uint32_t tid,
+                               uint64_t timestamp_ns) {
+    const ThreadRecord* best = nullptr;
+    for (const auto& thread : trace.threads) {
+        if (thread.tid != tid) {
+            continue;
+        }
+        if (thread.start_ns != 0 && thread.start_ns > timestamp_ns) {
+            continue;
+        }
+        if (thread.end_ns != 0 && thread.end_ns < timestamp_ns) {
+            continue;
+        }
+        if (best == nullptr || thread.start_ns >= best->start_ns) {
+            best = &thread;
+        }
+    }
+    return best;
+}
 const ImageRecord* FindImage(const TraceData& trace, uint32_t pid, uint64_t address,
                              uint64_t timestamp_ns) {
     const ImageRecord* best = nullptr;

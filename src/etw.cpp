@@ -185,6 +185,35 @@ const std::wstring& EtwSession::Name() const {
     return name_;
 }
 
+ULONG TraceFlagsForProfile(std::wstring_view profile) {
+    ULONG flags = EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
+                  EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
+    if (profile == L"cpu-sched" || profile == L"sched") {
+        flags |= EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER;
+    }
+    if (profile == L"syscall") {
+        flags |= EVENT_TRACE_FLAG_SYSTEMCALL;
+    }
+    if (profile == L"vm") {
+        flags |= EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS |
+                 EVENT_TRACE_FLAG_VIRTUAL_ALLOC | EVENT_TRACE_FLAG_VAMAP;
+    }
+    if (profile == L"io") {
+        flags |= EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_FILE_IO |
+                 EVENT_TRACE_FLAG_FILE_IO | EVENT_TRACE_FLAG_FILE_IO_INIT;
+    }
+    if (profile == L"kernel") {
+        flags |= EVENT_TRACE_FLAG_DPC | EVENT_TRACE_FLAG_INTERRUPT |
+                 EVENT_TRACE_FLAG_DRIVER;
+    }
+    if (profile == L"all") {
+        flags |= EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER |
+                 EVENT_TRACE_FLAG_SYSTEMCALL | EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS |
+                 EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_FILE_IO |
+                 EVENT_TRACE_FLAG_FILE_IO | EVENT_TRACE_FLAG_FILE_IO_INIT;
+    }
+    return flags;
+}
 std::vector<ProfileSource> QueryProfileSources(std::wstring* error) {
     std::vector<ProfileSource> result;
     ULONG required = 0;

@@ -43,6 +43,28 @@ struct SampleRecord {
     bool stack_missing = false;
 };
 
+enum class TraceEventKind {
+    ContextSwitch,
+    ReadyThread,
+    SyscallEnter,
+    SyscallExit,
+    PageFault,
+    DiskIo,
+    FileIo,
+    Unknown,
+};
+
+struct TraceEvent {
+    uint64_t timestamp_ns = 0;
+    uint32_t cpu = 0;
+    uint32_t pid = 0;
+    uint32_t tid = 0;
+    TraceEventKind kind = TraceEventKind::Unknown;
+    uint64_t value1 = 0;
+    uint64_t value2 = 0;
+    uint32_t event_id = 0;
+};
+
 struct TraceQuality {
     uint64_t events_total = 0;
     uint64_t samples_total = 0;
@@ -58,13 +80,17 @@ struct TraceData {
     std::vector<ThreadRecord> threads;
     std::vector<ImageRecord> images;
     std::vector<SampleRecord> samples;
+    std::vector<TraceEvent> events;
     TraceQuality quality;
     uint32_t pointer_size = sizeof(void*);
     uint64_t profile_interval_ns = 1000000;
     std::wstring source_path;
 };
 
+const wchar_t* TraceEventKindName(TraceEventKind kind);
 const ProcessRecord* FindProcess(const TraceData& trace, uint32_t pid,
+                                 uint64_t timestamp_ns);
+const ThreadRecord* FindThread(const TraceData& trace, uint32_t tid,
                                  uint64_t timestamp_ns);
 const ImageRecord* FindImage(const TraceData& trace, uint32_t pid, uint64_t address,
                              uint64_t timestamp_ns);

@@ -22,6 +22,12 @@ const GUID kPerfInfoGuid = {0xce1dbfb4, 0x137e, 0x4da6,
                             {0x87, 0xb0, 0x3f, 0x59, 0xaa, 0x10, 0x2c, 0xbc}};
 const GUID kSystemTraceGuid = {0x9e814aad, 0x3204, 0x11d2,
                              {0x9a, 0x82, 0x00, 0x60, 0x08, 0xa8, 0x69, 0x39}};
+const GUID kPageFaultGuid = {0x3d6fa8d3, 0xfe05, 0x11d0,
+                            {0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c}};
+const GUID kDiskIoGuid = {0x3d6fa8d4, 0xfe05, 0x11d0,
+                           {0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c}};
+const GUID kFileIoGuid = {0x90cbdc39, 0x4a3e, 0x11d1,
+                           {0x84, 0xf4, 0x00, 0x00, 0xf8, 0x04, 0x64, 0xe3}};
 const GUID kStackWalkGuid = {0xdef2fe46, 0x7bd6, 0x4b80,
                              {0xbd, 0x94, 0xf5, 0x7f, 0xe2, 0x0d, 0x0c, 0xe3}};
 
@@ -197,6 +203,42 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
     trace.images.push_back(std::move(image));
 }
 
+void AddEvent(const EVENT_RECORD& record, TraceData& trace, TraceEventKind kind,
+              uint64_t value1 = 0, uint64_t value2 = 0) {
+    TraceEvent event;
+    event.timestamp_ns = TimestampToNs(record);
+    event.cpu = record.BufferContext.ProcessorNumber;
+    event.pid = record.EventHeader.ProcessId;
+    event.tid = record.EventHeader.ThreadId;
+    event.kind = kind;
+    event.value1 = value1;
+    event.value2 = value2;
+    event.event_id = record.EventHeader.EventDescriptor.Opcode;
+    trace.events.push_back(event);
+}
+
+void ParseThreadEvent(const EVENT_RECORD& record, TraceData& trace,
+                      TraceEventKind kind) {
+    const BYTE* data = static_cast<const BYTE*>(record.UserData);
+    const size_t size = record.UserDataLength;
+    uint64_t value1 = 0;
+    uint64_t value2 = 0;
+    if (size >= 8) {
+        value1 = ReadU32(data, size, 0);
+        value2 = ReadU32(data, size, 4);
+    }
+    AddEvent(record, trace, kind, value1, value2);
+}
+
+void ParsePageFault(const EVENT_RECORD& record, TraceData& trace) {
+    const BYTE* data = static_cast<const BYTE*>(record.UserData);
+    const size_t size = record.UserDataLength;
+    const uint64_t virtual_address = ReadPointer(data, size, 0, trace.pointer_size);
+    const uint64_t program_counter = ReadPointer(data, size, trace.pointer_size,
+                                                 trace.pointer_size);
+    AddEvent(record, trace, TraceEventKind::PageFault, virtual_address,
+             program_counter);
+}
 void ParseSample(const EVENT_RECORD& record, TraceData& trace) {
     const BYTE* data = static_cast<const BYTE*>(record.UserData);
     const size_t size = record.UserDataLength;
@@ -275,11 +317,14 @@ void EventRecordCallback(PEVENT_RECORD record) {
     const uint16_t id = record->EventHeader.EventDescriptor.Id;
 
 
-    if (IsEqualGUID(class_guid, kProcessGuid)) {
+    if (IsEqualGUID(class_guid, kProcessGuid) &&
+        (opcode == 1 || opcode == 2 || opcode == 3 || opcode == 4 || opcode == 39)) {
         ParseProcess(*record, *trace);
-    } else if (IsEqualGUID(class_guid, kThreadGuid)) {
+    } else if (IsEqualGUID(class_guid, kThreadGuid) &&
+               (opcode == 1 || opcode == 2 || opcode == 3 || opcode == 4)) {
         ParseThread(*record, *trace);
-    } else if (IsEqualGUID(class_guid, kImageGuid)) {
+    } else if (IsEqualGUID(class_guid, kImageGuid) &&
+               (opcode == 2 || opcode == 3 || opcode == 4 || opcode == 10)) {
         ParseImage(*record, *trace);
     } else if (IsEqualGUID(class_guid, kPerfInfoGuid) &&
                (opcode == 46 || id == 46)) {
@@ -289,6 +334,35 @@ void EventRecordCallback(PEVENT_RECORD record) {
                (opcode == 32 || id == 32)) {
         ++trace->quality.stack_events_total;
         ParseStack(*record, *trace, context->stacks);
+    } else if ((IsEqualGUID(class_guid, kThreadGuid) ||
+                IsEqualGUID(record->EventHeader.ProviderId, kThreadGuid)) &&
+               opcode == 36) {
+        ParseThreadEvent(*record, *trace, TraceEventKind::ContextSwitch);
+    } else if ((IsEqualGUID(class_guid, kThreadGuid) ||
+                IsEqualGUID(record->EventHeader.ProviderId, kThreadGuid)) &&
+               opcode == 50) {
+        ParseThreadEvent(*record, *trace, TraceEventKind::ReadyThread);
+    } else if ((IsEqualGUID(class_guid, kPageFaultGuid) ||
+                IsEqualGUID(record->EventHeader.ProviderId, kPageFaultGuid)) &&
+               opcode >= 10 && opcode <= 15) {
+        ParsePageFault(*record, *trace);
+    } else if ((IsEqualGUID(class_guid, kPerfInfoGuid) ||
+                IsEqualGUID(record->EventHeader.ProviderId, kPerfInfoGuid)) &&
+               opcode == 51) {
+        const uint64_t address = ReadPointer(
+            static_cast<const BYTE*>(record->UserData), record->UserDataLength, 0,
+            trace->pointer_size);
+        AddEvent(*record, *trace, TraceEventKind::SyscallEnter, address);
+    } else if ((IsEqualGUID(class_guid, kPerfInfoGuid) ||
+                IsEqualGUID(record->EventHeader.ProviderId, kPerfInfoGuid)) &&
+               opcode == 52) {
+        AddEvent(*record, *trace, TraceEventKind::SyscallExit);
+    } else if (IsEqualGUID(class_guid, kDiskIoGuid) ||
+               IsEqualGUID(record->EventHeader.ProviderId, kDiskIoGuid)) {
+        AddEvent(*record, *trace, TraceEventKind::DiskIo);
+    } else if (IsEqualGUID(class_guid, kFileIoGuid) ||
+               IsEqualGUID(record->EventHeader.ProviderId, kFileIoGuid)) {
+        AddEvent(*record, *trace, TraceEventKind::FileIo);
     } else if (IsEqualGUID(record->EventHeader.ProviderId, kSystemTraceGuid) &&
                opcode == 46) {
         ++trace->quality.samples_total;
