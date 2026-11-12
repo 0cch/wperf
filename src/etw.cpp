@@ -81,6 +81,14 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         }
         return false;
     }
+    std::wstring privilege_error;
+    if (!EnablePrivilege(L"SeSystemProfilePrivilege", &privilege_error)) {
+        if (error != nullptr) {
+            *error = L"EnablePrivilege(SeSystemProfilePrivilege) failed: " +
+                     privilege_error;
+        }
+        return false;
+    }
 
     const std::wstring log_file = options.output_path.wstring();
     const size_t log_bytes = (log_file.size() + 1) * sizeof(wchar_t);
