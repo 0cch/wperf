@@ -2067,6 +2067,7 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                << L" samples=" << trace.quality.samples_total
                << L" stack_events=" << trace.quality.stack_events_total
                << L" samples_without_stack=" << trace.quality.samples_without_stack
+               << L" stack_ambiguous=" << trace.quality.stack_ambiguous
                << L" lost=" << trace.quality.lost_events
                << L"\n";
     WriteCpuReport(trace, symbolizer, report_options, std::wcout);

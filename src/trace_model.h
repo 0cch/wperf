@@ -70,6 +70,7 @@ struct TraceQuality {
     uint64_t samples_total = 0;
     uint64_t stack_events_total = 0;
     uint64_t samples_without_stack = 0;
+    uint64_t stack_ambiguous = 0;
     uint64_t unknown_events = 0;
     uint64_t lost_events = 0;
     bool incomplete = false;

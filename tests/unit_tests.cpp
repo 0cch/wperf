@@ -1,11 +1,13 @@
 #include "common.h"
 #include "cpu_report.h"
 #include "elevation.h"
+#include "etl_reader.h"
 #include "etw.h"
 #include "ipc.h"
 #include "state.h"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -90,6 +92,21 @@ void TestCpuReportSynthetic() {
     wperf::WriteCpuReport(trace, symbolizer, options, output);
     Check(output.str().find(L"app.exe") != std::wstring::npos,
           L"CPU report resolves synthetic image");
+}
+void TestInvalidEtwFile() {
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / (L"wperf-bad-" + wperf::NewId() + L".etl");
+    {
+        std::ofstream stream(path, std::ios::binary);
+        stream << "not an etl trace";
+    }
+    wperf::TraceData trace;
+    std::wstring error;
+    const bool result = wperf::ReadEtwFile(path, trace, &error);
+    Check(!result, L"invalid ETL is rejected");
+    Check(!error.empty(), L"invalid ETL returns an error");
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
 }
 void TestWorkerIpcFailurePath() {
     const std::wstring correlation_id = wperf::NewId();

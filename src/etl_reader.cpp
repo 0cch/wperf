@@ -446,37 +446,30 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
         }
 
         size_t stack_index = SIZE_MAX;
-        auto by_ip = context.stacks.by_instruction_pointer.find(
-            sample.instruction_pointer);
-        while (by_ip != context.stacks.by_instruction_pointer.end() &&
-               !by_ip->second.empty()) {
-            const size_t candidate = by_ip->second.front();
-            by_ip->second.pop_front();
-            if (!context.stacks.used[candidate]) {
+        auto& candidates =
+            context.stacks.by_instruction_pointer[sample.instruction_pointer];
+        for (auto iterator = candidates.begin(); iterator != candidates.end();
+             ++iterator) {
+            const size_t candidate = *iterator;
+            if (context.stacks.used[candidate]) {
+                continue;
+            }
+            const StackRecord& record = context.stacks.records[candidate];
+            if (record.tid == sample.tid && record.cpu == sample.cpu) {
                 stack_index = candidate;
+                candidates.erase(iterator);
                 break;
             }
         }
         if (stack_index == SIZE_MAX) {
-            const uint64_t key =
-                (static_cast<uint64_t>(sample.tid) << 32) | sample.cpu;
-            auto by_thread = context.stacks.by_thread_cpu.find(key);
-            while (by_thread != context.stacks.by_thread_cpu.end() &&
-                   !by_thread->second.empty()) {
-                const size_t candidate = by_thread->second.front();
-                by_thread->second.pop_front();
-                if (!context.stacks.used[candidate]) {
-                    stack_index = candidate;
-                    break;
-                }
+            sample.stack_missing = true;
+            if (!candidates.empty()) {
+                ++trace.quality.stack_ambiguous;
             }
-        }
-        if (stack_index != SIZE_MAX) {
+            ++trace.quality.samples_without_stack;
+        } else {
             context.stacks.used[stack_index] = true;
             sample.stack = context.stacks.records[stack_index].frames;
-        } else {
-            sample.stack_missing = true;
-            ++trace.quality.samples_without_stack;
         }
     }
 
