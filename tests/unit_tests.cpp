@@ -10,6 +10,8 @@
 #include <fstream>
 #include <iostream>
 #include <regex>
+
+#include <psapi.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -118,6 +120,87 @@ uint64_t ReadExpectedCount(const std::filesystem::path& path,
     std::smatch match;
     Check(std::regex_search(text, match, pattern), L"golden fixture contains expected count");
     return match.empty() ? 0 : std::stoull(match[1].str());
+}
+
+void TestTruncatedEtwFiles() {
+    const std::filesystem::path fixture =
+        std::filesystem::path(WPERF_TEST_DATA_DIR) / L"cpu-stack.etl";
+    std::ifstream source(fixture, std::ios::binary);
+    Check(source.good(), L"open fixture for truncation tests");
+    if (!source.good()) {
+        return;
+    }
+    const std::vector<size_t> sizes{0, 64, 4096};
+    for (size_t size : sizes) {
+        source.clear();
+        source.seekg(0, std::ios::beg);
+        const std::filesystem::path path =
+            std::filesystem::temp_directory_path() /
+            (L"wperf-truncated-" + wperf::NewId() + L".etl");
+        {
+            std::ofstream target(path, std::ios::binary);
+            std::vector<char> buffer(size);
+            if (size != 0) {
+                source.read(buffer.data(), static_cast<std::streamsize>(size));
+            }
+            if (!buffer.empty()) {
+                target.write(buffer.data(),
+                             static_cast<std::streamsize>(buffer.size()));
+            }
+        }
+        wperf::TraceData trace;
+        std::wstring error;
+        const bool result = wperf::ReadEtwFile(path, trace, &error);
+        Check(!result, L"truncated ETL is rejected");
+        Check(!error.empty(), L"truncated ETL returns an error");
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+    }
+}
+
+void TestSymbolizerPdbIdentity() {
+    HMODULE module = GetModuleHandleW(nullptr);
+    MODULEINFO module_info{};
+    Check(module != nullptr && GetModuleInformation(GetCurrentProcess(), module,
+                                                     &module_info,
+                                                     sizeof(module_info)),
+          L"query current module identity");
+    if (module == nullptr || module_info.SizeOfImage == 0) {
+        return;
+    }
+
+    wperf::ImageRecord image;
+    image.pid = GetCurrentProcessId();
+    image.base = reinterpret_cast<uint64_t>(module);
+    image.size = module_info.SizeOfImage;
+    image.path = wperf::GetExecutablePath();
+
+    wperf::TraceData trace;
+    trace.images.push_back(image);
+    wperf::Symbolizer symbolizer;
+    std::wstring error;
+    Check(symbolizer.Initialize(L"", &error), L"initialize symbolizer");
+    symbolizer.AddModule(trace.images.front());
+    const uint64_t address =
+        reinterpret_cast<uint64_t>(&TestSymbolizerPdbIdentity);
+    const auto resolved = symbolizer.Resolve(trace, image.pid, address, 1);
+    Check(resolved.module.find(L"wperf_unit_tests.exe") != std::wstring::npos,
+          L"symbolizer resolves current module");
+    Check(resolved.resolved, L"symbolizer loads the matching PDB");
+
+    wperf::TraceData stale_trace;
+    wperf::ImageRecord stale = image;
+    stale.timestamp = 1;
+    stale_trace.images.push_back(stale);
+    wperf::Symbolizer stale_symbolizer;
+    Check(stale_symbolizer.Initialize(L"", &error),
+          L"initialize stale symbolizer");
+    stale_symbolizer.AddModule(stale_trace.images.front());
+    const auto stale_resolved =
+        stale_symbolizer.Resolve(stale_trace, stale.pid, address, 1);
+    Check(!stale_resolved.resolved, L"stale PE identity is rejected");
+    Check(stale_resolved.symbol.find(L"+0x") != std::wstring::npos,
+          L"stale PE identity returns module offset");
 }
 
 void TestGoldenCpuStackReplay() {
@@ -241,6 +324,8 @@ int wmain() {
     TestEtwQuery();
     TestCpuReportSynthetic();
     TestInvalidEtwFile();
+    TestTruncatedEtwFiles();
+    TestSymbolizerPdbIdentity();
     TestGoldenCpuStackReplay();
     TestWorkerIpcFailurePath();
     if (g_failures == 0) {

@@ -33,7 +33,12 @@ target_compile_definitions(wperf_core PUBLIC
 target_compile_options(wperf_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi)
 
-add_executable(wperf src/main.cpp src/commands.cpp)
+add_executable(wperf
+    src/main.cpp
+    src/commands.cpp
+    src/commands/advanced.cpp
+    src/commands/offline.cpp
+)
 target_compile_options(wperf PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf PRIVATE wperf_core)
 

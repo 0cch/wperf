@@ -445,3 +445,14 @@ Indexes
 5. 拆分 `commands.cpp` 的边界。
 
 R0 完成后再决定是否先做 R1（符号质量）还是 R2（实时 top/trace）。在 R0 之前引入 `.wperf`，很可能只是把未验证的解析结果固化下来，收益低、维护成本高。
+## 16. R0 当前状态
+
+R0 的核心正确性基线已经落地，详见 `docs/R0_STATUS.md`：
+
+- CPU sample + stack 的普通权限 golden ETL 与自动 replay 断言。
+- raw timestamp + QPC/TID/CPU 精确栈关联，以及 StackWalkRef/Def 解析。
+- PE timestamp/checksum/RSDS PDB GUID/age 校验和模块 synthetic base 隔离。
+- 非 ETL 与截断 ETL 回归。
+- M7 和 offline 命令已从 `commands.cpp` 拆出。
+
+仍待补强：压缩栈专用 fixture、WOW64、fuzz corpus、symbol failure 统计，以及 `stat/top` 进一步拆分。这些不阻塞 R1。
