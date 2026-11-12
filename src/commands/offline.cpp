@@ -1,13 +1,16 @@
 #include "commands/offline.h"
 
+#include "commands/live_control.h"
 #include "commands/util.h"
 #include "common.h"
 #include "cpu_report.h"
+#include "elevation.h"
 #include "etl_reader.h"
 #include "symbolizer.h"
 #include "trace_model.h"
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -141,6 +144,98 @@ int RunScript(const std::vector<std::wstring>& arguments) {
     }
     return 0;
 }
+std::atomic_bool g_live_trace_interrupted{false};
+
+BOOL WINAPI LiveTraceControlHandler(DWORD control_type) {
+    if (control_type == CTRL_C_EVENT || control_type == CTRL_BREAK_EVENT ||
+        control_type == CTRL_CLOSE_EVENT || control_type == CTRL_LOGOFF_EVENT ||
+        control_type == CTRL_SHUTDOWN_EVENT) {
+        g_live_trace_interrupted.store(true);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+int RunLiveTrace(const std::wstring& filter, const std::wstring& pid_text,
+                 const std::wstring& max_text, const std::wstring& duration_text,
+                 bool json, bool elevate) {
+    bool elevated = false;
+    std::wstring error;
+    IsProcessElevated(elevated, &error);
+    if (!elevated && !elevate) {
+        PrintError(L"live trace requires administrator rights; rerun with --elevate");
+        return 3;
+    }
+
+    LiveWorkerOptions options;
+    options.mode = L"trace";
+    options.session_name = L"wperf-trace-" + NewId();
+    options.interval_ms = 250;
+    options.event_filter = filter;
+    options.pid_text = pid_text;
+    options.max_text = max_text;
+    options.duration_text = duration_text;
+    options.json = json;
+
+    LiveWorkerClient worker;
+    if (!worker.Start(options, !elevated && elevate, &error)) {
+        PrintError(error);
+        return 4;
+    }
+
+    g_live_trace_interrupted.store(false);
+    SetConsoleCtrlHandler(LiveTraceControlHandler, TRUE);
+    int exit_code = 0;
+    bool finished = false;
+    bool stop_sent = false;
+    while (!finished) {
+        if (g_live_trace_interrupted.load() && !stop_sent) {
+            worker.SendStop(nullptr);
+            stop_sent = true;
+        }
+        if (!worker.HasData()) {
+            DWORD worker_exit = 0;
+            std::wstring ignored;
+            if (worker.WaitForExit(0, worker_exit, &ignored)) {
+                if (!finished) {
+                    PrintError(L"live worker exited unexpectedly with code " +
+                               std::to_wstring(worker_exit));
+                    exit_code = static_cast<int>(worker_exit);
+                }
+                break;
+            }
+            Sleep(20);
+            continue;
+        }
+
+        std::wstring line;
+        if (!worker.ReceiveLine(line, 5000, &error)) {
+            PrintError(error);
+            exit_code = 5;
+            break;
+        }
+        if (line == L"JSON_BEGIN") {
+            std::wcout << L"[\n";
+        } else if (line == L"JSON_END") {
+            std::wcout << L"\n]\n";
+        } else if (line.rfind(L"OUT ", 0) == 0) {
+            std::wcout << line.substr(4) << L"\n";
+            std::wcout.flush();
+        } else if (line.rfind(L"WARN ", 0) == 0) {
+            std::wcerr << L"wperf: warning: " << line.substr(5) << L"\n";
+        } else if (line.rfind(L"ERROR ", 0) == 0) {
+            PrintError(line.substr(6));
+        } else if (line.rfind(L"FINISHED ", 0) == 0) {
+            exit_code = _wtoi(line.c_str() + 9);
+            finished = true;
+        }
+    }
+
+    SetConsoleCtrlHandler(LiveTraceControlHandler, FALSE);
+    worker.Close();
+    return exit_code;
+}
+
 bool MatchesEventFilter(const TraceEvent& event, const std::wstring& filter) {
     if (filter.empty() || filter == L"all") {
         return true;
@@ -169,7 +264,10 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
     std::wstring filter = L"all";
     std::wstring pid_text;
     std::wstring max_text = L"500";
+    std::wstring duration_text = L"0";
     bool json = false;
+    bool live = false;
+    bool elevate = false;
     for (size_t index = 0; index < arguments.size(); ++index) {
         if (arguments[index] == L"-i" || arguments[index] == L"--input") {
             if (index + 1 >= arguments.size()) {
@@ -191,19 +289,37 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
                 return 2;
             }
             max_text = arguments[++index];
+        } else if (arguments[index] == L"--duration") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            duration_text = arguments[++index];
         } else if (arguments[index] == L"--json") {
             json = true;
+        } else if (arguments[index] == L"--live") {
+            live = true;
+        } else if (arguments[index] == L"--elevate") {
+            elevate = true;
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
             std::wcout << L"Usage: wperf trace -i FILE [-e sched|syscall|pagefault|io] "
-                          L"[-p PID] [--max N] [--json]\n";
+                          L"[-p PID] [--max N] [--json]\n"
+                          L"       wperf trace --live [-e sched|syscall|pagefault|io] "
+                          L"[-p PID] [--duration MS] [--max N] [--json] [--elevate]\n";
             return 0;
         } else {
             PrintError(L"unknown trace option: " + arguments[index]);
             return 2;
         }
     }
+    if (live) {
+        if (!input.empty()) {
+            PrintError(L"trace --live cannot be combined with -i FILE");
+            return 2;
+        }
+        return RunLiveTrace(filter, pid_text, max_text, duration_text, json, elevate);
+    }
     if (input.empty()) {
-        PrintError(L"trace requires -i FILE for the offline M5 path");
+        PrintError(L"trace requires -i FILE for offline mode or --live");
         return 2;
     }
 

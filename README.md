@@ -2,7 +2,7 @@
 
 Lightweight Windows profiling and tracing CLI built on ETW.
 
-Current milestones: **M0-M7 implemented** (CPU/PMU profile, PDB report, stat, snapshot top, trace/sched, annotate/diff/archive).
+Current milestones: **M0-M7 implemented** (CPU/PMU profile, PDB report, stat, real-time top/live trace, sched, annotate/diff/archive).
 
 - M0 capability probe: [docs/M0.md](docs/M0.md), [docs/M0_RESULTS.md](docs/M0_RESULTS.md)
 - M1 foundation: [docs/M1.md](docs/M1.md)
@@ -34,9 +34,10 @@ pwsh -File .\scripts\build_release.ps1
 .\build\Release\wperf.exe record --duration 3000 -o .\trace.etl
 .\build\Release\wperf.exe report -i .\trace.etl --symbol-path .\build\Release
 .\build\Release\wperf.exe stat -- .\build\Release\wperf_cpu_burn.exe 1000 2
-.\build\Release\wperf.exe top --interval 1000 --iterations 1
+.\build\Release\wperf.exe top --elevate --interval 1000 --iterations 1
 .\build\Release\wperf.exe record --profile cpu-sched -o .\sched.etl -- .\build\Release\wperf_cpu_burn.exe 2000 4
 .\build\Release\wperf.exe trace -i .\sched.etl -e sched --max 30
+.\build\Release\wperf.exe trace --live --elevate -e sched --duration 5000
 .\build\Release\wperf.exe sched -i .\sched.etl
 .\build\Release\wperf.exe script -i .\trace.etl --limit 10 --symbol-path .\build\Release
 ```

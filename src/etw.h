@@ -29,6 +29,7 @@ struct TraceOptions {
                          EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
     uint32_t profile_interval_100ns = 10000;
     bool enable_stack_tracing = true;
+    bool realtime = false;
     bool pmc_profile = false;
     uint32_t pmc_source = 0;
     bool enable_lbr = false;

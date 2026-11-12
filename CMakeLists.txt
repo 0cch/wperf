@@ -19,6 +19,8 @@ add_library(wperf_core STATIC
     src/crash.cpp
     src/trace_model.cpp
     src/etl_reader.cpp
+    src/live_top.cpp
+    src/commands/live_control.cpp
     src/symbolizer.cpp
     src/cpu_report.cpp
 )
@@ -38,6 +40,8 @@ add_executable(wperf
     src/commands.cpp
     src/commands/advanced.cpp
     src/commands/offline.cpp
+    src/commands/live_worker.cpp
+    src/commands/top.cpp
 )
 target_compile_options(wperf PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf PRIVATE wperf_core)

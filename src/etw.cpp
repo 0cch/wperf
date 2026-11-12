@@ -72,9 +72,12 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         }
         return false;
     }
-    if (options.session_name.empty() || options.output_path.empty()) {
+    if (options.session_name.empty() ||
+        (!options.realtime && options.output_path.empty())) {
         if (error != nullptr) {
-            *error = L"session name and output path are required";
+            *error = options.realtime
+                         ? L"session name is required"
+                         : L"session name and output path are required";
         }
         return false;
     }
@@ -94,8 +97,9 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     properties->FlushTimer = options.flush_timer_seconds;
     properties->EnableFlags = options.enable_flags;
     properties->LogFileMode =
-        EVENT_TRACE_FILE_MODE_SEQUENTIAL | EVENT_TRACE_USE_GLOBAL_SEQUENCE |
-        EVENT_TRACE_SYSTEM_LOGGER_MODE;
+        (options.realtime ? EVENT_TRACE_REAL_TIME_MODE
+                          : EVENT_TRACE_FILE_MODE_SEQUENTIAL) |
+        EVENT_TRACE_USE_GLOBAL_SEQUENCE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
 
     TRACEHANDLE handle = 0;
     const ULONG start_result =

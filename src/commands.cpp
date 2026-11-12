@@ -2,6 +2,8 @@
 
 #include "commands/advanced.h"
 #include "commands/offline.h"
+#include "commands/live_worker.h"
+#include "commands/top.h"
 #include "commands/util.h"
 
 #include "common.h"
@@ -1113,114 +1115,6 @@ int RunStat(const std::vector<std::wstring>& arguments) {
     }
     return 0;
 }
-int RunTop(const std::vector<std::wstring>& arguments) {
-    std::optional<uint32_t> pid;
-    uint64_t interval_ms = 1000;
-    uint64_t iterations = 0;
-    bool elevate = false;
-    for (size_t index = 0; index < arguments.size(); ++index) {
-        if (arguments[index] == L"-p" || arguments[index] == L"--pid") {
-            uint32_t value = 0;
-            if (index + 1 >= arguments.size() ||
-                !ParseUint32(arguments[++index], value)) {
-                return 2;
-            }
-            pid = value;
-        } else if (arguments[index] == L"--interval") {
-            if (index + 1 >= arguments.size() ||
-                !ParseUnsigned(arguments[++index], interval_ms) || interval_ms == 0) {
-                return 2;
-            }
-        } else if (arguments[index] == L"--iterations") {
-            if (index + 1 >= arguments.size() ||
-                !ParseUnsigned(arguments[++index], iterations)) {
-                return 2;
-            }
-        } else if (arguments[index] == L"--elevate") {
-            elevate = true;
-        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            std::wcout << L"Usage: wperf top [-p PID] [--interval MS] "
-                          L"[--iterations N]\n";
-            return 0;
-        } else {
-            PrintError(L"unknown top option: " + arguments[index]);
-            return 2;
-        }
-    }
-
-    bool elevated = false;
-    std::wstring elevation_error;
-    IsProcessElevated(elevated, &elevation_error);
-    if (!elevated) {
-        PrintError(L"top requires an elevated terminal; use --elevate only for a "
-                   L"single snapshot (UAC would repeat per interval)");
-        return 3;
-    }
-
-    g_top_mode.store(true);
-    g_top_interrupted.store(false);
-    SetConsoleCtrlHandler(ConsoleControlHandler, TRUE);
-    uint64_t iteration = 0;
-    while (!g_top_interrupted.load() && (iterations == 0 || iteration < iterations)) {
-        ++iteration;
-        const std::wstring id = NewId();
-        const std::filesystem::path trace_path =
-            GetWperfRootDirectory() / (L"top-" + id + L".etl");
-        std::vector<std::wstring> record_args{
-            L"-F", L"999", L"--duration", std::to_wstring(interval_ms),
-            L"--output", trace_path.wstring(), L"--profile", L"cpu",
-        };
-        if (pid.has_value()) {
-            record_args.push_back(L"--pid");
-            record_args.push_back(std::to_wstring(*pid));
-        }
-
-        if (elevate) {
-            record_args.push_back(L"--elevate");
-        }
-
-        const int record_result = RunRecord(record_args);
-        if (record_result != 0) {
-            PrintError(L"top capture failed with code " + std::to_wstring(record_result));
-            break;
-        }
-
-        TraceData trace;
-        std::wstring error;
-        if (!ReadEtwFile(trace_path, trace, &error)) {
-            PrintError(error);
-            std::error_code ignored;
-            std::filesystem::remove(trace_path, ignored);
-            break;
-        }
-
-        Symbolizer symbolizer;
-        symbolizer.Initialize({}, nullptr);
-        for (const auto& image : trace.images) {
-            symbolizer.AddModule(image);
-        }
-        CpuReportOptions report_options;
-        report_options.percent_limit = 1.0;
-        if (pid.has_value()) {
-            report_options.pid = pid;
-            report_options.comm_filter.clear();
-        }
-
-        std::wcout << L"\x1b[2J\x1b[H";
-        std::wcout << L"wperf top  interval=" << interval_ms
-                   << L"ms  sample=" << iteration << L"\n";
-        WriteCpuReport(trace, symbolizer, report_options, std::wcout);
-        std::wcout.flush();
-
-        std::error_code ignored;
-        std::filesystem::remove(trace_path, ignored);
-        SetConsoleCtrlHandler(ConsoleControlHandler, TRUE);
-    }
-    g_top_mode.store(false);
-    SetConsoleCtrlHandler(ConsoleControlHandler, FALSE);
-    return 0;
-}
-
 void PrintUsage() {
     std::wcout
         << L"wperf " << kVersion << L"\n\n"
@@ -1307,6 +1201,9 @@ int RunCommandLine(const std::vector<std::wstring>& arguments) {
     }
     if (command == L"buildid-list") {
         return RunBuildIdList(rest);
+    }
+    if (command == L"--internal-live-worker") {
+        return RunLiveWorker(rest);
     }
     if (command == L"--internal-elevated-worker") {
         return RunWorker(rest);

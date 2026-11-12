@@ -465,3 +465,15 @@ R1 的第一批 fidelity 改进已落地，详见 `docs/R1_STATUS.md`：
 - 现有 line 信息保留，inline frame 与独立磁盘 symcache 暂缓。
 
 inline frame 不以猜测方式实现；等待带 inline 的专用 fixture 后再启用 DbgHelp inline context。
+## 18. R2 当前状态
+
+R2 的代码闭环已完成，详见 `docs/R2_STATUS.md`：
+
+- 持续 real-time ETW top/trace consumer。
+- 单次 UAC + 命名管道控制的 elevated headless worker。
+- 200000 sample/event bounded ring 和 `ring_dropped` 统计。
+- live trace 的文本/JSON、PID/event filter、duration/max。
+- VT 不可用时滚动输出降级。
+- controller 断开时 worker/session 清理，以及 R2 soak 脚本。
+
+最终 1 小时管理员 soak 仍需在可交互提权环境执行。

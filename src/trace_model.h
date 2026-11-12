@@ -74,6 +74,7 @@ struct TraceQuality {
     uint64_t stack_exact_total = 0;
     uint64_t stack_approximate_total = 0;
     uint64_t stack_key_mismatch = 0;
+    uint64_t ring_dropped = 0;
     uint64_t samples_without_stack = 0;
     uint64_t stack_ambiguous = 0;
     uint64_t unknown_events = 0;

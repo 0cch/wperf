@@ -1,4 +1,5 @@
 #include "common.h"
+#include "commands/live_control.h"
 #include "cpu_report.h"
 #include "elevation.h"
 #include "etl_reader.h"
@@ -276,6 +277,49 @@ void TestGoldenCpuStackReplay() {
           L"golden stacks prefer exact matches");
 }
 
+void TestLiveWorkerControlPlane() {
+    const std::filesystem::path worker_executable =
+        std::filesystem::path(wperf::GetExecutablePath()).parent_path() /
+        L"wperf.exe";
+    Check(std::filesystem::exists(worker_executable), L"live worker executable exists");
+
+    wperf::LiveWorkerOptions options;
+    options.mode = L"top";
+    options.session_name = L"wperf-test-live-" + wperf::NewId();
+    options.interval_ms = 100;
+    options.duration_text = L"250";
+    wperf::LiveWorkerClient worker;
+    std::wstring error;
+    Check(worker.StartWithExecutable(options, worker_executable.wstring(), false,
+                                     &error),
+          L"start live worker control plane");
+
+    bool finished = false;
+    int result = -1;
+    const ULONGLONG deadline = GetTickCount64() + 20000;
+    while (GetTickCount64() < deadline) {
+        if (!worker.HasData()) {
+            Sleep(20);
+            continue;
+        }
+        std::wstring line;
+        if (!worker.ReceiveLine(line, 2000, &error)) {
+            break;
+        }
+        if (line.rfind(L"FINISHED ", 0) == 0) {
+            result = _wtoi(line.c_str() + 9);
+            finished = true;
+            break;
+        }
+    }
+    Check(finished, L"live worker sends FINISHED");
+    Check(result == 0 || result == 4, L"live worker result is success or access denied");
+    DWORD exit_code = 0;
+    Check(worker.WaitForExit(10000, exit_code, &error), L"live worker exits");
+    Check(exit_code == static_cast<DWORD>(result), L"live worker exit code matches");
+    worker.Close();
+}
+
 void TestWorkerIpcFailurePath() {
     const std::wstring correlation_id = wperf::NewId();
     const std::wstring nonce = wperf::NewId();
@@ -355,6 +399,7 @@ int wmain() {
     TestTruncatedEtwFiles();
     TestThreadAndProcessIntervals();
     TestSymbolizerPdbIdentity();
+    TestLiveWorkerControlPlane();
     TestGoldenCpuStackReplay();
     TestWorkerIpcFailurePath();
     if (g_failures == 0) {
