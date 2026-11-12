@@ -10,6 +10,7 @@ Current milestones: **M0-M7 implemented** (CPU/PMU profile, PDB report, stat, sn
 - M4/M5 implementation status: [docs/M4_M5.md](docs/M4_M5.md)
 - M6/M7 implementation status: [docs/M6_M7.md](docs/M6_M7.md)
 - M2-M7 execution roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
+- Project review plan: [docs/REVIEW_PLAN.md](docs/REVIEW_PLAN.md)
 
 ## Build
 
