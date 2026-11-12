@@ -158,6 +158,31 @@ void TestTruncatedEtwFiles() {
     }
 }
 
+void TestThreadAndProcessIntervals() {
+    wperf::TraceData trace;
+    trace.threads.push_back(wperf::ThreadRecord{100, 7, 100, 200});
+    trace.threads.push_back(wperf::ThreadRecord{200, 7, 300, 0});
+    const auto* first_thread = wperf::FindThread(trace, 7, 150);
+    Check(first_thread != nullptr && first_thread->pid == 100,
+          L"find first thread lifetime");
+    Check(wperf::FindThread(trace, 7, 250) == nullptr,
+          L"thread id is not attributed between lifetimes");
+    const auto* second_thread = wperf::FindThread(trace, 7, 350);
+    Check(second_thread != nullptr && second_thread->pid == 200,
+          L"find reused thread id lifetime");
+
+    trace.processes.push_back(wperf::ProcessRecord{
+        42, 0, L"first.exe", L"", 100, 200});
+    trace.processes.push_back(wperf::ProcessRecord{
+        42, 0, L"second.exe", L"", 300, 0});
+    const auto* first_process = wperf::FindProcess(trace, 42, 150);
+    Check(first_process != nullptr && first_process->image_name == L"first.exe",
+          L"find first process lifetime");
+    const auto* second_process = wperf::FindProcess(trace, 42, 350);
+    Check(second_process != nullptr && second_process->image_name == L"second.exe",
+          L"find reused process id lifetime");
+}
+
 void TestSymbolizerPdbIdentity() {
     HMODULE module = GetModuleHandleW(nullptr);
     MODULEINFO module_info{};
@@ -187,6 +212,9 @@ void TestSymbolizerPdbIdentity() {
     Check(resolved.module.find(L"wperf_unit_tests.exe") != std::wstring::npos,
           L"symbolizer resolves current module");
     Check(resolved.resolved, L"symbolizer loads the matching PDB");
+    const auto cached = symbolizer.Resolve(trace, image.pid, address, 1);
+    Check(cached.symbol == resolved.symbol, L"symbol cache returns stable result");
+    Check(symbolizer.Stats().cache_hits == 1, L"symbol cache records a hit");
 
     wperf::TraceData stale_trace;
     wperf::ImageRecord stale = image;
@@ -325,6 +353,7 @@ int wmain() {
     TestCpuReportSynthetic();
     TestInvalidEtwFile();
     TestTruncatedEtwFiles();
+    TestThreadAndProcessIntervals();
     TestSymbolizerPdbIdentity();
     TestGoldenCpuStackReplay();
     TestWorkerIpcFailurePath();

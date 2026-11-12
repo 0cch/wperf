@@ -456,3 +456,12 @@ R0 的核心正确性基线已经落地，详见 `docs/R0_STATUS.md`：
 - M7 和 offline 命令已从 `commands.cpp` 拆出。
 
 仍待补强：压缩栈专用 fixture、WOW64、fuzz corpus、symbol failure 统计，以及 `stat/top` 进一步拆分。这些不阻塞 R1。
+## 17. R1 当前状态
+
+R1 的第一批 fidelity 改进已落地，详见 `docs/R1_STATUS.md`：
+
+- 模块实例级 in-memory symbol cache，并暴露命中统计。
+- Process/Thread 生命周期和 TID/PID 复用安全归属。
+- 现有 line 信息保留，inline frame 与独立磁盘 symcache 暂缓。
+
+inline frame 不以猜测方式实现；等待带 inline 的专用 fixture 后再启用 DbgHelp inline context。

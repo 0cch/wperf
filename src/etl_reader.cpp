@@ -177,23 +177,41 @@ void ParseProcess(const EVENT_RECORD& record, TraceData& trace) {
         return;
     }
 
+    const uint8_t opcode = record.EventHeader.EventDescriptor.Opcode;
+    const uint32_t pid = ReadU32(data, size, p);
+    const uint64_t timestamp_ns = TimestampToNs(record, trace);
+    if (opcode == 2 || opcode == 4) {
+        for (auto iterator = trace.processes.rbegin(); iterator != trace.processes.rend();
+             ++iterator) {
+            if (iterator->pid == pid && iterator->end_ns == 0) {
+                iterator->end_ns = timestamp_ns;
+                break;
+            }
+        }
+        return;
+    }
+
     ProcessRecord process;
-    process.pid = ReadU32(data, size, p);
+    process.pid = pid;
     process.parent_pid = ReadU32(data, size, p + 4);
-    process.start_ns = TimestampToNs(record, trace);
+    process.start_ns = timestamp_ns;
 
     const size_t fixed_before_dtb = p + 16;
     const size_t dtb_offset = static_cast<size_t>((fixed_before_dtb + p - 1) / p) * p;
     const size_t sid_offset = dtb_offset + p;
     const size_t sid_length = SidLength(data, size, sid_offset);
-    if (sid_length == 0) {
-        trace.processes.push_back(process);
-        return;
+    if (sid_length != 0) {
+        const size_t image_offset = sid_offset + sid_length;
+        process.image_name = ReadWideString(data, size, image_offset);
     }
 
-    const size_t image_offset = sid_offset + sid_length;
-    process.image_name = ReadWideString(data, size, image_offset);
-    trace.processes.push_back(process);
+    for (const ProcessRecord& existing : trace.processes) {
+        if (existing.pid == process.pid && existing.end_ns == 0 &&
+            existing.image_name == process.image_name) {
+            return;
+        }
+    }
+    trace.processes.push_back(std::move(process));
 }
 
 void ParseThread(const EVENT_RECORD& record, TraceData& trace) {
@@ -202,11 +220,32 @@ void ParseThread(const EVENT_RECORD& record, TraceData& trace) {
     if (size < 8) {
         return;
     }
+    const uint8_t opcode = record.EventHeader.EventDescriptor.Opcode;
+    const uint32_t pid = ReadU32(data, size, 0);
+    const uint32_t tid = ReadU32(data, size, 4);
+    const uint64_t timestamp_ns = TimestampToNs(record, trace);
+    if (opcode == 2 || opcode == 4) {
+        for (auto iterator = trace.threads.rbegin(); iterator != trace.threads.rend();
+             ++iterator) {
+            if (iterator->pid == pid && iterator->tid == tid &&
+                iterator->end_ns == 0) {
+                iterator->end_ns = timestamp_ns;
+                break;
+            }
+        }
+        return;
+    }
+
+    for (const ThreadRecord& existing : trace.threads) {
+        if (existing.pid == pid && existing.tid == tid && existing.end_ns == 0) {
+            return;
+        }
+    }
     ThreadRecord thread;
-    thread.pid = ReadU32(data, size, 0);
-    thread.tid = ReadU32(data, size, 4);
-    thread.start_ns = TimestampToNs(record, trace);
-    trace.threads.push_back(thread);
+    thread.pid = pid;
+    thread.tid = tid;
+    thread.start_ns = timestamp_ns;
+    trace.threads.push_back(std::move(thread));
 }
 
 void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
@@ -608,9 +647,16 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
         return false;
     }
 
-    std::unordered_map<uint32_t, uint32_t> thread_to_process;
-    for (const auto& thread : trace.threads) {
-        thread_to_process[thread.tid] = thread.pid;
+    std::unordered_map<uint32_t, std::vector<const ThreadRecord*>> threads_by_tid;
+    for (const ThreadRecord& thread : trace.threads) {
+        threads_by_tid[thread.tid].push_back(&thread);
+    }
+    for (auto& [tid, threads] : threads_by_tid) {
+        (void)tid;
+        std::sort(threads.begin(), threads.end(),
+                  [](const ThreadRecord* left, const ThreadRecord* right) {
+                      return left->start_ns < right->start_ns;
+                  });
     }
 
     struct StackCandidateRef {
@@ -637,9 +683,25 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
 
     for (auto& sample : trace.samples) {
         if (sample.pid == 0 || sample.pid == UINT32_MAX) {
-            auto found = thread_to_process.find(sample.tid);
-            if (found != thread_to_process.end()) {
-                sample.pid = found->second;
+            auto found = threads_by_tid.find(sample.tid);
+            if (found != threads_by_tid.end()) {
+                const auto& threads = found->second;
+                auto upper = std::upper_bound(
+                    threads.begin(), threads.end(), sample.timestamp_ns,
+                    [](uint64_t timestamp, const ThreadRecord* thread) {
+                        return timestamp < thread->start_ns;
+                    });
+                while (upper != threads.begin()) {
+                    --upper;
+                    const ThreadRecord* thread = *upper;
+                    if ((thread->start_ns == 0 ||
+                         thread->start_ns <= sample.timestamp_ns) &&
+                        (thread->end_ns == 0 ||
+                         thread->end_ns >= sample.timestamp_ns)) {
+                        sample.pid = thread->pid;
+                        break;
+                    }
+                }
             }
         }
 
