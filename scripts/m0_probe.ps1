@@ -100,6 +100,7 @@ if (-not $SkipXperf -and $xperf) {
             "-BufferSize", "256",
             "-MaxBuffers", "64",
             "-FileMode", "Circular",
+            "-MaxFile", "1024",
             "-f", $etl
         )
         $started = $false
