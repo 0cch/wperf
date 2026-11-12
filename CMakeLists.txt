@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(wperf VERSION 0.3.0 LANGUAGES CXX)
+project(wperf VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +31,7 @@ target_compile_definitions(wperf_core PUBLIC
     _WIN32_WINNT=0x0A00
 )
 target_compile_options(wperf_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
-target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi)
+target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi mincore)
 
 add_executable(wperf src/main.cpp src/commands.cpp)
 target_compile_options(wperf PRIVATE /W4 /permissive- /utf-8 /EHsc)
@@ -57,3 +57,7 @@ add_test(NAME cli_sched_help COMMAND wperf sched --help)
 add_test(NAME cli_stat_help COMMAND wperf stat --help)
 add_test(NAME cli_top_help COMMAND wperf top --help)
 add_test(NAME cli_script_help COMMAND wperf script --help)
+add_test(NAME cli_annotate_help COMMAND wperf annotate --help)
+add_test(NAME cli_diff_help COMMAND wperf diff --help)
+add_test(NAME cli_archive_help COMMAND wperf archive --help)
+add_test(NAME cli_record_help COMMAND wperf record --help)

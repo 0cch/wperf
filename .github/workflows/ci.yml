@@ -23,3 +23,7 @@ jobs:
         run: pwsh -NoProfile -File .\scripts\m4_smoke.ps1 -SkipRecord
       - name: M5 smoke
         run: pwsh -NoProfile -File .\scripts\m5_smoke.ps1 -SkipRecord
+      - name: M6 smoke
+        run: pwsh -NoProfile -File .\scripts\m6_smoke.ps1 -SkipRecord
+      - name: M7 smoke
+        run: pwsh -NoProfile -File .\scripts\m7_smoke.ps1 -SkipRecord

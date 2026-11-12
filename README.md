@@ -2,12 +2,13 @@
 
 Lightweight Windows profiling and tracing CLI built on ETW.
 
-Current milestones: **M0-M5 implemented** (CPU profile, PDB report, stat, snapshot top, trace/sched events).
+Current milestones: **M0-M7 implemented** (CPU/PMU profile, PDB report, stat, snapshot top, trace/sched, annotate/diff/archive).
 
 - M0 capability probe: [docs/M0.md](docs/M0.md), [docs/M0_RESULTS.md](docs/M0_RESULTS.md)
 - M1 foundation: [docs/M1.md](docs/M1.md)
 - M2/M3 implementation status: [docs/M2_M3.md](docs/M2_M3.md)
 - M4/M5 implementation status: [docs/M4_M5.md](docs/M4_M5.md)
+- M6/M7 implementation status: [docs/M6_M7.md](docs/M6_M7.md)
 - M2-M7 execution roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
 
 ## Build
@@ -16,6 +17,9 @@ Current milestones: **M0-M5 implemented** (CPU profile, PDB report, stat, snapsh
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
+
+# Build a portable release directory
+pwsh -File .\scripts\build_release.ps1
 ```
 
 ## Initial commands

@@ -29,6 +29,9 @@ struct TraceOptions {
                          EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
     uint32_t profile_interval_100ns = 10000;
     bool enable_stack_tracing = true;
+    bool pmc_profile = false;
+    uint32_t pmc_source = 0;
+    bool enable_lbr = false;
 };
 
 class EtwSession {
@@ -49,6 +52,7 @@ private:
     std::wstring name_;
     TRACE_PROFILE_INTERVAL original_interval_{};
     bool original_interval_valid_ = false;
+    bool pmc_config_changed_ = false;
 };
 
 ULONG TraceFlagsForProfile(std::wstring_view profile);

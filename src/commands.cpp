@@ -21,6 +21,7 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -297,8 +298,13 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     const std::wstring interval_text =
         OptionValue(arguments, L"--profile-interval", L"10000");
     const std::wstring profile_text = OptionValue(arguments, L"--profile", L"cpu");
+    const std::wstring pmc_source_text = OptionValue(arguments, L"--pmc-source", L"0");
+    const std::wstring pmc_source_set_text =
+        OptionValue(arguments, L"--pmc-source-set", L"0");
+    const std::wstring lbr_text = OptionValue(arguments, L"--lbr", L"0");
     uint64_t duration_ms = 5000;
     uint32_t profile_interval = 10000;
+    uint32_t pmc_source = 0;
     if (pipe_path.empty() || nonce.empty() || session_name.empty() ||
         output.empty() || log_path.empty() || guard_log.empty() ||
         state_path.empty() || correlation_id.empty() ||
@@ -351,6 +357,9 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     trace_options.output_path = output;
     trace_options.profile_interval_100ns = profile_interval;
     trace_options.enable_flags = TraceFlagsForProfile(profile_text);
+    trace_options.pmc_profile = profile_text == L"pmu" || pmc_source_set_text == L"1";
+    trace_options.pmc_source = pmc_source;
+    trace_options.enable_lbr = lbr_text == L"1";
     if (!session.Start(trace_options, &error)) {
         logger.Log(LogLevel::Error, L"WORKER_READY", error);
         state.phase = L"INTERNAL_ERROR";
@@ -516,6 +525,9 @@ struct RecordOptions {
     std::optional<uint32_t> pid;
     std::vector<std::wstring> target;
     std::wstring profile = L"cpu";
+    uint32_t pmc_source = 0;
+    bool pmc_source_set = false;
+    bool lbr = false;
     bool elevate = false;
 };
 
@@ -550,6 +562,15 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
                 return false;
             }
             options.requested_session = arguments[++index];
+        } else if (argument == L"--pmc-source" || argument == L"--pmu-source") {
+            if (index + 1 >= arguments.size() ||
+                !ParseUint32(arguments[++index], options.pmc_source)) {
+                error = L"--pmc-source requires a numeric source id";
+                return false;
+            }
+            options.pmc_source_set = true;
+        } else if (argument == L"--lbr" || argument == L"-b") {
+            options.lbr = true;
         } else if (argument == L"--profile") {
             if (index + 1 >= arguments.size()) {
                 error = L"--profile requires a profile name";
@@ -559,7 +580,8 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
             if (options.profile != L"cpu" && options.profile != L"cpu-sched" &&
                 options.profile != L"sched" && options.profile != L"syscall" &&
                 options.profile != L"vm" && options.profile != L"io" &&
-                options.profile != L"kernel" && options.profile != L"all") {
+                options.profile != L"kernel" && options.profile != L"all" &&
+                options.profile != L"pmu") {
                 error = L"unsupported profile: " + options.profile;
                 return false;
             }
@@ -681,6 +703,9 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         L"--correlation", correlation_id,
         L"--profile", options.profile,
         L"--profile-interval", std::to_wstring(options.profile_interval_100ns),
+        L"--pmc-source", std::to_wstring(options.pmc_source),
+        L"--pmc-source-set", options.pmc_source_set ? L"1" : L"0",
+        L"--lbr", options.lbr ? L"1" : L"0",
         L"--duration-ms", std::to_wstring(options.duration_ms),
     };
 
@@ -954,6 +979,8 @@ int RunStat(const std::vector<std::wstring>& arguments) {
     std::optional<uint32_t> pid;
     uint64_t duration_ms = 1000;
     bool per_thread = false;
+    bool pmu = false;
+    std::wstring pmu_event;
     std::vector<std::wstring> target;
     for (size_t index = 0; index < arguments.size(); ++index) {
         if (arguments[index] == L"--") {
@@ -975,9 +1002,17 @@ int RunStat(const std::vector<std::wstring>& arguments) {
             }
         } else if (arguments[index] == L"--per-thread") {
             per_thread = true;
+        } else if (arguments[index] == L"--pmu") {
+            pmu = true;
+        } else if (arguments[index] == L"-e" || arguments[index] == L"--event" ||
+                   arguments[index] == L"--pmc-source") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            pmu_event = arguments[++index];
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
             std::wcout << L"Usage: wperf stat [-p PID] [--duration MS] "
-                          L"[--per-thread] [--] command\n";
+                          L"[--per-thread] [--pmu -e SOURCE] [--] command\n";
             return 0;
         } else {
             PrintError(L"unknown stat option: " + arguments[index]);
@@ -991,6 +1026,89 @@ int RunStat(const std::vector<std::wstring>& arguments) {
     if (!pid.has_value() && target.empty()) {
         PrintError(L"stat requires -p PID or a target command");
         return 2;
+    }
+
+    if (pmu) {
+        std::wstring error;
+        const auto sources = QueryProfileSources(&error);
+        if (!error.empty()) {
+            PrintError(error);
+            return 5;
+        }
+        uint32_t source = 0;
+        bool source_found = false;
+        for (const auto& candidate : sources) {
+            if (candidate.description == L"TotalCycles") {
+                source = candidate.source;
+                source_found = true;
+                break;
+            }
+        }
+        if (!pmu_event.empty()) {
+            uint32_t numeric = 0;
+            if (ParseUint32(pmu_event, numeric)) {
+                source = numeric;
+                source_found = true;
+            } else {
+                for (const auto& candidate : sources) {
+                    if (_wcsicmp(candidate.description.c_str(), pmu_event.c_str()) == 0) {
+                        source = candidate.source;
+                        source_found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!source_found) {
+            PrintError(L"requested PMU source was not found");
+            return 5;
+        }
+
+        const std::filesystem::path trace_path =
+            GetWperfRootDirectory() / (L"pmu-" + NewId() + L".etl");
+        std::vector<std::wstring> record_args{
+            L"--profile", L"pmu", L"--pmc-source", std::to_wstring(source),
+            L"-F", L"999", L"--duration", std::to_wstring(duration_ms),
+            L"--output", trace_path.wstring(),
+        };
+        if (pid.has_value()) {
+            record_args.push_back(L"--pid");
+            record_args.push_back(std::to_wstring(*pid));
+        } else {
+            record_args.push_back(L"--");
+            record_args.insert(record_args.end(), target.begin(), target.end());
+        }
+        const int record_result = RunRecord(record_args);
+        if (record_result != 0) {
+            std::error_code ignored;
+            std::filesystem::remove(trace_path, ignored);
+            return record_result;
+        }
+
+        TraceData trace;
+        if (!ReadEtwFile(trace_path, trace, &error)) {
+            PrintError(error);
+            std::error_code ignored;
+            std::filesystem::remove(trace_path, ignored);
+            return 6;
+        }
+        Symbolizer symbolizer;
+        symbolizer.Initialize({}, nullptr);
+        for (const auto& image : trace.images) {
+            symbolizer.AddModule(image);
+        }
+        std::wcout << L"PMU profile (experimental, not an exact counter total)\n";
+        std::wcout << L"  source: " << source << L"  samples: "
+                   << trace.samples.size() << L"\n";
+        CpuReportOptions report_options;
+        report_options.percent_limit = 1.0;
+        if (pid.has_value()) {
+            report_options.pid = pid;
+        }
+        WriteCpuReport(trace, symbolizer, report_options, std::wcout);
+        std::error_code ignored;
+        std::filesystem::remove(trace_path, ignored);
+        return 0;
     }
 
     ProcessLaunchResult launched;
@@ -1284,6 +1402,306 @@ int RunScript(const std::vector<std::wstring>& arguments) {
         }
         std::wcout << row.str() << L"\n";
     }
+    return 0;
+}
+std::map<std::wstring, uint64_t> AggregateSymbols(const TraceData& trace,
+                                                  Symbolizer& symbolizer,
+                                                  std::optional<uint32_t> pid) {
+    std::map<std::wstring, uint64_t> result;
+    for (const auto& sample : trace.samples) {
+        if (pid.has_value() && sample.pid != *pid) {
+            continue;
+        }
+        const uint64_t address = sample.stack.empty() ? sample.instruction_pointer
+                                                      : sample.stack.front();
+        const ResolvedSymbol symbol =
+            symbolizer.Resolve(trace, sample.pid, address, sample.timestamp_ns);
+        const std::wstring key = symbol.module + L"|" + symbol.symbol;
+        ++result[key];
+    }
+    return result;
+}
+
+int RunDiff(const std::vector<std::wstring>& arguments) {
+    std::filesystem::path first;
+    std::filesystem::path second;
+    std::wstring symbol_path;
+    for (size_t index = 0; index < arguments.size(); ++index) {
+        if (arguments[index] == L"-1" || arguments[index] == L"--first") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            first = arguments[++index];
+        } else if (arguments[index] == L"-2" || arguments[index] == L"--second") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            second = arguments[++index];
+        } else if (arguments[index] == L"--symbol-path") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            symbol_path = arguments[++index];
+        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
+            std::wcout << L"Usage: wperf diff -1 FIRST.etl -2 SECOND.etl "
+                          L"[--symbol-path DIR]\n";
+            return 0;
+        }
+    }
+    if (first.empty() || second.empty()) {
+        PrintError(L"diff requires -1 FILE and -2 FILE");
+        return 2;
+    }
+
+    TraceData first_trace;
+    TraceData second_trace;
+    std::wstring error;
+    if (!ReadEtwFile(first, first_trace, &error) ||
+        !ReadEtwFile(second, second_trace, &error)) {
+        PrintError(error);
+        return 6;
+    }
+    Symbolizer first_symbolizer;
+    Symbolizer second_symbolizer;
+    first_symbolizer.Initialize(symbol_path, nullptr);
+    second_symbolizer.Initialize(symbol_path, nullptr);
+    for (const auto& image : first_trace.images) {
+        first_symbolizer.AddModule(image);
+    }
+    for (const auto& image : second_trace.images) {
+        second_symbolizer.AddModule(image);
+    }
+    const auto before = AggregateSymbols(first_trace, first_symbolizer, std::nullopt);
+    const auto after = AggregateSymbols(second_trace, second_symbolizer, std::nullopt);
+
+    std::vector<std::wstring> keys;
+    for (const auto& [key, value] : before) {
+        (void)value;
+        keys.push_back(key);
+    }
+    for (const auto& [key, value] : after) {
+        (void)value;
+        if (before.find(key) == before.end()) {
+            keys.push_back(key);
+        }
+    }
+    std::sort(keys.begin(), keys.end());
+    std::wcout << L"Delta Samples Symbol\n";
+    for (const auto& key : keys) {
+        const uint64_t old_count = before.count(key) ? before.at(key) : 0;
+        const uint64_t new_count = after.count(key) ? after.at(key) : 0;
+        if (old_count == new_count) {
+            continue;
+        }
+        std::wcout << (new_count >= old_count ? L"+ " : L"- ")
+                   << (new_count >= old_count ? new_count - old_count
+                                              : old_count - new_count)
+                   << L"  " << old_count << L" -> " << new_count << L"  "
+                   << key << L"\n";
+    }
+    return 0;
+}
+
+std::filesystem::path NormalizeArchivePath(const std::wstring& value) {
+    std::wstring path = value;
+    if (path.rfind(L"\\SystemRoot\\", 0) == 0) {
+        wchar_t system_root[32768]{};
+        const DWORD length = GetEnvironmentVariableW(
+            L"SystemRoot", system_root, static_cast<DWORD>(std::size(system_root)));
+        if (length != 0) {
+            path = std::wstring(system_root, length) + path.substr(11);
+        }
+    }
+    if (path.rfind(L"\\??\\", 0) == 0) {
+        path.erase(0, 4);
+    }
+    if (path.rfind(L"\\Device\\", 0) == 0) {
+        for (wchar_t drive = L'C'; drive <= L'Z'; ++drive) {
+            const std::wstring drive_name{drive, L':'};
+            wchar_t device[1024]{};
+            if (QueryDosDeviceW(drive_name.c_str(), device,
+                                static_cast<DWORD>(std::size(device))) != 0) {
+                const std::wstring prefix = std::wstring(device) + L"\\";
+                if (path.rfind(prefix, 0) == 0) {
+                    path = drive_name + path.substr(prefix.size() - 1);
+                    break;
+                }
+            }
+        }
+    }
+    return path;
+}
+
+int RunAnnotate(const std::vector<std::wstring>& arguments) {
+    std::filesystem::path input;
+    std::wstring symbol_path;
+    std::optional<uint32_t> pid;
+    uint64_t limit = 50;
+    for (size_t index = 0; index < arguments.size(); ++index) {
+        if (arguments[index] == L"-i" || arguments[index] == L"--input") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            input = arguments[++index];
+        } else if (arguments[index] == L"--symbol-path") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            symbol_path = arguments[++index];
+        } else if (arguments[index] == L"-p" || arguments[index] == L"--pid") {
+            uint32_t value = 0;
+            if (index + 1 >= arguments.size() ||
+                !ParseUint32(arguments[++index], value)) {
+                return 2;
+            }
+            pid = value;
+        } else if (arguments[index] == L"--limit") {
+            if (index + 1 >= arguments.size() ||
+                !ParseUnsigned(arguments[++index], limit)) {
+                return 2;
+            }
+        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
+            std::wcout << L"Usage: wperf annotate -i FILE [--symbol-path DIR] "
+                          L"[--pid PID] [--limit N]\n";
+            return 0;
+        }
+    }
+    if (input.empty()) {
+        PrintError(L"annotate requires -i FILE");
+        return 2;
+    }
+    TraceData trace;
+    std::wstring error;
+    if (!ReadEtwFile(input, trace, &error)) {
+        PrintError(error);
+        return 6;
+    }
+    Symbolizer symbolizer;
+    symbolizer.Initialize(symbol_path, nullptr);
+    for (const auto& image : trace.images) {
+        symbolizer.AddModule(image);
+    }
+    struct Heat {
+        std::wstring symbol;
+        uint64_t samples = 0;
+    };
+    std::map<std::wstring, Heat> heat;
+    for (const auto& sample : trace.samples) {
+        if (pid.has_value() && sample.pid != *pid) {
+            continue;
+        }
+        const ResolvedSymbol symbol = symbolizer.Resolve(
+            trace, sample.pid, sample.instruction_pointer, sample.timestamp_ns);
+        const std::wstring key = symbol.module + L"!" + symbol.symbol + L"+0x" +
+                                 std::to_wstring(symbol.displacement);
+        auto& value = heat[key];
+        value.symbol = symbol.symbol;
+        ++value.samples;
+    }
+    std::vector<Heat> rows;
+    for (auto& [key, value] : heat) {
+        (void)key;
+        rows.push_back(value);
+    }
+    std::sort(rows.begin(), rows.end(), [](const Heat& a, const Heat& b) {
+        return a.samples > b.samples;
+    });
+    std::wcout << L"Samples  Address heat\n";
+    for (size_t index = 0; index < rows.size() && index < limit; ++index) {
+        std::wcout << rows[index].samples << L"  " << rows[index].symbol << L"\n";
+    }
+    return 0;
+}
+
+int RunArchive(const std::vector<std::wstring>& arguments) {
+    std::filesystem::path input;
+    std::filesystem::path output;
+    std::optional<uint32_t> pid;
+    for (size_t index = 0; index < arguments.size(); ++index) {
+        if (arguments[index] == L"-i" || arguments[index] == L"--input") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            input = arguments[++index];
+        } else if (arguments[index] == L"-o" || arguments[index] == L"--output") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            output = arguments[++index];
+        } else if (arguments[index] == L"-p" || arguments[index] == L"--pid") {
+            uint32_t value = 0;
+            if (index + 1 >= arguments.size() ||
+                !ParseUint32(arguments[++index], value)) {
+                return 2;
+            }
+            pid = value;
+        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
+            std::wcout << L"Usage: wperf archive -i FILE -o DIRECTORY [-p PID]\n";
+            return 0;
+        }
+    }
+    if (input.empty() || output.empty()) {
+        PrintError(L"archive requires -i FILE and -o DIRECTORY");
+        return 2;
+    }
+    TraceData trace;
+    std::wstring error;
+    if (!ReadEtwFile(input, trace, &error)) {
+        PrintError(error);
+        return 6;
+    }
+    if (!EnsureDirectory(output, &error)) {
+        PrintError(error);
+        return 9;
+    }
+    std::set<std::wstring> needed_images;
+    for (const auto& sample : trace.samples) {
+        if (pid.has_value() && sample.pid != *pid) {
+            continue;
+        }
+        if (const auto* image = FindImage(trace, sample.pid,
+                                          sample.instruction_pointer,
+                                          sample.timestamp_ns)) {
+            if (!image->path.empty()) {
+                needed_images.insert(image->path);
+            }
+        }
+        for (uint64_t frame : sample.stack) {
+            if (const auto* image =
+                    FindImage(trace, sample.pid, frame, sample.timestamp_ns)) {
+                if (!image->path.empty()) {
+                    needed_images.insert(image->path);
+                }
+            }
+        }
+    }
+
+    std::wofstream manifest(output / L"manifest.txt");
+    for (const auto& path : needed_images) {
+        const auto* image = FindImage(
+            trace, pid.value_or(0), 0, 0);
+        (void)image;
+        const std::filesystem::path source = NormalizeArchivePath(path);
+        manifest << path << L"\n";
+        std::error_code ec;
+        if (std::filesystem::exists(source, ec) &&
+            std::filesystem::is_regular_file(source, ec)) {
+            const std::filesystem::path destination =
+                output / source.filename().wstring();
+            std::filesystem::copy_file(source, destination,
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+            const std::filesystem::path pdb = source.parent_path() /
+                                              (source.stem().wstring() + L".pdb");
+            if (std::filesystem::exists(pdb, ec) &&
+                std::filesystem::is_regular_file(pdb, ec)) {
+                std::filesystem::copy_file(
+                    pdb, output / pdb.filename(),
+                    std::filesystem::copy_options::overwrite_existing, ec);
+            }
+        }
+    }
+    manifest.close();
+    std::wcout << L"archive: " << output.wstring() << L"\n";
     return 0;
 }
 bool MatchesEventFilter(const TraceEvent& event, const std::wstring& filter) {
@@ -1669,6 +2087,9 @@ void PrintUsage() {
         << L"  stat       Collect process time/cycle/I/O counters\n"
         << L"  top        Snapshot CPU hot functions per interval\n"
         << L"  script     Export samples from an ETL trace\n"
+        << L"  annotate   Show sampled address heat\n"
+        << L"  diff       Compare two CPU traces\n"
+        << L"  archive    Copy module files and manifest\n"
         << L"  buildid-list List module identities from an ETL\n"
         << L"  recover    Stop a stale wperf ETW session\n"
         << L"  version    Print version\n\n"
@@ -1725,6 +2146,15 @@ int RunCommandLine(const std::vector<std::wstring>& arguments) {
     }
     if (command == L"script") {
         return RunScript(rest);
+    }
+    if (command == L"annotate") {
+        return RunAnnotate(rest);
+    }
+    if (command == L"diff") {
+        return RunDiff(rest);
+    }
+    if (command == L"archive") {
+        return RunArchive(rest);
     }
     if (command == L"buildid-list") {
         return RunBuildIdList(rest);

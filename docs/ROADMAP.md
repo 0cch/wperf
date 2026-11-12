@@ -1,6 +1,6 @@
 # wperf M2-M7 执行路线
 
-本文是 docs/PLAN.md 的可执行拆解。M0/M1 已落地；M2/M3 的核心 CPU profile + PDB report 已落地，M4/M5 的 stat、snapshot top、script、trace/sched 事件也已落地，细节见 [M2_M3.md](M2_M3.md) 和 [M4_M5.md](M4_M5.md)。后续仍按里程碑逐项补齐 real-time 和精确关联。
+本文是 docs/PLAN.md 的可执行拆解。M0/M1 已落地；M2/M3 的核心 CPU profile + PDB report 已落地，M4/M5 的 stat、snapshot top、script、trace/sched 事件以及 M6/M7 的 PMU、annotate、diff、archive 也已落地，细节见 [M2_M3.md](M2_M3.md)、[M4_M5.md](M4_M5.md) 和 [M6_M7.md](M6_M7.md)。后续仍按里程碑逐项补齐 real-time、精确关联和平台验证。
 
 ## 总体策略
 

@@ -108,8 +108,24 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     handle_ = handle;
     name_ = options.session_name;
 
+    if (options.pmc_profile) {
+        ULONG source = options.pmc_source;
+        const ULONG source_result = TraceSetInformation(
+            0, TraceProfileSourceConfigInfo, &source, sizeof(source));
+        if (source_result != ERROR_SUCCESS) {
+            pmc_config_changed_ = false;
+            std::wstring stop_error;
+            Stop(&stop_error);
+            if (error != nullptr) {
+                *error = LastErrorWith(L"TraceSetInformation(PMC source)",
+                                       source_result);
+            }
+            return false;
+        }
+    }
+
     TRACE_PROFILE_INTERVAL interval{};
-    interval.Source = 0;
+    interval.Source = options.pmc_profile ? options.pmc_source : 0;
     interval.Interval = options.profile_interval_100ns;
     ULONG returned = 0;
     const ULONG query_result = TraceQueryInformation(
@@ -141,6 +157,22 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
             if (error != nullptr) {
                 *error = LastErrorWith(L"TraceSetInformation(stack tracing)",
                                        stack_result);
+            }
+            return false;
+        }
+    }
+
+    if (options.enable_lbr) {
+        CLASSIC_EVENT_ID lbr_event{};
+        lbr_event.EventGuid = kPerfInfoGuid;
+        lbr_event.Type = 46;
+        const ULONG lbr_result = TraceConfigureLastBranchRecord(
+            handle_, TRACE_LBR_CONFIGURATION_CALLSTACK_ENABLE, &lbr_event, 1);
+        if (lbr_result != ERROR_SUCCESS) {
+            std::wstring stop_error;
+            Stop(&stop_error);
+            if (error != nullptr) {
+                *error = LastErrorWith(L"TraceConfigureLastBranchRecord", lbr_result);
             }
             return false;
         }
