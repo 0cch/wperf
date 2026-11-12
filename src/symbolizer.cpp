@@ -350,6 +350,13 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
     }
 
     const uint64_t symbol_address = module->second.synthetic_base + result.displacement;
+    const auto cached = symbol_cache_.find(symbol_address);
+    if (cached != symbol_cache_.end()) {
+        ++stats_.cache_hits;
+        return cached->second;
+    }
+    ++stats_.cache_misses;
+
     BYTE buffer[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t)]{};
     auto* symbol = reinterpret_cast<SYMBOL_INFOW*>(buffer);
     symbol->SizeOfStruct = sizeof(SYMBOL_INFOW);
@@ -372,7 +379,13 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
         result.source_file = line.FileName != nullptr ? line.FileName : L"";
         result.line = line.LineNumber;
     }
+    symbol_cache_.emplace(symbol_address, result);
     return result;
+}
+
+SymbolizerStats Symbolizer::Stats() const {
+    std::lock_guard lock(mutex_);
+    return stats_;
 }
 
 void Symbolizer::Close() {
@@ -383,6 +396,8 @@ void Symbolizer::Close() {
     }
     loaded_modules_.clear();
     rejected_modules_.clear();
+    symbol_cache_.clear();
+    stats_ = {};
     next_synthetic_base_ = 0x100000000ull;
 }
 
