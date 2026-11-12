@@ -337,6 +337,8 @@ ETW callback -> bounded MPSC ring -> decoder -> writer/aggregator
 | M7 | annotate/diff/archive/发布 | 4 周 |
 
 单人约 5～6 个月完成 v1.0，两人约 3～4 个月。
+
+M2-M7 的可执行任务拆分、每阶段交付物、测试门槛和 M2 立即执行顺序见 [ROADMAP.md](ROADMAP.md)。里程碑表只是总览，具体实现不以总览表替代。
 ## 17. 风险
 
 | 风险 | 应对 |
