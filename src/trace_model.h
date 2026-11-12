@@ -69,6 +69,11 @@ struct TraceQuality {
     uint64_t events_total = 0;
     uint64_t samples_total = 0;
     uint64_t stack_events_total = 0;
+    uint64_t stack_ref_events_total = 0;
+    uint64_t stack_def_events_total = 0;
+    uint64_t stack_exact_total = 0;
+    uint64_t stack_approximate_total = 0;
+    uint64_t stack_key_mismatch = 0;
     uint64_t samples_without_stack = 0;
     uint64_t stack_ambiguous = 0;
     uint64_t unknown_events = 0;
@@ -84,6 +89,7 @@ struct TraceData {
     std::vector<TraceEvent> events;
     TraceQuality quality;
     uint32_t pointer_size = sizeof(void*);
+    uint64_t qpc_frequency = 10000000;
     uint64_t profile_interval_ns = 1000000;
     std::wstring source_path;
 };

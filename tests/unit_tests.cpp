@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -108,6 +109,62 @@ void TestInvalidEtwFile() {
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
 }
+uint64_t ReadExpectedCount(const std::filesystem::path& path,
+                           const std::string& key) {
+    std::ifstream stream(path, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(stream)),
+                           std::istreambuf_iterator<char>());
+    const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
+    std::smatch match;
+    Check(std::regex_search(text, match, pattern), L"golden fixture contains expected count");
+    return match.empty() ? 0 : std::stoull(match[1].str());
+}
+
+void TestGoldenCpuStackReplay() {
+    const std::filesystem::path data_dir(WPERF_TEST_DATA_DIR);
+    const std::filesystem::path fixture = data_dir / L"cpu-stack.etl";
+    const std::filesystem::path expected = data_dir / L"cpu-stack.expected.json";
+    Check(std::filesystem::exists(fixture), L"golden CPU ETL exists");
+    Check(std::filesystem::exists(expected), L"golden CPU expectations exist");
+    if (!std::filesystem::exists(fixture) || !std::filesystem::exists(expected)) {
+        return;
+    }
+
+    wperf::TraceData trace;
+    std::wstring error;
+    Check(wperf::ReadEtwFile(fixture, trace, &error), L"replay golden CPU ETL");
+    Check(error.empty(), L"golden CPU ETL has no replay error");
+    Check(trace.quality.events_total ==
+              ReadExpectedCount(expected, "events_total"),
+          L"golden event count");
+    Check(trace.quality.samples_total ==
+              ReadExpectedCount(expected, "samples_total"),
+          L"golden sample count");
+    Check(trace.quality.stack_events_total ==
+              ReadExpectedCount(expected, "stack_events_total"),
+          L"golden stack event count");
+    Check(trace.quality.stack_exact_total ==
+              ReadExpectedCount(expected, "stack_exact_total"),
+          L"golden exact stack count");
+    Check(trace.quality.stack_approximate_total ==
+              ReadExpectedCount(expected, "stack_approximate_total"),
+          L"golden approximate stack count");
+    Check(trace.quality.stack_key_mismatch ==
+              ReadExpectedCount(expected, "stack_key_mismatch"),
+          L"golden stack key mismatch count");
+    Check(trace.quality.samples_without_stack ==
+              ReadExpectedCount(expected, "samples_without_stack"),
+          L"golden missing stack count");
+    Check(trace.quality.stack_ambiguous ==
+              ReadExpectedCount(expected, "stack_ambiguous"),
+          L"golden ambiguous stack count");
+    Check(trace.quality.lost_events ==
+              ReadExpectedCount(expected, "lost_events"),
+          L"golden lost event count");
+    Check(trace.quality.stack_exact_total > trace.quality.stack_approximate_total,
+          L"golden stacks prefer exact matches");
+}
+
 void TestWorkerIpcFailurePath() {
     const std::wstring correlation_id = wperf::NewId();
     const std::wstring nonce = wperf::NewId();
@@ -183,6 +240,8 @@ int wmain() {
     TestStateRoundTrip();
     TestEtwQuery();
     TestCpuReportSynthetic();
+    TestInvalidEtwFile();
+    TestGoldenCpuStackReplay();
     TestWorkerIpcFailurePath();
     if (g_failures == 0) {
         std::wcout << L"wperf unit tests: PASS\n";

@@ -1,0 +1,15 @@
+{
+  "fixture": "cpu-stack.etl",
+  "sha256": "3002EAC7F486DB7B3261C3BF4E91DD20BF9449B12E7F374CDDD58D42017AF9EC",
+  "events_total": 96800,
+  "samples_total": 17323,
+  "stack_events_total": 17971,
+  "stack_ref_events_total": 0,
+  "stack_def_events_total": 0,
+  "stack_exact_total": 16104,
+  "stack_approximate_total": 44,
+  "stack_key_mismatch": 0,
+  "samples_without_stack": 1175,
+  "stack_ambiguous": 496,
+  "lost_events": 0
+}

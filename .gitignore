@@ -7,3 +7,5 @@ dist/
 *.dmp
 *.log
 artifacts/
+!tests/data/
+!tests/data/*.etl

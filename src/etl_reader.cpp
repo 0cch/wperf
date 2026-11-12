@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <deque>
 #include <unordered_map>
 
 namespace wperf {
@@ -55,14 +54,51 @@ struct StackRecord {
     uint32_t pid = 0;
     uint32_t tid = 0;
     uint32_t cpu = 0;
+    uint64_t timestamp_ns = 0;
+    uint64_t stack_key = 0;
+    bool compressed = false;
+    bool kernel = false;
     std::vector<uint64_t> frames;
+};
+
+struct StackKey {
+    uint64_t tag = 0;
+    uint32_t tid = 0;
+    uint32_t cpu = 0;
+
+    bool operator==(const StackKey& other) const {
+        return tag == other.tag && tid == other.tid && cpu == other.cpu;
+    }
+};
+
+struct StackKeyHash {
+    size_t operator()(const StackKey& key) const noexcept {
+        uint64_t hash = key.tag;
+        hash ^= (static_cast<uint64_t>(key.tid) << 32) | key.cpu;
+        hash ^= hash >> 33;
+        hash *= 0xff51afd7ed558ccdULL;
+        hash ^= hash >> 33;
+        return static_cast<size_t>(hash);
+    }
+};
+
+struct StackGroup {
+    bool has_kernel = false;
+    bool has_user = false;
+    bool ambiguous = false;
+    std::vector<std::vector<uint64_t>> direct_stacks;
+    std::vector<uint64_t> kernel_frames;
+    std::vector<uint64_t> user_frames;
+};
+
+struct ResolvedStack {
+    std::vector<std::vector<uint64_t>> candidates;
+    bool ambiguous = false;
 };
 
 struct StackStore {
     std::vector<StackRecord> records;
-    std::unordered_map<uint64_t, std::deque<size_t>> by_instruction_pointer;
-    std::unordered_map<uint64_t, std::deque<size_t>> by_thread_cpu;
-    std::vector<bool> used;
+    std::unordered_map<uint64_t, std::vector<uint64_t>> definitions;
 };
 uint32_t ReadU32(const BYTE* data, size_t size, size_t offset) {
     if (offset + sizeof(uint32_t) > size) {
@@ -120,8 +156,17 @@ size_t SidLength(const BYTE* data, size_t size, size_t offset) {
     return offset + length <= size ? length : 0;
 }
 
-uint64_t TimestampToNs(const EVENT_RECORD& record) {
-    return static_cast<uint64_t>(record.EventHeader.TimeStamp.QuadPart) * 100ull;
+uint64_t QpcToNs(uint64_t qpc, uint64_t frequency) {
+    if (frequency == 0) {
+        frequency = 10000000;
+    }
+    return (qpc / frequency) * 1000000000ull +
+           ((qpc % frequency) * 1000000000ull) / frequency;
+}
+
+uint64_t TimestampToNs(const EVENT_RECORD& record, const TraceData& trace) {
+    return QpcToNs(static_cast<uint64_t>(record.EventHeader.TimeStamp.QuadPart),
+                   trace.qpc_frequency);
 }
 
 void ParseProcess(const EVENT_RECORD& record, TraceData& trace) {
@@ -135,7 +180,7 @@ void ParseProcess(const EVENT_RECORD& record, TraceData& trace) {
     ProcessRecord process;
     process.pid = ReadU32(data, size, p);
     process.parent_pid = ReadU32(data, size, p + 4);
-    process.start_ns = TimestampToNs(record);
+    process.start_ns = TimestampToNs(record, trace);
 
     const size_t fixed_before_dtb = p + 16;
     const size_t dtb_offset = static_cast<size_t>((fixed_before_dtb + p - 1) / p) * p;
@@ -160,7 +205,7 @@ void ParseThread(const EVENT_RECORD& record, TraceData& trace) {
     ThreadRecord thread;
     thread.pid = ReadU32(data, size, 0);
     thread.tid = ReadU32(data, size, 4);
-    thread.start_ns = TimestampToNs(record);
+    thread.start_ns = TimestampToNs(record, trace);
     trace.threads.push_back(thread);
 }
 
@@ -171,7 +216,7 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
     const uint16_t version = record.EventHeader.EventDescriptor.Version;
 
     ImageRecord image;
-    image.load_ns = TimestampToNs(record);
+    image.load_ns = TimestampToNs(record, trace);
     size_t filename_offset = 0;
     if (version == 0) {
         if (size < p + 4) {
@@ -206,7 +251,7 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
 void AddEvent(const EVENT_RECORD& record, TraceData& trace, TraceEventKind kind,
               uint64_t value1 = 0, uint64_t value2 = 0) {
     TraceEvent event;
-    event.timestamp_ns = TimestampToNs(record);
+    event.timestamp_ns = TimestampToNs(record, trace);
     event.cpu = record.BufferContext.ProcessorNumber;
     event.pid = record.EventHeader.ProcessId;
     event.tid = record.EventHeader.ThreadId;
@@ -248,13 +293,36 @@ void ParseSample(const EVENT_RECORD& record, TraceData& trace) {
     }
 
     SampleRecord sample;
-    sample.timestamp_ns = TimestampToNs(record);
+    sample.timestamp_ns = TimestampToNs(record, trace);
     sample.cpu = record.BufferContext.ProcessorNumber;
     sample.pid = record.EventHeader.ProcessId;
     sample.instruction_pointer = ReadPointer(data, size, 0, p);
     sample.tid = ReadU32(data, size, p);
 
     trace.samples.push_back(std::move(sample));
+}
+
+void AddStackFrames(std::vector<uint64_t>& target, bool& present,
+                    bool& ambiguous, const std::vector<uint64_t>& frames) {
+    if (frames.empty()) {
+        return;
+    }
+    if (!present) {
+        target = frames;
+        present = true;
+    } else if (target != frames) {
+        ambiguous = true;
+    }
+}
+
+void AddDistinctStack(std::vector<std::vector<uint64_t>>& target,
+                      const std::vector<uint64_t>& frames) {
+    if (frames.empty()) {
+        return;
+    }
+    if (std::find(target.begin(), target.end(), frames) == target.end()) {
+        target.push_back(frames);
+    }
 }
 
 void ParseStack(const EVENT_RECORD& record, TraceData& trace, StackStore& stacks) {
@@ -265,6 +333,8 @@ void ParseStack(const EVENT_RECORD& record, TraceData& trace, StackStore& stacks
     }
 
     StackRecord stack;
+    stack.timestamp_ns =
+        QpcToNs(ReadU64(data, size, 0), trace.qpc_frequency);
     stack.pid = ReadU32(data, size, 8);
     stack.tid = ReadU32(data, size, 12);
     stack.cpu = record.BufferContext.ProcessorNumber;
@@ -276,15 +346,104 @@ void ParseStack(const EVENT_RECORD& record, TraceData& trace, StackStore& stacks
             stack.frames.push_back(frame);
         }
     }
-    const size_t index = stacks.records.size();
-    if (!stack.frames.empty()) {
-        stacks.by_instruction_pointer[stack.frames.front()].push_back(index);
-    }
-    const uint64_t thread_key =
-        (static_cast<uint64_t>(stack.tid) << 32) | stack.cpu;
-    stacks.by_thread_cpu[thread_key].push_back(index);
     stacks.records.push_back(std::move(stack));
-    stacks.used.push_back(false);
+}
+
+void ParseStackDefinition(const EVENT_RECORD& record, TraceData& trace,
+                          StackStore& stacks) {
+    const BYTE* data = static_cast<const BYTE*>(record.UserData);
+    const size_t size = record.UserDataLength;
+    const uint32_t p = trace.pointer_size;
+    if (size < p || p == 0) {
+        return;
+    }
+    const uint64_t key = ReadPointer(data, size, 0, p);
+    std::vector<uint64_t> frames;
+    for (size_t offset = p; offset + p <= size; offset += p) {
+        const uint64_t frame = ReadPointer(data, size, offset, p);
+        if (frame != 0) {
+            frames.push_back(frame);
+        }
+    }
+    if (key != 0 && !frames.empty()) {
+        stacks.definitions[key] = std::move(frames);
+    }
+}
+
+void ParseStackReference(const EVENT_RECORD& record, TraceData& trace,
+                         StackStore& stacks, bool kernel) {
+    const BYTE* data = static_cast<const BYTE*>(record.UserData);
+    const size_t size = record.UserDataLength;
+    const uint32_t p = trace.pointer_size;
+    if (size < 16 + p || p == 0) {
+        return;
+    }
+
+    StackRecord stack;
+    stack.timestamp_ns =
+        QpcToNs(ReadU64(data, size, 0), trace.qpc_frequency);
+    stack.pid = ReadU32(data, size, 8);
+    stack.tid = ReadU32(data, size, 12);
+    stack.cpu = record.BufferContext.ProcessorNumber;
+    stack.stack_key = ReadPointer(data, size, 16, p);
+    stack.compressed = true;
+    stack.kernel = kernel;
+    stacks.records.push_back(std::move(stack));
+}
+
+std::unordered_map<StackKey, ResolvedStack, StackKeyHash> ResolveStacks(
+    const StackStore& stacks, TraceQuality& quality) {
+    std::unordered_map<StackKey, StackGroup, StackKeyHash> groups;
+    groups.reserve(stacks.records.size());
+
+    for (const StackRecord& stack : stacks.records) {
+        std::vector<uint64_t> frames = stack.frames;
+        if (stack.compressed) {
+            auto definition = stacks.definitions.find(stack.stack_key);
+            if (definition == stacks.definitions.end()) {
+                ++quality.stack_key_mismatch;
+                continue;
+            }
+            frames = definition->second;
+        }
+        if (frames.empty()) {
+            continue;
+        }
+
+        const StackKey key{stack.timestamp_ns, stack.tid, stack.cpu};
+        StackGroup& group = groups[key];
+        if (stack.compressed) {
+            if (stack.kernel) {
+                AddStackFrames(group.kernel_frames, group.has_kernel,
+                               group.ambiguous, frames);
+            } else {
+                AddStackFrames(group.user_frames, group.has_user,
+                               group.ambiguous, frames);
+            }
+        } else {
+            AddDistinctStack(group.direct_stacks, frames);
+        }
+    }
+
+    std::unordered_map<StackKey, ResolvedStack, StackKeyHash> resolved;
+    resolved.reserve(groups.size());
+    for (auto& [key, group] : groups) {
+        ResolvedStack stack;
+        stack.ambiguous = group.ambiguous;
+        if (group.has_kernel || group.has_user) {
+            std::vector<uint64_t> combined = group.kernel_frames;
+            combined.insert(combined.end(), group.user_frames.begin(),
+                            group.user_frames.end());
+            AddDistinctStack(stack.candidates, combined);
+        }
+        for (const auto& candidate : group.direct_stacks) {
+            AddDistinctStack(stack.candidates, candidate);
+        }
+        if (!stack.candidates.empty()) {
+            resolved.emplace(key, std::move(stack));
+        }
+    }
+    return resolved;
 }
 
 struct ReplayContext {
@@ -315,7 +474,10 @@ void EventRecordCallback(PEVENT_RECORD record) {
     }
     const uint8_t opcode = record->EventHeader.EventDescriptor.Opcode;
     const uint16_t id = record->EventHeader.EventDescriptor.Id;
-
+    const uint32_t event_code = opcode != 0 ? opcode : id;
+    const bool is_stack_event =
+        IsEqualGUID(class_guid, kStackWalkGuid) ||
+        IsEqualGUID(record->EventHeader.ProviderId, kStackWalkGuid);
 
     if (IsEqualGUID(class_guid, kProcessGuid) &&
         (opcode == 1 || opcode == 2 || opcode == 3 || opcode == 4 || opcode == 39)) {
@@ -330,10 +492,16 @@ void EventRecordCallback(PEVENT_RECORD record) {
                (opcode == 46 || id == 46)) {
         ++trace->quality.samples_total;
         ParseSample(*record, *trace);
-    } else if (IsEqualGUID(class_guid, kStackWalkGuid) &&
-               (opcode == 32 || id == 32)) {
+    } else if (is_stack_event && event_code == 32) {
         ++trace->quality.stack_events_total;
         ParseStack(*record, *trace, context->stacks);
+    } else if (is_stack_event && event_code >= 34 && event_code <= 36) {
+        ++trace->quality.stack_def_events_total;
+        ParseStackDefinition(*record, *trace, context->stacks);
+    } else if (is_stack_event && (event_code == 37 || event_code == 38)) {
+        ++trace->quality.stack_ref_events_total;
+        ParseStackReference(*record, *trace, context->stacks,
+                            event_code == 37);
     } else if ((IsEqualGUID(class_guid, kThreadGuid) ||
                 IsEqualGUID(record->EventHeader.ProviderId, kThreadGuid)) &&
                opcode == 36) {
@@ -367,33 +535,10 @@ void EventRecordCallback(PEVENT_RECORD record) {
                opcode == 46) {
         ++trace->quality.samples_total;
         ParseSample(*record, *trace);
-    } else if (IsEqualGUID(record->EventHeader.ProviderId, kSystemTraceGuid) &&
-               opcode == 32) {
-        ++trace->quality.stack_events_total;
-        ParseStack(*record, *trace, context->stacks);
     } else {
         ++trace->quality.unknown_events;
     }
 }
-void StackAwareEventRecordCallback(PEVENT_RECORD record) {
-    if (record == nullptr || record->UserData == nullptr) {
-        return;
-    }
-    auto* context = static_cast<ReplayContext*>(record->UserContext);
-    if (context == nullptr || context->trace == nullptr) {
-        return;
-    }
-
-    const GUID& provider = record->EventHeader.ProviderId;
-    if (IsEqualGUID(provider, kStackWalkGuid) &&
-        record->EventHeader.EventDescriptor.Id == 32) {
-        ++context->trace->quality.stack_events_total;
-        ParseStack(*record, *context->trace, context->stacks);
-        return;
-    }
-    EventRecordCallback(record);
-}
-
 }  // namespace
 
 bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
@@ -406,8 +551,9 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
 
     EVENT_TRACE_LOGFILEW logfile{};
     logfile.LogFileName = const_cast<wchar_t*>(path.c_str());
-    logfile.ProcessTraceMode = PROCESS_TRACE_MODE_EVENT_RECORD;
-    logfile.EventRecordCallback = StackAwareEventRecordCallback;
+    logfile.ProcessTraceMode =
+        PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
+    logfile.EventRecordCallback = EventRecordCallback;
     logfile.Context = &context;
 
     TRACEHANDLE handle = OpenTraceW(&logfile);
@@ -419,6 +565,10 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
     }
 
     trace.quality.lost_events = logfile.LogfileHeader.EventsLost;
+    if (logfile.LogfileHeader.PerfFreq.QuadPart > 0) {
+        trace.qpc_frequency =
+            static_cast<uint64_t>(logfile.LogfileHeader.PerfFreq.QuadPart);
+    }
     if (logfile.LogfileHeader.PointerSize == 32 ||
         logfile.LogfileHeader.PointerSize == 64) {
         trace.pointer_size = logfile.LogfileHeader.PointerSize / 8;
@@ -437,6 +587,29 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
     for (const auto& thread : trace.threads) {
         thread_to_process[thread.tid] = thread.pid;
     }
+
+    struct StackCandidateRef {
+        StackKey key;
+        size_t index = 0;
+    };
+
+    const auto resolved_stacks = ResolveStacks(context.stacks, trace.quality);
+    std::unordered_map<StackKey, std::vector<StackCandidateRef>, StackKeyHash>
+        fallback_by_leaf;
+    fallback_by_leaf.reserve(resolved_stacks.size());
+    for (const auto& [key, stack] : resolved_stacks) {
+        if (stack.ambiguous) {
+            continue;
+        }
+        for (size_t index = 0; index < stack.candidates.size(); ++index) {
+            const auto& candidate = stack.candidates[index];
+            if (!candidate.empty()) {
+                fallback_by_leaf[StackKey{candidate.front(), key.tid, key.cpu}]
+                    .push_back(StackCandidateRef{key, index});
+            }
+        }
+    }
+
     for (auto& sample : trace.samples) {
         if (sample.pid == 0 || sample.pid == UINT32_MAX) {
             auto found = thread_to_process.find(sample.tid);
@@ -445,31 +618,55 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
             }
         }
 
-        size_t stack_index = SIZE_MAX;
-        auto& candidates =
-            context.stacks.by_instruction_pointer[sample.instruction_pointer];
-        for (auto iterator = candidates.begin(); iterator != candidates.end();
-             ++iterator) {
-            const size_t candidate = *iterator;
-            if (context.stacks.used[candidate]) {
-                continue;
+        bool attached = false;
+        const StackKey exact_key{sample.timestamp_ns, sample.tid, sample.cpu};
+        const auto exact = resolved_stacks.find(exact_key);
+        if (exact != resolved_stacks.end()) {
+            if (exact->second.ambiguous) {
+                ++trace.quality.stack_ambiguous;
+            } else {
+                const auto& candidates = exact->second.candidates;
+                size_t matched = SIZE_MAX;
+                size_t match_count = 0;
+                for (size_t index = 0; index < candidates.size(); ++index) {
+                    if (!candidates[index].empty() &&
+                        candidates[index].front() == sample.instruction_pointer) {
+                        matched = index;
+                        ++match_count;
+                    }
+                }
+                if (candidates.size() == 1 || match_count == 1) {
+                    const size_t index =
+                        candidates.size() == 1 ? 0 : matched;
+                    sample.stack = candidates[index];
+                    ++trace.quality.stack_exact_total;
+                    attached = true;
+                } else {
+                    ++trace.quality.stack_ambiguous;
+                }
             }
-            const StackRecord& record = context.stacks.records[candidate];
-            if (record.tid == sample.tid && record.cpu == sample.cpu) {
-                stack_index = candidate;
-                candidates.erase(iterator);
-                break;
-            }
-        }
-        if (stack_index == SIZE_MAX) {
-            sample.stack_missing = true;
-            if (!candidates.empty()) {
+        } else {
+            const StackKey fallback_key{
+                sample.instruction_pointer, sample.tid, sample.cpu};
+            const auto fallback = fallback_by_leaf.find(fallback_key);
+            if (fallback != fallback_by_leaf.end() &&
+                fallback->second.size() == 1) {
+                const StackCandidateRef& reference = fallback->second.front();
+                const auto candidate = resolved_stacks.find(reference.key);
+                if (candidate != resolved_stacks.end() &&
+                    reference.index < candidate->second.candidates.size()) {
+                    sample.stack = candidate->second.candidates[reference.index];
+                    ++trace.quality.stack_approximate_total;
+                    attached = true;
+                }
+            } else if (fallback != fallback_by_leaf.end()) {
                 ++trace.quality.stack_ambiguous;
             }
+        }
+
+        if (!attached) {
+            sample.stack_missing = true;
             ++trace.quality.samples_without_stack;
-        } else {
-            context.stacks.used[stack_index] = true;
-            sample.stack = context.stacks.records[stack_index].frames;
         }
     }
 

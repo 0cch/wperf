@@ -2066,6 +2066,11 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                << L" unknown=" << trace.quality.unknown_events
                << L" samples=" << trace.quality.samples_total
                << L" stack_events=" << trace.quality.stack_events_total
+               << L" stack_refs=" << trace.quality.stack_ref_events_total
+               << L" stack_defs=" << trace.quality.stack_def_events_total
+               << L" stack_exact=" << trace.quality.stack_exact_total
+               << L" stack_approx=" << trace.quality.stack_approximate_total
+               << L" stack_key_mismatch=" << trace.quality.stack_key_mismatch
                << L" samples_without_stack=" << trace.quality.samples_without_stack
                << L" stack_ambiguous=" << trace.quality.stack_ambiguous
                << L" lost=" << trace.quality.lost_events
