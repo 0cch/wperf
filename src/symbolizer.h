@@ -4,6 +4,7 @@
 
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -33,11 +34,19 @@ public:
     void Close();
 
 private:
+    struct ModuleLoad {
+        uint64_t synthetic_base = 0;
+    };
+
     std::wstring NormalizePath(const std::wstring& path) const;
+    std::wstring ModuleKey(const ImageRecord& image,
+                           const std::wstring& normalized_path) const;
+
     std::mutex mutex_;
     bool initialized_ = false;
-    std::unordered_set<std::wstring> loaded_modules_;
-    std::unordered_set<uint64_t> rejected_bases_;
+    std::unordered_map<std::wstring, ModuleLoad> loaded_modules_;
+    std::unordered_set<std::wstring> rejected_modules_;
+    uint64_t next_synthetic_base_ = 0x100000000ull;
 };
 
 }  // namespace wperf

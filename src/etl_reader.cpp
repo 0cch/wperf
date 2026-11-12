@@ -214,6 +214,7 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
     const size_t size = record.UserDataLength;
     const uint32_t p = trace.pointer_size;
     const uint16_t version = record.EventHeader.EventDescriptor.Version;
+    const uint8_t opcode = record.EventHeader.EventDescriptor.Opcode;
 
     ImageRecord image;
     image.load_ns = TimestampToNs(record, trace);
@@ -244,7 +245,31 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
         image.timestamp = ReadU32(data, size, 2 * p + 8);
         filename_offset = 3 * p + 32;
     }
+    if (image.pid == 0 || image.pid == UINT32_MAX) {
+        image.pid = record.EventHeader.ProcessId;
+    }
     image.path = ReadWideString(data, size, filename_offset);
+
+    if (opcode == 2 || opcode == 4) {
+        for (auto iterator = trace.images.rbegin(); iterator != trace.images.rend();
+             ++iterator) {
+            if (iterator->pid == image.pid && iterator->base == image.base &&
+                iterator->unload_ns == 0) {
+                iterator->unload_ns = image.load_ns;
+                break;
+            }
+        }
+        return;
+    }
+
+    for (const ImageRecord& existing : trace.images) {
+        if (existing.pid == image.pid && existing.base == image.base &&
+            existing.unload_ns == 0 && existing.path == image.path &&
+            existing.timestamp == image.timestamp &&
+            existing.checksum == image.checksum) {
+            return;
+        }
+    }
     trace.images.push_back(std::move(image));
 }
 
