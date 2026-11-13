@@ -1,6 +1,7 @@
 #include "etl_reader.h"
 
 #include "common.h"
+#include "trace_events.h"
 
 #include <evntcons.h>
 
@@ -100,6 +101,13 @@ struct StackStore {
     std::vector<StackRecord> records;
     std::unordered_map<uint64_t, std::vector<uint64_t>> definitions;
 };
+uint8_t ReadU8(const BYTE* data, size_t size, size_t offset) {
+    if (data == nullptr || offset >= size) {
+        return 0;
+    }
+    return data[offset];
+}
+
 uint32_t ReadU32(const BYTE* data, size_t size, size_t offset) {
     if (offset + sizeof(uint32_t) > size) {
         return 0;
@@ -312,8 +320,9 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
     trace.images.push_back(std::move(image));
 }
 
-void AddEvent(const EVENT_RECORD& record, TraceData& trace, TraceEventKind kind,
-              uint64_t value1 = 0, uint64_t value2 = 0) {
+TraceEvent& AddEvent(const EVENT_RECORD& record, TraceData& trace,
+                     TraceEventKind kind, uint64_t value1 = 0,
+                     uint64_t value2 = 0) {
     TraceEvent event;
     event.timestamp_ns = TimestampToNs(record, trace);
     event.cpu = record.BufferContext.ProcessorNumber;
@@ -324,6 +333,7 @@ void AddEvent(const EVENT_RECORD& record, TraceData& trace, TraceEventKind kind,
     event.value2 = value2;
     event.event_id = record.EventHeader.EventDescriptor.Opcode;
     trace.events.push_back(event);
+    return trace.events.back();
 }
 
 void ParseThreadEvent(const EVENT_RECORD& record, TraceData& trace,
@@ -336,7 +346,28 @@ void ParseThreadEvent(const EVENT_RECORD& record, TraceData& trace,
         value1 = ReadU32(data, size, 0);
         value2 = ReadU32(data, size, 4);
     }
-    AddEvent(record, trace, kind, value1, value2);
+    TraceEvent& event = AddEvent(record, trace, kind, value1, value2);
+    if (kind == TraceEventKind::ContextSwitch) {
+        const uint32_t old_tid = static_cast<uint32_t>(value2);
+        const uint32_t new_tid =
+            record.EventHeader.ThreadId != 0 &&
+                    record.EventHeader.ThreadId != UINT32_MAX
+                ? record.EventHeader.ThreadId
+                : static_cast<uint32_t>(value1);
+        event.tid = new_tid;
+        event.related_tid = old_tid;
+        event.value1 = old_tid;
+        event.value2 = new_tid;
+        if (size >= 16) {
+            event.wait_reason = ReadU8(data, size, 12);
+            event.previous_state = ReadU8(data, size, 14);
+        }
+    } else if (kind == TraceEventKind::ReadyThread) {
+        const uint32_t awakened_tid = static_cast<uint32_t>(value1);
+        event.related_tid = awakened_tid;
+        event.value2 = ReadU8(data, size, 6);
+        event.flags = static_cast<uint32_t>(event.value2);
+    }
 }
 
 void ParsePageFault(const EVENT_RECORD& record, TraceData& trace) {
@@ -348,6 +379,63 @@ void ParsePageFault(const EVENT_RECORD& record, TraceData& trace) {
     AddEvent(record, trace, TraceEventKind::PageFault, virtual_address,
              program_counter);
 }
+void ParseSyscallExit(const EVENT_RECORD& record, TraceData& trace) {
+    const BYTE* data = static_cast<const BYTE*>(record.UserData);
+    const size_t size = record.UserDataLength;
+    TraceEvent& event = AddEvent(record, trace, TraceEventKind::SyscallExit);
+    if (size >= sizeof(uint32_t)) {
+        event.status = static_cast<int32_t>(ReadU32(data, size, 0));
+        event.value2 = static_cast<uint32_t>(event.status);
+        event.has_status = true;
+    }
+}
+
+void ParseDiskIo(const EVENT_RECORD& record, TraceData& trace) {
+    const BYTE* data = static_cast<const BYTE*>(record.UserData);
+    const size_t size = record.UserDataLength;
+    const uint32_t p = trace.pointer_size;
+    TraceEvent& event = AddEvent(record, trace, TraceEventKind::DiskIo);
+    event.size = ReadU32(data, size, 8);
+    event.offset = ReadU64(data, size, 16);
+    const size_t irp_offset = p == 8 ? 32 : 28;
+    event.correlation_id = ReadPointer(data, size, irp_offset, p);
+    const uint32_t code = record.EventHeader.EventDescriptor.Opcode;
+    event.is_completion = code == 10 || code == 11 || code == 14;
+    if (event.is_completion) {
+        const size_t duration_offset = p == 8 ? 40 : 32;
+        const uint64_t ticks = ReadU64(data, size, duration_offset);
+        event.duration_ns = QpcToNs(ticks, trace.qpc_frequency);
+        event.has_duration = ticks != 0;
+    }
+}
+
+void ParseFileIo(const EVENT_RECORD& record, TraceData& trace) {
+    const BYTE* data = static_cast<const BYTE*>(record.UserData);
+    const size_t size = record.UserDataLength;
+    const uint32_t p = trace.pointer_size;
+    const uint32_t code = record.EventHeader.EventDescriptor.Opcode;
+    TraceEvent& event = AddEvent(record, trace, TraceEventKind::FileIo);
+    if (code == 67 || code == 68) {
+        event.offset = ReadU64(data, size, 0);
+        event.correlation_id = ReadPointer(data, size, 8, p);
+        const uint16_t version = record.EventHeader.EventDescriptor.Version;
+        const size_t size_offset =
+            version <= 2 ? (p == 8 ? 40 : 24) : (p == 8 ? 36 : 24);
+        event.size = ReadU32(data, size, size_offset);
+    } else if (code == 76) {
+        event.is_completion = true;
+        event.correlation_id = ReadPointer(data, size, 0, p);
+        const size_t status_offset = p == 8 ? 16 : 8;
+        if (size >= status_offset + sizeof(uint32_t)) {
+            event.status = static_cast<int32_t>(ReadU32(data, size, status_offset));
+            event.has_status = true;
+            event.value2 = static_cast<uint32_t>(event.status);
+        }
+    } else if (size >= p) {
+        event.correlation_id = ReadPointer(data, size, 0, p);
+    }
+}
+
 void ParseSample(const EVENT_RECORD& record, TraceData& trace) {
     const BYTE* data = static_cast<const BYTE*>(record.UserData);
     const size_t size = record.UserDataLength;
@@ -588,13 +676,13 @@ void EventRecordCallback(PEVENT_RECORD record) {
     } else if ((IsEqualGUID(class_guid, kPerfInfoGuid) ||
                 IsEqualGUID(record->EventHeader.ProviderId, kPerfInfoGuid)) &&
                opcode == 52) {
-        AddEvent(*record, *trace, TraceEventKind::SyscallExit);
+        ParseSyscallExit(*record, *trace);
     } else if (IsEqualGUID(class_guid, kDiskIoGuid) ||
                IsEqualGUID(record->EventHeader.ProviderId, kDiskIoGuid)) {
-        AddEvent(*record, *trace, TraceEventKind::DiskIo);
+        ParseDiskIo(*record, *trace);
     } else if (IsEqualGUID(class_guid, kFileIoGuid) ||
                IsEqualGUID(record->EventHeader.ProviderId, kFileIoGuid)) {
-        AddEvent(*record, *trace, TraceEventKind::FileIo);
+        ParseFileIo(*record, *trace);
     } else if (IsEqualGUID(record->EventHeader.ProviderId, kSystemTraceGuid) &&
                opcode == 46) {
         ++trace->quality.samples_total;
@@ -757,6 +845,7 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
         }
     }
 
+    EnrichTraceEvents(trace);
     return true;
 }
 

@@ -59,10 +59,23 @@ struct TraceEvent {
     uint32_t cpu = 0;
     uint32_t pid = 0;
     uint32_t tid = 0;
+    uint32_t related_pid = 0;
+    uint32_t related_tid = 0;
     TraceEventKind kind = TraceEventKind::Unknown;
     uint64_t value1 = 0;
     uint64_t value2 = 0;
+    uint64_t correlation_id = 0;
+    uint64_t offset = 0;
+    uint64_t size = 0;
+    uint64_t duration_ns = 0;
+    int32_t status = 0;
+    uint32_t wait_reason = 0;
+    uint32_t previous_state = 0;
+    uint32_t flags = 0;
     uint32_t event_id = 0;
+    bool has_status = false;
+    bool has_duration = false;
+    bool is_completion = false;
 };
 
 struct TraceQuality {
@@ -75,6 +88,10 @@ struct TraceQuality {
     uint64_t stack_approximate_total = 0;
     uint64_t stack_key_mismatch = 0;
     uint64_t ring_dropped = 0;
+    uint64_t sched_unknown_pid = 0;
+    uint64_t io_init_events = 0;
+    uint64_t io_complete_events = 0;
+    uint64_t io_orphaned = 0;
     uint64_t samples_without_stack = 0;
     uint64_t stack_ambiguous = 0;
     uint64_t unknown_events = 0;

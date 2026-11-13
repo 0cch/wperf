@@ -6,6 +6,7 @@
 #include "etw.h"
 #include "ipc.h"
 #include "state.h"
+#include "trace_events.h"
 
 #include <filesystem>
 #include <fstream>
@@ -159,7 +160,78 @@ void TestTruncatedEtwFiles() {
     }
 }
 
+void TestTraceEventCorrelation() {
+    wperf::TraceData trace;
+    trace.threads.push_back(wperf::ThreadRecord{100, 10, 0, 0});
+    trace.threads.push_back(wperf::ThreadRecord{200, 20, 0, 0});
+
+    wperf::TraceEvent ready;
+    ready.timestamp_ns = 1000;
+    ready.kind = wperf::TraceEventKind::ReadyThread;
+    ready.related_tid = 10;
+    trace.events.push_back(ready);
+
+    wperf::TraceEvent context_switch;
+    context_switch.timestamp_ns = 1500;
+    context_switch.kind = wperf::TraceEventKind::ContextSwitch;
+    context_switch.tid = 10;
+    context_switch.related_tid = 20;
+    context_switch.value2 = 10;
+    context_switch.wait_reason = 6;
+    context_switch.previous_state = 5;
+    trace.events.push_back(context_switch);
+
+    wperf::TraceEvent syscall_enter;
+    syscall_enter.timestamp_ns = 2000;
+    syscall_enter.kind = wperf::TraceEventKind::SyscallEnter;
+    syscall_enter.tid = 10;
+    trace.events.push_back(syscall_enter);
+
+    wperf::TraceEvent syscall_exit;
+    syscall_exit.timestamp_ns = 2500;
+    syscall_exit.kind = wperf::TraceEventKind::SyscallExit;
+    syscall_exit.tid = 10;
+    syscall_exit.status = -1073741823;
+    syscall_exit.has_status = true;
+    trace.events.push_back(syscall_exit);
+
+    wperf::TraceEvent io_start;
+    io_start.timestamp_ns = 3000;
+    io_start.kind = wperf::TraceEventKind::FileIo;
+    io_start.event_id = 67;
+    io_start.correlation_id = 0x1234;
+    io_start.size = 4096;
+    trace.events.push_back(io_start);
+
+    wperf::TraceEvent io_end;
+    io_end.timestamp_ns = 3500;
+    io_end.kind = wperf::TraceEventKind::FileIo;
+    io_end.event_id = 76;
+    io_end.correlation_id = 0x1234;
+    io_end.is_completion = true;
+    trace.events.push_back(io_end);
+
+    wperf::EnrichTraceEvents(trace);
+    Check(trace.events[0].related_pid == 100,
+          L"ready thread resolves awakened process");
+    Check(trace.events[1].pid == 100 && trace.events[1].related_pid == 200,
+          L"context switch resolves both processes");
+    Check(trace.events[1].has_duration && trace.events[1].duration_ns == 500,
+          L"context switch records wakeup latency");
+    Check(trace.events[3].has_duration && trace.events[3].duration_ns == 500,
+          L"syscall exit records duration");
+    Check(trace.events[5].has_duration && trace.events[5].duration_ns == 500,
+          L"file IO completion records duration");
+    Check(trace.events[5].size == 4096,
+          L"file IO completion inherits request size");
+    Check(std::wstring(wperf::TraceWaitReasonName(6)) == L"UserRequest",
+          L"wait reason name mapping");
+    Check(std::wstring(wperf::TraceThreadStateName(5)) == L"Wait",
+          L"thread state name mapping");
+}
+
 void TestThreadAndProcessIntervals() {
+
     wperf::TraceData trace;
     trace.threads.push_back(wperf::ThreadRecord{100, 7, 100, 200});
     trace.threads.push_back(wperf::ThreadRecord{200, 7, 300, 0});
@@ -342,7 +414,124 @@ void TestLiveWorkerControlPlane() {
     worker.Close();
 }
 
+void TestGoldenR3Replay() {
+    const std::filesystem::path data_dir(WPERF_TEST_DATA_DIR);
+
+    wperf::TraceData sched;
+    std::wstring error;
+    const auto sched_path = data_dir / L"sched.etl";
+    const auto sched_expected = data_dir / L"sched.expected.json";
+    Check(wperf::ReadEtwFile(sched_path, sched, &error),
+          L"replay golden scheduler ETL");
+    const uint64_t context_switches = static_cast<uint64_t>(std::count_if(
+        sched.events.begin(), sched.events.end(), [](const wperf::TraceEvent& event) {
+            return event.kind == wperf::TraceEventKind::ContextSwitch;
+        }));
+    const uint64_t ready_threads = static_cast<uint64_t>(std::count_if(
+        sched.events.begin(), sched.events.end(), [](const wperf::TraceEvent& event) {
+            return event.kind == wperf::TraceEventKind::ReadyThread;
+        }));
+    const uint64_t wakeup_latencies = static_cast<uint64_t>(std::count_if(
+        sched.events.begin(), sched.events.end(), [](const wperf::TraceEvent& event) {
+            return event.kind == wperf::TraceEventKind::ContextSwitch &&
+                   event.has_duration;
+        }));
+    Check(sched.quality.events_total ==
+              ReadExpectedCount(sched_expected, "events_total"),
+          L"golden scheduler event count");
+    Check(sched.quality.samples_total ==
+              ReadExpectedCount(sched_expected, "samples_total"),
+          L"golden scheduler sample count");
+    Check(context_switches ==
+              ReadExpectedCount(sched_expected, "context_switches"),
+          L"golden context switch count");
+    Check(ready_threads == ReadExpectedCount(sched_expected, "ready_threads"),
+          L"golden ready thread count");
+    Check(wakeup_latencies ==
+              ReadExpectedCount(sched_expected, "wakeup_latencies"),
+          L"golden wakeup latency count");
+    Check(sched.quality.sched_unknown_pid ==
+              ReadExpectedCount(sched_expected, "sched_unknown_pid"),
+          L"golden scheduler unknown PID count");
+
+    wperf::TraceData syscall;
+    const auto syscall_path = data_dir / L"syscall.etl";
+    const auto syscall_expected = data_dir / L"syscall.expected.json";
+    Check(wperf::ReadEtwFile(syscall_path, syscall, &error),
+          L"replay golden syscall ETL");
+    const uint64_t enters = static_cast<uint64_t>(std::count_if(
+        syscall.events.begin(), syscall.events.end(), [](const wperf::TraceEvent& event) {
+            return event.kind == wperf::TraceEventKind::SyscallEnter;
+        }));
+    const uint64_t exits = static_cast<uint64_t>(std::count_if(
+        syscall.events.begin(), syscall.events.end(), [](const wperf::TraceEvent& event) {
+            return event.kind == wperf::TraceEventKind::SyscallExit;
+        }));
+    const uint64_t durations = static_cast<uint64_t>(std::count_if(
+        syscall.events.begin(), syscall.events.end(), [](const wperf::TraceEvent& event) {
+            return (event.kind == wperf::TraceEventKind::SyscallEnter ||
+                    event.kind == wperf::TraceEventKind::SyscallExit) &&
+                   event.has_duration;
+        }));
+    Check(syscall.quality.events_total ==
+              ReadExpectedCount(syscall_expected, "events_total"),
+          L"golden syscall event count");
+    Check(enters == ReadExpectedCount(syscall_expected, "syscall_enter"),
+          L"golden syscall enter count");
+    Check(exits == ReadExpectedCount(syscall_expected, "syscall_exit"),
+          L"golden syscall exit count");
+    Check(durations == ReadExpectedCount(syscall_expected, "syscall_durations"),
+          L"golden syscall duration count");
+
+    wperf::TraceData io;
+    const auto io_path = data_dir / L"io.etl";
+    const auto io_expected = data_dir / L"io.expected.json";
+    Check(wperf::ReadEtwFile(io_path, io, &error), L"replay golden IO ETL");
+    uint64_t file_io = 0;
+    uint64_t disk_io = 0;
+    uint64_t file_completions = 0;
+    uint64_t disk_completions = 0;
+    uint64_t file_durations = 0;
+    uint64_t disk_durations = 0;
+    for (const wperf::TraceEvent& event : io.events) {
+        if (event.kind == wperf::TraceEventKind::FileIo) {
+            ++file_io;
+            file_completions += event.is_completion ? 1 : 0;
+            file_durations += event.has_duration ? 1 : 0;
+        } else if (event.kind == wperf::TraceEventKind::DiskIo) {
+            ++disk_io;
+            disk_completions += event.is_completion ? 1 : 0;
+            disk_durations += event.has_duration ? 1 : 0;
+        }
+    }
+    Check(io.quality.events_total == ReadExpectedCount(io_expected, "events_total"),
+          L"golden IO event count");
+    Check(file_io == ReadExpectedCount(io_expected, "file_io"),
+          L"golden file IO count");
+    Check(disk_io == ReadExpectedCount(io_expected, "disk_io"),
+          L"golden disk IO count");
+    Check(file_completions ==
+              ReadExpectedCount(io_expected, "file_completions"),
+          L"golden file IO completion count");
+    Check(disk_completions ==
+              ReadExpectedCount(io_expected, "disk_completions"),
+          L"golden disk IO completion count");
+    Check(file_durations == ReadExpectedCount(io_expected, "file_durations"),
+          L"golden file IO duration count");
+    Check(disk_durations == ReadExpectedCount(io_expected, "disk_durations"),
+          L"golden disk IO duration count");
+    Check(io.quality.io_init_events == ReadExpectedCount(io_expected, "io_init"),
+          L"golden IO init count");
+    Check(io.quality.io_complete_events ==
+              ReadExpectedCount(io_expected, "io_complete"),
+          L"golden IO completion count");
+    Check(io.quality.io_orphaned ==
+              ReadExpectedCount(io_expected, "io_orphaned"),
+          L"golden IO orphan count");
+}
+
 void TestWorkerIpcFailurePath() {
+
     const std::wstring correlation_id = wperf::NewId();
     const std::wstring nonce = wperf::NewId();
     const std::wstring session_name = L"wperf-test-" + correlation_id;
@@ -420,9 +609,11 @@ int wmain() {
     TestInvalidEtwFile();
     TestTruncatedEtwFiles();
     TestThreadAndProcessIntervals();
+    TestTraceEventCorrelation();
     TestSymbolizerPdbIdentity();
     TestLiveTraceFlags();
     TestLiveWorkerControlPlane();
+    TestGoldenR3Replay();
     TestGoldenCpuStackReplay();
     TestWorkerIpcFailurePath();
     if (g_failures == 0) {

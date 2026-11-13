@@ -1,9 +1,15 @@
 # Replay fixtures
 
-`cpu-stack.etl` is a 4-second native x64 profile trace compressed with
-`xperf -merge -mergeonly -compress`. It contains CPU samples and stack events
-and can be replayed without administrator rights.
+These native x64 traces are compressed with
+`xperf -merge -mergeonly -compress` and can be replayed without administrator
+rights. Counts are asserted by `wperf_unit_tests`; symbol names are not
+asserted because PDB availability and published symbols vary by machine.
 
-Replay expectations are stored in `cpu-stack.expected.json`. The fixture was
-captured on Windows build 26200; event counts are stable, while symbol names
-are intentionally not asserted because PDB availability varies by machine.
+- `cpu-stack.etl`: CPU samples and StackWalk correlation.
+- `sched.etl`: CSwitch, ReadyThread, wait reason/state and wakeup latency.
+- `syscall.etl`: SysCallEnter/SysCallExit. The Windows kernel provider omits
+  usable PID/TID in this capture, so syscall durations are intentionally not
+  fabricated.
+- `io.etl`: FileIo and DiskIo init/completion correlation, status and duration.
+
+Each fixture has a matching `*.expected.json` file.

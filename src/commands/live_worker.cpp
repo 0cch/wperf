@@ -6,6 +6,7 @@
 #include "ipc.h"
 #include "live_top.h"
 #include "symbolizer.h"
+#include "trace_events.h"
 #include "trace_model.h"
 
 #include <algorithm>
@@ -232,10 +233,11 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
             for (const auto& event : trace.events) {
                 uint32_t display_pid = event.pid;
                 uint32_t display_tid = event.tid;
-                if ((display_pid == 0 || display_pid == UINT32_MAX) &&
-                    (event.kind == TraceEventKind::ContextSwitch ||
-                     event.kind == TraceEventKind::ReadyThread)) {
-                    display_tid = static_cast<uint32_t>(event.value1);
+                if (event.kind == TraceEventKind::ReadyThread) {
+                    display_tid = event.related_tid;
+                    if (display_pid == 0 || display_pid == UINT32_MAX) {
+                        display_pid = event.related_pid;
+                    }
                 }
                 if (display_pid == 0 || display_pid == UINT32_MAX) {
                     if (const auto* thread =
@@ -273,6 +275,18 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                             L",\"event\":\"" + TraceEventKindName(event.kind) +
                             L"\",\"value1\":" + std::to_wstring(event.value1) +
                             L",\"value2\":" + std::to_wstring(event.value2) +
+                            L",\"related_tid\":" + std::to_wstring(event.related_tid) +
+                            L",\"related_pid\":" + std::to_wstring(event.related_pid) +
+                            L",\"status\":" + std::to_wstring(event.status) +
+                            L",\"has_status\":" + (event.has_status ? L"true" : L"false") +
+                            L",\"duration_ns\":" + std::to_wstring(event.duration_ns) +
+                            L",\"has_duration\":" + (event.has_duration ? L"true" : L"false") +
+                            L",\"wait_reason\":" + std::to_wstring(event.wait_reason) +
+                            L",\"previous_state\":" + std::to_wstring(event.previous_state) +
+                            L",\"flags\":" + std::to_wstring(event.flags) +
+                            L",\"size\":" + std::to_wstring(event.size) +
+                            L",\"offset\":" + std::to_wstring(event.offset) +
+                            L",\"correlation_id\":" + std::to_wstring(event.correlation_id) +
                             L",\"comm\":\"" + comm + L"\"}";
                 } else {
                     line = std::to_wstring(relative) + L" " +
@@ -281,7 +295,10 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                            std::to_wstring(display_tid) + L" " +
                            TraceEventKindName(event.kind) + L" " +
                            std::to_wstring(event.value1) + L" " +
-                           std::to_wstring(event.value2) + L" " + comm;
+                           std::to_wstring(event.value2) + L" " +
+                           std::to_wstring(event.related_tid) + L" " +
+                           std::to_wstring(event.related_pid) + L" " +
+                           std::to_wstring(event.duration_ns / 1000) + L"us " + comm;
                 }
                 if (!pipe.SendLine(L"OUT " + line, &error)) {
                     result = 5;
