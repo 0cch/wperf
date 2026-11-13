@@ -1,17 +1,23 @@
 #include "live_top.h"
 
 #include "common.h"
+#include "etw_decode.h"
 #include "lbr.h"
 #include "trace_events.h"
 
 #include <algorithm>
 #include <cstring>
+#include <cerrno>
+#include <iterator>
+#include <utility>
 #include <evntcons.h>
 
 namespace wperf {
 namespace {
 
 
+const GUID kProcessGuid = {0x3d6fa8d0, 0xfe05, 0x11d0,
+    {0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c}};
 const GUID kThreadGuid = {0x3d6fa8d1, 0xfe05, 0x11d0,
                           {0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c}};
 const GUID kImageGuid = {0x2cb15d1d, 0x5fc1, 0x11d2,
@@ -117,6 +123,16 @@ bool LiveTopCapture::Start(std::wstring session_name,
         return false;
     }
 
+    if (worker_.joinable()) Stop();
+    {
+        std::lock_guard lock(mutex_);
+        samples_.clear(); events_.clear(); images_.clear(); threads_.clear();
+        thread_to_process_.clear(); sample_metadata_ = {};
+        events_total_ = unknown_events_ = ring_dropped_ = decode_errors_ = metadata_dropped_ = 0;
+        lost_events_ = lost_buffers_ = lbr_events_ = lbr_branches_ = 0;
+        last_error_.clear();
+    }
+    correlation_.Reset();
     LARGE_INTEGER frequency{};
     if (QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0) {
         qpc_frequency_ = static_cast<uint64_t>(frequency.QuadPart);
@@ -139,16 +155,24 @@ bool LiveTopCapture::Start(std::wstring session_name,
     options.flush_timer_seconds = 0;
     if (!profile_source.empty() && profile_source != L"cpu") {
         wchar_t* end = nullptr;
+        errno = 0;
         const unsigned long source =
             wcstoul(profile_source.c_str(), &end, 10);
-        if (end == nullptr || *end != L'\0') {
-            if (error != nullptr) {
-                *error = L"top event must be cpu or a numeric profile source";
-            }
-            return false;
-        }
         options.pmc_profile = true;
-        options.pmc_source = static_cast<uint32_t>(source);
+        if (errno != ERANGE && end != profile_source.c_str() && *end == L'\0' &&
+            profile_source.front() >= L'0' && profile_source.front() <= L'9') {
+            options.pmc_source = static_cast<uint32_t>(source);
+        } else {
+            const auto sources = QueryProfileSources(error);
+            const auto found = std::find_if(sources.begin(), sources.end(), [&](const auto& entry) {
+                return _wcsicmp(entry.description.c_str(), profile_source.c_str()) == 0;
+            });
+            if (found == sources.end()) {
+                if (error) *error = L"requested top PMC source was not found";
+                return false;
+            }
+            options.pmc_source = found->source;
+        }
     }
     if (!session_.Start(options, error)) {
         return false;
@@ -172,43 +196,56 @@ bool LiveTopCapture::Start(std::wstring session_name,
         return false;
     }
 
-    pointer_size_ = logfile.LogfileHeader.PointerSize == 32 ? 4 : 8;
+    pointer_size_ = logfile.LogfileHeader.PointerSize == 4 ||
+                            logfile.LogfileHeader.PointerSize == 32 ? 4 : 8;
     if (logfile.LogfileHeader.PerfFreq.QuadPart > 0) {
         qpc_frequency_ = static_cast<uint64_t>(logfile.LogfileHeader.PerfFreq.QuadPart);
     }
     lost_events_ = logfile.LogfileHeader.EventsLost;
+    sample_metadata_.pointer_size = pointer_size_;
+    sample_metadata_.qpc_frequency = qpc_frequency_;
+    profile_source_id_ = options.pmc_profile ? options.pmc_source : 0;
+    sample_metadata_.profile_intervals[profile_source_id_] = session_.RestoreInfo().configured_interval;
+    if (!options.pmc_profile) sample_metadata_.profile_interval_ns =
+        uint64_t{session_.RestoreInfo().configured_interval} * 100;
     events_total_ = 0;
     stopping_.store(false);
     running_.store(true);
     worker_ = std::thread([this]() {
-        TRACEHANDLE handle = trace_handle_;
+        TRACEHANDLE handle = trace_handle_.load();
         const ULONG result = ProcessTrace(&handle, 1, nullptr, nullptr);
-        CloseTrace(handle);
-        trace_handle_ = INVALID_PROCESSTRACE_HANDLE;
-        running_.store(false);
-        if (result != ERROR_SUCCESS && !stopping_.load()) {
+        const TRACEHANDLE owned = trace_handle_.exchange(INVALID_PROCESSTRACE_HANDLE);
+        if (owned != INVALID_PROCESSTRACE_HANDLE) CloseTrace(owned);
+        if (!stopping_.load()) {
             std::lock_guard lock(mutex_);
-            last_error_ = L"ProcessTrace failed: " + FormatWindowsError(result);
+            last_error_ = result == ERROR_SUCCESS ? L"live ETW consumer stopped unexpectedly"
+                : L"ProcessTrace failed: " + FormatWindowsError(result);
         }
+        running_.store(false);
     });
     return true;
 }
 
-void LiveTopCapture::Stop() {
+bool LiveTopCapture::Stop() {
     if (stopping_.exchange(true)) {
-        return;
+        return !session_.IsActive();
     }
     std::wstring stop_error;
     session_.Stop(&stop_error);
-    if (worker_.joinable()) {
-        worker_.join();
-    }
+    // CloseTrace also cancels ProcessTrace if stopping the session failed.
+    const TRACEHANDLE consumer = trace_handle_.exchange(INVALID_PROCESSTRACE_HANDLE);
+    if (consumer != INVALID_PROCESSTRACE_HANDLE) CloseTrace(consumer);
+    if (worker_.joinable()) worker_.join();
     running_.store(false);
     if (!stop_error.empty()) {
         std::lock_guard lock(mutex_);
         last_error_ = stop_error;
     }
+    return stop_error.empty();
 }
+
+ProfileRestoreInfo LiveTopCapture::RestoreInfo() const { return session_.RestoreInfo(); }
+uint32_t LiveTopCapture::ProfileSourceId() const { return profile_source_id_; }
 
 bool LiveTopCapture::Running() const {
     return running_.load();
@@ -220,34 +257,60 @@ std::wstring LiveTopCapture::LastError() const {
 }
 
 TraceData LiveTopCapture::Snapshot() {
+    std::lock_guard snapshot_lock(snapshot_mutex_);
     TraceData trace;
-    std::lock_guard lock(mutex_);
-    trace.pointer_size = pointer_size_;
-    trace.qpc_frequency = qpc_frequency_;
-    trace.profile_interval_ns = 1000000;
-    trace.images = images_;
-    trace.threads = threads_;
-    trace.quality.events_total = events_total_;
-    trace.quality.unknown_events = unknown_events_;
-    trace.quality.lost_events = lost_events_;
-    trace.quality.ring_dropped = ring_dropped_;
-    trace.quality.samples_total = samples_.size();
-    trace.samples.assign(samples_.begin(), samples_.end());
-    trace.events.assign(events_.begin(), events_.end());
-    EnrichTraceEvents(trace);
-    for (SampleRecord& sample : trace.samples) {
-        if (sample.pid == 0 || sample.pid == UINT32_MAX) {
-            const auto found = thread_to_process_.find(sample.tid);
-            if (found != thread_to_process_.end()) {
-                sample.pid = found->second;
-            }
-        }
+    std::deque<SampleRecord> samples;
+    std::deque<TraceEvent> events;
+    TraceQuality session_quality;
+    const bool quality_available = session_.QueryQuality(session_quality, nullptr);
+    {
+        std::lock_guard lock(mutex_);
+        trace.pointer_size = pointer_size_;
+        trace.qpc_frequency = qpc_frequency_;
+        trace.profile_interval_ns = sample_metadata_.profile_interval_ns;
+        trace.profile_intervals = sample_metadata_.profile_intervals;
+        trace.images = images_;
+        trace.threads = threads_;
+        samples.swap(samples_);
+        events.swap(events_);
+        trace.quality.events_total = std::exchange(events_total_, 0);
+        trace.quality.unknown_events = std::exchange(unknown_events_, 0);
+        trace.quality.ring_dropped = std::exchange(ring_dropped_, 0);
+        trace.quality.decode_errors = std::exchange(decode_errors_, 0);
+        trace.quality.incomplete = !quality_available;
+        trace.quality.metadata_dropped = std::exchange(metadata_dropped_, 0);
+        trace.quality.lbr_events = std::exchange(lbr_events_, 0);
+        trace.quality.lbr_branches = std::exchange(lbr_branches_, 0);
+        trace.quality.lost_events = session_quality.lost_events >= lost_events_
+            ? session_quality.lost_events - lost_events_ : 0;
+        trace.quality.lost_buffers = session_quality.lost_buffers >= lost_buffers_
+            ? session_quality.lost_buffers - lost_buffers_ : 0;
+        lost_events_ = session_quality.lost_events;
+        lost_buffers_ = session_quality.lost_buffers;
+        const uint64_t now = !events.empty() ? events.back().timestamp_ns :
+                             !samples.empty() ? samples.back().timestamp_ns : 0;
+        // Keep recently retired records for delayed events, not the entire session.
+        constexpr uint64_t retention_ns = 10000000000ull;
+        std::erase_if(threads_, [&](const auto& thread) {
+            return thread.end_ns != 0 && now > thread.end_ns && now - thread.end_ns > retention_ns;
+        });
+        std::erase_if(images_, [&](const auto& image) {
+            return image.unload_ns != 0 && now > image.unload_ns && now - image.unload_ns > retention_ns;
+        });
     }
-    samples_.clear();
-    events_.clear();
-    events_total_ = 0;
-    unknown_events_ = 0;
-    ring_dropped_ = 0;
+    trace.samples.assign(std::make_move_iterator(samples.begin()), std::make_move_iterator(samples.end()));
+    trace.events.assign(std::make_move_iterator(events.begin()), std::make_move_iterator(events.end()));
+    trace.quality.samples_total = trace.samples.size();
+    for (auto& sample : trace.samples) {
+        if (sample.pid == 0 || sample.pid == UINT32_MAX) {
+            if (const auto* thread = FindThread(trace, sample.tid, sample.timestamp_ns)) sample.pid = thread->pid;
+        }
+        if (sample.kind == SampleKind::Pmc) ++trace.quality.pmc_samples;
+    }
+    if (trace.quality.ring_dropped || trace.quality.lost_events || trace.quality.lost_buffers ||
+        trace.quality.metadata_dropped)
+        correlation_.Reset();
+    correlation_.Enrich(trace);
     return trace;
 }
 
@@ -286,7 +349,9 @@ void LiveTopCapture::OnEvent(PEVENT_RECORD record) {
         IsEqualGUID(record->EventHeader.ProviderId, kPerfInfoGuid) ||
         IsEqualGUID(record->EventHeader.ProviderId, kSystemTraceGuid);
 
-    if ((IsEqualGUID(class_guid, kLbrGuid) ||
+    if (IsEqualGUID(class_guid, kProcessGuid)) {
+        ParseProcessExit(record);
+    } else if ((IsEqualGUID(class_guid, kLbrGuid) ||
          IsEqualGUID(record->EventHeader.ProviderId, kLbrGuid)) &&
         event_code == 32) {
         ParseLbr(record);
@@ -302,8 +367,10 @@ void LiveTopCapture::OnEvent(PEVENT_RECORD record) {
         } else {
             ++unknown_events_;
         }
-    } else if (perf_event && event_code == 46) {
+    } else if (perf_event && (event_code == 46 || event_code == 47)) {
         ParseSample(record);
+    } else if (perf_event && event_code >= 72 && event_code <= 74) {
+        if (!DecodeProfileInterval(*record, sample_metadata_)) ++decode_errors_;
     } else if (perf_event && event_code == 51) {
         const uint64_t address = ReadPointer(
             static_cast<const BYTE*>(record->UserData), record->UserDataLength, 0,
@@ -359,12 +426,23 @@ void LiveTopCapture::ParseThread(PEVENT_RECORD record) {
     }
     for (const ThreadRecord& existing : threads_) {
         if (existing.pid == pid && existing.tid == tid && existing.end_ns == 0) {
-            thread_to_process_[tid] = pid;
+            thread_to_process_[tid] = existing;
             return;
         }
     }
     threads_.push_back(ThreadRecord{pid, tid, timestamp_ns, 0});
-    thread_to_process_[tid] = pid;
+    thread_to_process_[tid] = threads_.back();
+    constexpr size_t maximum_metadata = 200000;
+    if (threads_.size() > maximum_metadata) {
+        const size_t remove = maximum_metadata / 10;
+        for (size_t i = 0; i < remove; ++i) {
+            const auto found = thread_to_process_.find(threads_[i].tid);
+            if (found != thread_to_process_.end() && found->second.start_ns == threads_[i].start_ns)
+                thread_to_process_.erase(found);
+        }
+        threads_.erase(threads_.begin(), threads_.begin() + remove);
+        metadata_dropped_ += remove;
+    }
 }
 
 void LiveTopCapture::ParseLbr(PEVENT_RECORD record) {
@@ -378,7 +456,7 @@ void LiveTopCapture::ParseLbr(PEVENT_RECORD record) {
     for (const LbrBranch& branch : decoded.branches) {
         TraceEvent event;
         event.timestamp_ns = QpcToNs(decoded.timestamp_qpc, qpc_frequency_);
-        event.cpu = record->BufferContext.ProcessorNumber;
+        event.cpu = EtwProcessorIndex(*record);
         event.pid = decoded.pid;
         event.tid = decoded.tid;
         event.kind = TraceEventKind::LastBranchRecord;
@@ -402,7 +480,7 @@ void LiveTopCapture::ParseEvent(PEVENT_RECORD record, TraceEventKind kind,
     const uint32_t code = record->EventHeader.EventDescriptor.Opcode;
     TraceEvent event;
     event.timestamp_ns = TimestampToNs(*record);
-    event.cpu = record->BufferContext.ProcessorNumber;
+    event.cpu = EtwProcessorIndex(*record);
     event.pid = record->EventHeader.ProcessId;
     event.tid = record->EventHeader.ThreadId;
     event.kind = kind;
@@ -423,35 +501,17 @@ void LiveTopCapture::ParseEvent(PEVENT_RECORD record, TraceEventKind kind,
         event.value2 = new_tid;
         event.wait_reason = ReadU8(data, size, 12);
         event.previous_state = ReadU8(data, size, 14);
-        const auto ready = ready_time_.find(new_tid);
-        if (ready != ready_time_.end()) {
-            event.duration_ns = event.timestamp_ns >= ready->second
-                                    ? event.timestamp_ns - ready->second
-                                    : 0;
-            event.has_duration = true;
-            ready_time_.erase(ready);
-        }
     } else if (kind == TraceEventKind::ReadyThread) {
         event.related_tid = ReadU32(data, size, 0);
         event.flags = ReadU8(data, size, 6);
         event.value1 = event.related_tid;
         event.value2 = event.flags;
-        ready_time_[event.related_tid] = event.timestamp_ns;
-    } else if (kind == TraceEventKind::SyscallEnter) {
-        syscall_pending_[event.tid] = event.timestamp_ns;
+
     } else if (kind == TraceEventKind::SyscallExit) {
         if (size >= sizeof(uint32_t)) {
             event.status = static_cast<int32_t>(ReadU32(data, size, 0));
             event.has_status = true;
             event.value2 = static_cast<uint32_t>(event.status);
-        }
-        const auto pending = syscall_pending_.find(event.tid);
-        if (pending != syscall_pending_.end()) {
-            event.duration_ns = event.timestamp_ns >= pending->second
-                                    ? event.timestamp_ns - pending->second
-                                    : 0;
-            event.has_duration = true;
-            syscall_pending_.erase(pending);
         }
     } else if (kind == TraceEventKind::DiskIo) {
         event.size = ReadU32(data, size, 8);
@@ -477,7 +537,6 @@ void LiveTopCapture::ParseEvent(PEVENT_RECORD record, TraceEventKind kind,
                     ? (pointer_size_ == 8 ? 40 : 24)
                     : (pointer_size_ == 8 ? 36 : 24);
             event.size = ReadU32(data, size, size_offset);
-            io_pending_[event.correlation_id] = {event.timestamp_ns, event.size};
         } else if (code == 76) {
             event.is_completion = true;
             event.correlation_id =
@@ -489,20 +548,9 @@ void LiveTopCapture::ParseEvent(PEVENT_RECORD record, TraceEventKind kind,
                 event.has_status = true;
                 event.value2 = static_cast<uint32_t>(event.status);
             }
-            const auto pending = io_pending_.find(event.correlation_id);
-            if (pending != io_pending_.end()) {
-                event.duration_ns =
-                    event.timestamp_ns >= pending->second.first
-                        ? event.timestamp_ns - pending->second.first
-                        : 0;
-                event.has_duration = true;
-                event.size = pending->second.second;
-                io_pending_.erase(pending);
-            }
         } else if (size >= pointer_size_) {
             event.correlation_id =
                 ReadPointer(data, size, 0, pointer_size_);
-            io_pending_[event.correlation_id] = {event.timestamp_ns, 0};
         }
     }
 
@@ -575,27 +623,43 @@ void LiveTopCapture::ParseImage(PEVENT_RECORD record) {
         }
     }
     images_.push_back(std::move(image));
+    constexpr size_t maximum_metadata = 200000;
+    if (images_.size() > maximum_metadata) {
+        const size_t remove = maximum_metadata / 10;
+        images_.erase(images_.begin(), images_.begin() + remove);
+        metadata_dropped_ += remove;
+    }
 }
 
 void LiveTopCapture::ParseSample(PEVENT_RECORD record) {
-    const auto* data = static_cast<const BYTE*>(record->UserData);
-    const size_t size = record->UserDataLength;
-    const uint32_t p = pointer_size_;
-    if (size < p + 8) {
+    sample_metadata_.pointer_size = pointer_size_;
+    sample_metadata_.qpc_frequency = qpc_frequency_;
+    SampleRecord sample;
+    if (!DecodeProfileSample(*record, sample_metadata_, sample)) {
+        ++decode_errors_;
         return;
     }
-    SampleRecord sample;
-    sample.timestamp_ns = TimestampToNs(*record);
-    sample.cpu = record->BufferContext.ProcessorNumber;
-    sample.pid = record->EventHeader.ProcessId;
-    sample.instruction_pointer = ReadPointer(data, size, 0, p);
-    sample.tid = ReadU32(data, size, p);
+    if (sample.pid == 0 || sample.pid == UINT32_MAX) {
+        const auto found = thread_to_process_.find(sample.tid);
+        if (found != thread_to_process_.end() && sample.timestamp_ns >= found->second.start_ns)
+            sample.pid = found->second.pid;
+    }
     samples_.push_back(std::move(sample));
     constexpr size_t kMaximumSamples = 200000;
     if (samples_.size() > kMaximumSamples) {
         samples_.pop_front();
         ++ring_dropped_;
     }
+}
+
+void LiveTopCapture::ParseProcessExit(PEVENT_RECORD record) {
+    const auto code = record->EventHeader.EventDescriptor.Opcode;
+    if ((code != 2 && code != 4) || record->UserDataLength < pointer_size_ + 4) return;
+    const uint32_t pid = ReadU32(static_cast<const BYTE*>(record->UserData), record->UserDataLength, pointer_size_);
+    const uint64_t time = TimestampToNs(*record);
+    for (auto& image : images_) if (image.pid == pid && image.unload_ns == 0) image.unload_ns = time;
+    for (auto& thread : threads_) if (thread.pid == pid && thread.end_ns == 0) thread.end_ns = time;
+    std::erase_if(thread_to_process_, [&](const auto& entry) { return entry.second.pid == pid; });
 }
 
 uint64_t LiveTopCapture::TimestampToNs(const EVENT_RECORD& record) const {

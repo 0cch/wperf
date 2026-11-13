@@ -208,10 +208,16 @@ void TestPmcQueries() {
     error.clear();
     const auto owners = wperf::QueryPmcCounterOwners(&error);
     (void)owners;
-    Check(owners.empty() || !owners.empty(), L"query PMC owners does not crash");
+    for (const auto& owner : owners) {
+        Check(owner.processor < GetActiveProcessorCount(ALL_PROCESSOR_GROUPS),
+              L"PMC owner identifies an existing processor");
+        Check(owner.owner_type != EtwPmcOwnerFree, L"PMC owner list excludes free counters");
+    }
     error.clear();
     const auto sessions = wperf::QueryPmcSessions(&error);
-    (void)sessions;
+    for (const auto& session : sessions) {
+        Check(session.sources.size() <= maximum, L"PMC session sources fit the counter capacity");
+    }
 }
 
 void TestTraceEventCorrelation() {

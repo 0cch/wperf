@@ -24,7 +24,7 @@ $stdout = Join-Path $outputDir 'top.stdout.txt'
 $stderr = Join-Path $outputDir 'top.stderr.txt'
 $metrics = Join-Path $outputDir 'process-metrics.csv'
 
-"timestamp,working_set,handle_count" | Set-Content -Path $metrics -Encoding utf8
+"timestamp,role,pid,working_set,handle_count,cpu_seconds" | Set-Content -Path $metrics -Encoding utf8
 $arguments = @('top', '--interval', "$IntervalMs", '--iterations', "$iterations")
 $process = Start-Process -FilePath $Wperf -ArgumentList $arguments -PassThru `
     -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -34,8 +34,17 @@ while (-not $process.HasExited) {
     if (((Get-Date) - $lastSample).TotalSeconds -ge 30) {
         $current = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
         if ($null -ne $current) {
-            "$(Get-Date -Format o),$($current.WorkingSet64),$($current.HandleCount)" |
+            "$(Get-Date -Format o),controller,$($current.Id),$($current.WorkingSet64),$($current.HandleCount),$($current.CPU)" |
                 Add-Content -Path $metrics -Encoding utf8
+        }
+        $workers = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($process.Id)" |
+            Where-Object { $_.Name -eq 'wperf.exe' -and $_.CommandLine -match '--internal-live-worker' }
+        foreach ($worker in $workers) {
+            $workerMetrics = Get-Process -Id $worker.ProcessId -ErrorAction SilentlyContinue
+            if ($null -ne $workerMetrics) {
+                "$(Get-Date -Format o),worker,$($workerMetrics.Id),$($workerMetrics.WorkingSet64),$($workerMetrics.HandleCount),$($workerMetrics.CPU)" |
+                    Add-Content -LiteralPath $metrics -Encoding utf8
+            }
         }
         $lastSample = Get-Date
     }

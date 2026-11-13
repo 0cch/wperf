@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <evntrace.h>
+#include "trace_model.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -45,8 +46,17 @@ struct TraceOptions {
     uint64_t provider_match_all = 0;
     bool pmc_profile = false;
     uint32_t pmc_source = 0;
+    uint32_t pmc_interval = 0;
     bool enable_lbr = false;
 };
+
+struct ProfileRestoreInfo {
+    uint32_t source = 0;
+    uint32_t original_interval = 0;
+    uint32_t configured_interval = 0;
+    bool clear_pmc = false;
+};
+bool RestoreProfileConfiguration(const ProfileRestoreInfo& info, std::wstring* error = nullptr);
 
 class EtwSession {
 public:
@@ -62,6 +72,8 @@ public:
     const std::wstring& Name() const;
     const std::wstring& ContextRegisterStatus() const;
     const std::wstring& LbrStatus() const;
+    bool QueryQuality(TraceQuality& quality, std::wstring* error = nullptr) const;
+    ProfileRestoreInfo RestoreInfo() const;
 
 private:
     TRACEHANDLE handle_ = 0;
@@ -69,6 +81,11 @@ private:
     TRACE_PROFILE_INTERVAL original_interval_{};
     bool original_interval_valid_ = false;
     bool pmc_config_changed_ = false;
+    HANDLE profile_mutex_ = nullptr;
+    uint32_t configured_interval_ = 0;
+    TraceQuality final_quality_;
+    bool ConfigureProfile(const TraceOptions& options, std::wstring* error);
+    bool RestoreProfile(std::wstring* error);
     std::wstring context_register_status_;
     std::wstring lbr_status_;
 };

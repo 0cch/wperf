@@ -26,6 +26,7 @@ Options:
   --profile NAME            cpu, cpu-sched, sched, syscall, vm, io, kernel,
                             all, or pmu (default: cpu).
   --pmc-source ID           Select an ETW PMC profile source.
+  --period N                PMC events per interrupt (source-specific count).
   -b, --lbr                 Enable LBR call-stack collection when supported.
   --context-registers       Enable context-register collection when supported.
   --provider GUID           Capture a private ETW provider session.
@@ -55,6 +56,9 @@ Options:
   --percent-limit N         Hide rows below N percent.
   -s, --sort FIELD          Sort by samples, comm, dso, or symbol.
   -g, --call-graph [MODE]   Text call tree; MODE is callee (default) or caller.
+  --metadata               With --json, include quality metadata and rows.
+  --strict-quality         Fail on lost/dropped/malformed data.
+  --exact-stacks            Include only exact stack correlations.
   --folded, --collapsed     Print collapsed stacks: comm;frame;... count.
   --stdio                   Text output (default; perf-compatible).
   --quiet                   Suppress quality diagnostics.
@@ -97,7 +101,7 @@ Options:
   -h, --help                Show this help.
 
 Fields:
-  timestamp, cpu, pid, tid, ip, comm, dso, symbol, stack
+  timestamp, cpu, pid, tid, ip, comm, dso, symbol, stack, source, period, stack_quality
 
 Examples:
   wperf script -i cpu.etl --limit 20

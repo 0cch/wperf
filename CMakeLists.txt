@@ -47,6 +47,8 @@ add_library(wperf_core STATIC
     src/logger.cpp
     src/state.cpp
     src/etw.cpp
+    src/etw_decode.cpp
+    src/session_guard.cpp
     src/ipc.cpp
     src/elevation.cpp
     src/crash.cpp
@@ -98,6 +100,11 @@ target_compile_definitions(wperf_unit_tests PRIVATE
     WPERF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 target_link_libraries(wperf_unit_tests PRIVATE wperf_core)
 add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
+add_executable(wperf_regression_tests tests/regression_tests.cpp)
+target_compile_options(wperf_regression_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
+add_test(NAME wperf_regression_tests COMMAND wperf_regression_tests)
+set_tests_properties(wperf_regression_tests PROPERTIES TIMEOUT 20)
 add_test(NAME cli_version COMMAND wperf --version)
 add_test(NAME cli_list COMMAND wperf list)
 add_test(NAME cli_doctor COMMAND wperf doctor)
@@ -128,7 +135,14 @@ add_test(NAME cli_trace_missing_value COMMAND wperf trace -e)
 add_test(NAME archive_manifest_smoke COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/archive_smoke.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
 add_test(NAME cli_provider_list COMMAND wperf list providers --max 1)
 add_test(NAME cli_provider_bad_guid COMMAND wperf record --provider not-a-guid)
+add_test(NAME replay_contract COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/replay_contract.ps1
+         -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl
+         -SymbolPath $<TARGET_FILE_DIR:wperf>)
+add_test(NAME cli_pmc_frequency_rejected COMMAND wperf record --pmc-source 19 -F 999)
+add_test(NAME cli_report_nan_rejected COMMAND wperf report --percent-limit nan)
+add_test(NAME cli_negative_limit_rejected COMMAND wperf script --limit -1)
 set_tests_properties(cli_provider_bad_guid cli_report_conflicting_formats
                      cli_annotate_conflicting_formats
                      cli_script_missing_value cli_trace_missing_value
+                     cli_pmc_frequency_rejected cli_report_nan_rejected cli_negative_limit_rejected
                      PROPERTIES WILL_FAIL TRUE)

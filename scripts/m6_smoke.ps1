@@ -38,20 +38,25 @@ if (-not $elevated) {
 }
 
 $listText = & $wperf list
-$source = 0
+$source = $null
 $match = [regex]::Match(($listText -join "`n"), '(?m)^\s*(\d+)\s+\d+\s+\d+\s+TotalCycles\s*$')
 if ($match.Success) {
     $source = [uint32]$match.Groups[1].Value
 }
-Write-Host "Using PMC source $source (TotalCycles when available)"
+if ($null -eq $source) {
+    Write-Host 'SKIP: TotalCycles PMC source is not available on this platform.'
+    exit 0
+}
+Write-Host "Using PMC source $source"
 
 $pmuTrace = Join-Path $artifactDir "pmu.etl"
 Remove-Item -LiteralPath $pmuTrace -Force -ErrorAction SilentlyContinue
-& $wperf record --profile pmu --pmc-source $source -F 999 -o $pmuTrace -- $workload 1500 2
+& $wperf record --profile pmu --pmc-source $source -o $pmuTrace -- $workload 1500 2
 $pmuExit = $LASTEXITCODE
 if ($pmuExit -eq 0) {
     & $wperf report -i $pmuTrace --symbol-path (Join-Path $build 'Release') --percent-limit 1 |
         Out-File -LiteralPath (Join-Path $artifactDir "pmu-report.txt") -Encoding utf8
+    if ($LASTEXITCODE -ne 0) { throw "PMU replay failed" }
 } else {
     "PMU capture failed/skipped with exit $pmuExit" |
         Out-File -LiteralPath (Join-Path $artifactDir "pmu-status.txt") -Encoding utf8
@@ -74,5 +79,14 @@ if ($lbrExit -ne 0) {
         Out-File -LiteralPath (Join-Path $artifactDir "lbr-status.txt") -Encoding utf8
 }
 
-Write-Host "M6 checks: PASS"
+if ($pmuExit -ne 0 -or $pmuStatExit -ne 0) {
+    throw "PMC source was advertised, but capture/stat did not produce usable PMC samples"
+}
+if ($lbrExit -ne 0) {
+    Write-Host "SKIP: LBR capture unavailable (exit $lbrExit); PMC checks passed."
+} else {
+    $branches = & $wperf trace -i $lbrTrace -e lbr --max 1 --json | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $branches.Count -eq 0) { throw 'LBR enabled without decoded branches' }
+}
+Write-Host "M6 PMC checks: PASS"
 Write-Host "  PMU exit: $pmuExit, PMU stat exit: $pmuStatExit, LBR exit: $lbrExit"

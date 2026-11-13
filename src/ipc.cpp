@@ -314,7 +314,9 @@ bool PipeClient::ServerProcessId(uint32_t& process_id) const {
 }
 
 bool PipeClient::IsConnected() const {
-    return pipe_ != INVALID_HANDLE_VALUE;
+    if (pipe_ == INVALID_HANDLE_VALUE) return false;
+    DWORD available = 0;
+    return PeekNamedPipe(pipe_, nullptr, 0, nullptr, &available, nullptr) != FALSE;
 }
 
 void PipeClient::Close() {

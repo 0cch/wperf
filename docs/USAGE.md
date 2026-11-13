@@ -5,13 +5,18 @@
 ```powershell
 wperf record [--elevate] [-F HZ] [-e EVENT] [-g] [-p PID] [--duration MS] [-o FILE]
              [--profile cpu|cpu-sched|sched|syscall|vm|io|kernel|all|pmu]
-             [--pmc-source ID] [--lbr] [--context-registers]
+             [--pmc-source ID] [--period N] [--lbr] [--context-registers]
              [--provider GUID] [--] [command...]
 ```
 
 `record` captures a system ETW session by default. `--provider GUID` switches
 to a private provider session. `--elevate` launches one hidden elevated worker
 and keeps the interactive controller at the current integrity level.
+
+The controller waits for capture READY before launching a target. CPU sampling
+uses `-F HZ`; PMC sampling uses a source-specific event count with `--period N`.
+Combining PMC selection with `-F` is rejected. A requested PMC/LBR capture that
+produces no corresponding events returns unavailable (exit 5).
 
 ## Reports
 
@@ -21,6 +26,7 @@ wperf report -i FILE [--kind cpu|io] [-p PID] [-t TID]
              [--percent-limit N] [-s FIELD]
              [-g [caller|callee]] [--folded|--collapsed]
              [--stdio|--csv|--json] [--quiet|--verbose]
+             [--exact-stacks] [--metadata] [--strict-quality]
 ```
 
 A concise quality summary is written to stderr. Use `--verbose` for the complete
@@ -28,13 +34,17 @@ counter set or `--quiet` for clean machine-readable pipelines. Stack quality
 distinguishes exact, approximate, ambiguous and missing records. ETW samples
 with the `UINT32_MAX` sentinel PID are displayed as `[unattributed]`.
 
+`--json --metadata` wraps rows with machine-readable quality information.
+`--strict-quality` fails on lost, dropped or malformed data; missing stacks
+alone do not cause failure. `--exact-stacks` excludes uncertain stacks.
+
 ## Flame graphs
 
 `--folded` is the current FlameGraph interface. It emits the standard collapsed
 format, with the process name as the root frame:
 
 ```text
-command;symbol;caller 123
+command;module!caller;module!symbol 123
 ```
 
 The reference implementation is external and requires Perl:
@@ -93,6 +103,10 @@ worker. Its summary reports `unattributed`, `unknown_events` and
 Bounded rings cap samples/events at 200000 entries. `ring_dropped` reports
 overflow instead of silently growing memory.
 
+Thread/image metadata and symbol caches also have limits; ended metadata is
+retained briefly for delayed events. ETW loss and correlation eviction are
+reported separately. Pending correlations expire after 60 seconds.
+
 ## Offline trace and scheduling
 
 ```powershell
@@ -101,6 +115,11 @@ wperf trace -i FILE [-e sched|syscall|pagefault|io|lbr] [--pid PID] [--max N] [-
 wperf sched -i FILE
 wperf report -i FILE --kind io [--json]
 ```
+
+The script fields `source`, `period` and `stack_quality` expose sample provenance.
+CPU period is in nanoseconds; PMC period is a source-specific count; zero means
+unavailable. Diff time weights use known CPU periods and never assign sampling
+gaps or PMC counts as execution time.
 
 `script` text is wperf-specific and is not intended as input to
 `stackcollapse-perf.pl`. Use `report --folded` for FlameGraph.
@@ -128,6 +147,10 @@ wperf archive -i FILE -o DIRECTORY [-p PID] [--symbol-path DIR]
 
 Archive writes `manifest.json`, `manifest.csv` and `manifest.txt` with PE/PDB
 identity, SHA256, copy status and size-limit decisions.
+
+Referenced local binaries must match the trace identity. Binaries are stored
+under `modules/<SHA256>` and matching PDBs in a `symbols` symbol-store layout.
+Manifests contain relative paths; the ETL itself is not copied.
 
 ## Providers
 
