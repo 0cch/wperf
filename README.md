@@ -8,7 +8,7 @@ custom driver.
 ## Capabilities
 
 - CPU sampling, stack correlation, PDB/SHA256-aware module identity.
-- Profile reports: table, folded, call tree, CSV and JSON.
+- Profile reports: perf-style table, call tree, CSV/JSON and FlameGraph folded stacks.
 - Real-time top and live sched/syscall/pagefault/I/O/LBR tracing.
 - Scheduler, syscall, page fault, file/disk I/O correlation and quality metrics.
 - ETW PMC sampling, LBR payload decoding, context-register capability probing.
@@ -47,6 +47,7 @@ wperf --version
 wperf doctor
 wperf record --elevate --duration 3000 -o trace.etl
 wperf report -i trace.etl --symbol-path .\build\Release --call-graph
+wperf report -i trace.etl --symbol-path .\build\Release --folded --quiet > stacks.folded
 wperf top --elevate --interval 1000
 wperf trace --live --elevate -e sched --duration 5000
 wperf annotate -i trace.etl --limit 20 --disasm
@@ -58,6 +59,24 @@ wperf list providers --max 20
 System capture requires administrator rights. `--elevate` starts one hidden
 elevated worker; the normal-permission controller owns the terminal and sends
 START/STOP over an authenticated named pipe.
+
+## Help and flame graphs
+
+Use `wperf help <command>` or `<command> --help` for complete options and
+examples. FlameGraph-compatible collapsed stacks are produced by
+`wperf report --folded`; SVG/HTML rendering remains an external step in this
+release.
+
+```powershell
+pwsh -NoProfile -File .\scripts\flamegraph.ps1 `
+  -InputFile trace.etl `
+  -SymbolPath .\build\Release `
+  -OutputFile flamegraph.svg
+```
+
+The helper writes UTF-8/LF folded stacks before invoking the official
+Brendan Gregg `flamegraph.pl`. Set `FLAMEGRAPH_PL` or pass
+`-FlameGraphScript` if the script is not in `artifacts\FlameGraph`.
 
 ## Documentation
 

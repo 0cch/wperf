@@ -1,5 +1,6 @@
 #include "commands/advanced.h"
 
+#include "commands/help.h"
 #include "commands/util.h"
 #include "common.h"
 #include "disassembler.h"
@@ -179,11 +180,16 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
         } else if (arguments[index] == L"--csv") {
             csv = true;
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            std::wcout << L"Usage: wperf diff -1 FIRST.etl -2 SECOND.etl "
-                          L"[--symbol-path DIR] [--pid PID] [--dso TEXT] "
-                          L"[--calltree] [--json|--csv]\n";
+            PrintCommandHelp(L"diff");
             return 0;
+        } else {
+            PrintError(L"unknown diff option: " + arguments[index]);
+            return 2;
         }
+    }
+    if (json && csv) {
+        PrintError(L"--json and --csv are mutually exclusive");
+        return 2;
     }
     if (first.empty() || second.empty()) {
         PrintError(L"diff requires -1 FILE and -2 FILE");
@@ -313,6 +319,7 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
     bool json = false;
     bool csv = false;
     bool disasm = false;
+    bool stdio_output = false;
     for (size_t index = 0; index < arguments.size(); ++index) {
         if (arguments[index] == L"-i" || arguments[index] == L"--input") {
             if (index + 1 >= arguments.size()) {
@@ -342,11 +349,23 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
                 !ParseUnsigned(arguments[++index], limit)) {
                 return 2;
             }
+        } else if (arguments[index] == L"--stdio") {
+            stdio_output = true;
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            std::wcout << L"Usage: wperf annotate -i FILE [--symbol-path DIR] "
-                          L"[--pid PID] [--limit N] [--disasm] [--json|--csv]\n";
+            PrintCommandHelp(L"annotate");
             return 0;
+        } else {
+            PrintError(L"unknown annotate option: " + arguments[index]);
+            return 2;
         }
+    }
+    if (json && csv) {
+        PrintError(L"--json and --csv are mutually exclusive");
+        return 2;
+    }
+    if (stdio_output && (json || csv)) {
+        PrintError(L"--stdio cannot be combined with --json or --csv");
+        return 2;
     }
     if (input.empty()) {
         PrintError(L"annotate requires -i FILE");
@@ -603,9 +622,11 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
                 return 2;
             }
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            std::wcout << L"Usage: wperf archive -i FILE -o DIRECTORY [-p PID] "
-                          L"[--symbol-path DIR] [--max-size-mb N]\n";
+            PrintCommandHelp(L"archive");
             return 0;
+        } else {
+            PrintError(L"unknown archive option: " + arguments[index]);
+            return 2;
         }
     }
     if (input.empty() || output.empty()) {
@@ -814,8 +835,11 @@ int RunBuildIdList(const std::vector<std::wstring>& arguments) {
             }
             input = arguments[++index];
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            std::wcout << L"Usage: wperf buildid-list -i FILE\n";
+            PrintCommandHelp(L"buildid-list");
             return 0;
+        } else {
+            PrintError(L"unknown buildid-list option: " + arguments[index]);
+            return 2;
         }
     }
     if (input.empty()) {
@@ -829,6 +853,7 @@ int RunBuildIdList(const std::vector<std::wstring>& arguments) {
         PrintError(error);
         return 6;
     }
+    std::wcout << L"Base              Size      Details\n";
     for (const auto& image : trace.images) {
         if (image.path.empty()) {
             continue;

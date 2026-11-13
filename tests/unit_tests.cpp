@@ -99,6 +99,16 @@ void TestCpuReportSynthetic() {
     wperf::WriteCpuReport(trace, symbolizer, options, output);
     Check(output.str().find(L"app.exe") != std::wstring::npos,
           L"CPU report resolves synthetic image");
+
+    wperf::CpuReportOptions folded_options;
+    folded_options.folded = true;
+    std::wostringstream folded_output;
+    wperf::WriteCpuReport(trace, symbolizer, folded_options, folded_output);
+    Check(folded_output.str().rfind(L"app.exe;", 0) == 0,
+          L"folded report starts with process name");
+    Check(!folded_output.str().empty() &&
+              folded_output.str().back() == L'\n',
+          L"folded report uses one line per stack");
 }
 void TestInvalidEtwFile() {
     const std::filesystem::path path =

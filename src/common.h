@@ -9,7 +9,7 @@
 
 namespace wperf {
 
-inline constexpr wchar_t kVersion[] = L"0.6.0";
+inline constexpr wchar_t kVersion[] = L"0.7.0";
 inline constexpr wchar_t kToolName[] = L"wperf";
 
 std::string ToUtf8(std::wstring_view value);

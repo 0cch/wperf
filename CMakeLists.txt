@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(wperf VERSION 0.6.0 LANGUAGES CXX)
+project(wperf VERSION 0.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -78,6 +78,7 @@ endif()
 add_executable(wperf
     src/main.cpp
     src/commands.cpp
+    src/commands/help.cpp
     src/commands/advanced.cpp
     src/commands/offline.cpp
     src/commands/live_worker.cpp
@@ -101,6 +102,7 @@ add_test(NAME cli_version COMMAND wperf --version)
 add_test(NAME cli_list COMMAND wperf list)
 add_test(NAME cli_doctor COMMAND wperf doctor)
 add_test(NAME cli_doctor_help COMMAND wperf doctor --help)
+add_test(NAME cli_help_report COMMAND wperf help report)
 add_test(NAME cli_report_help COMMAND wperf report --help)
 add_test(NAME cli_buildid_help COMMAND wperf buildid-list --help)
 add_test(NAME cli_trace_help COMMAND wperf trace --help)
@@ -113,9 +115,20 @@ add_test(NAME cli_diff_help COMMAND wperf diff --help)
 add_test(NAME cli_archive_help COMMAND wperf archive --help)
 add_test(NAME cli_record_help COMMAND wperf record --help)
 add_test(NAME cli_report_io COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io)
+add_test(NAME cli_report_io_json COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io --json)
+add_test(NAME cli_folded_fixture COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --folded --percent-limit 5)
+add_test(NAME cli_report_conflicting_formats COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
+add_test(NAME cli_annotate_conflicting_formats COMMAND wperf annotate -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
 add_test(NAME cli_sched_fixture COMMAND wperf sched -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)
 add_test(NAME cli_syscall_fixture COMMAND wperf trace -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/syscall.etl -e syscall --max 10)
+add_test(NAME cli_script_fixture COMMAND wperf script -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --limit 3)
+add_test(NAME cli_script_csv COMMAND wperf script -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --limit 3 -F timestamp,pid,comm,symbol --csv)
+add_test(NAME cli_script_missing_value COMMAND wperf script -i)
+add_test(NAME cli_trace_missing_value COMMAND wperf trace -e)
 add_test(NAME archive_manifest_smoke COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/archive_smoke.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
 add_test(NAME cli_provider_list COMMAND wperf list providers --max 1)
 add_test(NAME cli_provider_bad_guid COMMAND wperf record --provider not-a-guid)
-set_tests_properties(cli_provider_bad_guid PROPERTIES WILL_FAIL TRUE)
+set_tests_properties(cli_provider_bad_guid cli_report_conflicting_formats
+                     cli_annotate_conflicting_formats
+                     cli_script_missing_value cli_trace_missing_value
+                     PROPERTIES WILL_FAIL TRUE)

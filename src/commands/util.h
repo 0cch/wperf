@@ -67,6 +67,34 @@ inline void PrintError(const std::wstring& message) {
     std::wcerr << L"wperf: " << message << L"\n";
 }
 
+inline std::wstring ClampText(std::wstring value, size_t maximum) {
+    if (maximum < 4 || value.size() <= maximum) {
+        return value;
+    }
+    value.resize(maximum - 3);
+    value += L"...";
+    return value;
+}
+
+inline std::wstring CsvEscape(const std::wstring& value) {
+    const bool quote = value.find_first_of(L",\"\r\n") != std::wstring::npos;
+    if (!quote) {
+        return value;
+    }
+    std::wstring escaped;
+    escaped.reserve(value.size() + 2);
+    escaped.push_back(L'"');
+    for (const wchar_t ch : value) {
+        if (ch == L'"') {
+            escaped += L"\"\"";
+        } else {
+            escaped.push_back(ch);
+        }
+    }
+    escaped.push_back(L'"');
+    return escaped;
+}
+
 inline void PrintVersion() {
     std::wcout << L"wperf " << kVersion << L"\n";
 }

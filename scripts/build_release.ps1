@@ -45,6 +45,11 @@ foreach ($doc in @("USAGE.md", "ARCHITECTURE.md", "SECURITY.md", "COMPATIBILITY.
     }
 }
 
+$scriptsOutput = Join-Path $OutputDirectory "scripts"
+New-Item -ItemType Directory -Force -Path $scriptsOutput | Out-Null
+Copy-Item -LiteralPath (Join-Path $repo "scripts\flamegraph.ps1") `
+    -Destination (Join-Path $scriptsOutput "flamegraph.ps1") -Force
+
 $version = (& $outputExe --version) -join " "
 $commit = (git -C $repo rev-parse HEAD).Trim()
 $builtAt = (Get-Date).ToString('o')
