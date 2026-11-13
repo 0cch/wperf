@@ -1,5 +1,6 @@
 #include "commands/top.h"
 
+#include "commands/help.h"
 #include "commands/live_control.h"
 #include "commands/util.h"
 #include "common.h"
@@ -64,29 +65,39 @@ int RunTop(const std::vector<std::wstring>& arguments) {
             uint32_t value = 0;
             if (index + 1 >= arguments.size() ||
                 !ParseUint32(arguments[++index], value)) {
+                PrintError(L"--pid requires a process id");
                 return 2;
             }
             pid = value;
         } else if (arguments[index] == L"--interval") {
             if (index + 1 >= arguments.size() ||
                 !ParseUnsigned(arguments[++index], interval_ms) || interval_ms == 0) {
+                PrintError(L"--interval requires a positive millisecond value");
                 return 2;
             }
         } else if (arguments[index] == L"--iterations") {
             if (index + 1 >= arguments.size() ||
                 !ParseUnsigned(arguments[++index], iterations)) {
+                PrintError(L"--iterations requires a non-negative count");
                 return 2;
             }
         } else if (arguments[index] == L"-e" || arguments[index] == L"--event") {
             if (index + 1 >= arguments.size()) {
+                PrintError(L"--event requires cpu or an ETW PMC source");
                 return 2;
             }
             profile_source = arguments[++index];
         } else if (arguments[index] == L"--sort") {
             if (index + 1 >= arguments.size()) {
+                PrintError(L"--sort requires samples, comm, dso, or symbol");
                 return 2;
             }
             sort_field = arguments[++index];
+            if (sort_field != L"samples" && sort_field != L"comm" &&
+                sort_field != L"dso" && sort_field != L"symbol") {
+                PrintError(L"unsupported top sort field: " + sort_field);
+                return 2;
+            }
         } else if (arguments[index] == L"--percent-limit") {
             if (index + 1 >= arguments.size()) {
                 return 2;
@@ -99,9 +110,7 @@ int RunTop(const std::vector<std::wstring>& arguments) {
         } else if (arguments[index] == L"--elevate") {
             elevate = true;
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            std::wcout << L"Usage: wperf top [-p PID] [-e cpu|SOURCE] "
-                          L"[--interval MS] [--iterations N] [--sort FIELD] "
-                          L"[--percent-limit N] [--elevate]\n";
+            PrintCommandHelp(L"top");
             return 0;
         } else {
             PrintError(L"unknown top option: " + arguments[index]);

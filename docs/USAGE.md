@@ -3,7 +3,7 @@
 ## Capture
 
 ```powershell
-wperf record [--elevate] [-F HZ] [-p PID] [--duration MS] [-o FILE]
+wperf record [--elevate] [-F HZ] [-e EVENT] [-g] [-p PID] [--duration MS] [-o FILE]
              [--profile cpu|cpu-sched|sched|syscall|vm|io|kernel|all|pmu]
              [--pmc-source ID] [--lbr] [--context-registers]
              [--provider GUID] [--] [command...]
@@ -16,14 +16,64 @@ and keeps the interactive controller at the current integrity level.
 ## Reports
 
 ```powershell
-wperf report -i FILE [--kind cpu|io] [--pid PID] [--tid TID]
+wperf report -i FILE [--kind cpu|io] [-p PID] [-t TID]
              [--comm TEXT] [--dso TEXT] [--symbol TEXT]
-             [--percent-limit N] [--sort FIELD]
-             [--folded|--call-graph] [--csv|--json]
+             [--percent-limit N] [-s FIELD]
+             [-g [caller|callee]] [--folded|--collapsed]
+             [--stdio|--csv|--json] [--quiet|--verbose]
 ```
 
-Quality information is written to stderr. Stack quality distinguishes exact,
-approximate, ambiguous, missing and key-mismatched records.
+A concise quality summary is written to stderr. Use `--verbose` for the complete
+counter set or `--quiet` for clean machine-readable pipelines. Stack quality
+distinguishes exact, approximate, ambiguous and missing records.
+
+## Flame graphs
+
+`--folded` is the current FlameGraph interface. It emits the standard collapsed
+format, with the process name as the root frame:
+
+```text
+command;symbol;caller 123
+```
+
+The reference implementation is external and requires Perl:
+
+```powershell
+git clone --depth 1 https://github.com/brendangregg/FlameGraph.git artifacts\FlameGraph
+```
+
+Generate collapsed stacks and render them with an external FlameGraph tool:
+
+```powershell
+pwsh -NoProfile -File .\scripts\flamegraph.ps1 `
+  -InputFile cpu.etl `
+  -SymbolPath .\build\Release `
+  -ProcessId 1234 `
+  -PercentLimit 0.5 `
+  -OutputFile flamegraph.svg
+```
+
+The helper writes UTF-8 without BOM and LF line endings, then invokes the
+official `flamegraph.pl`. This avoids CRLF being included in the sample-count
+field by Perl implementations on Windows. Set `FLAMEGRAPH_PL` or pass
+`-FlameGraphScript` when the script is stored elsewhere.
+
+`--collapsed` is an alias for `--folded`. `--percent-limit` applies to folded
+stacks as well as table, CSV and JSON reports. Use `--pid` to isolate a process
+before rendering a multi-process trace. Native SVG/HTML output is intentionally
+not part of this stage.
+
+## Command help
+
+```powershell
+wperf help
+wperf help report
+wperf report --help
+```
+
+`-g` on `record` is accepted for perf compatibility; system ETW stack capture is
+enabled by default and can be disabled with `--no-call-graph`. `--stdio` is
+accepted by `report` for scripts that pass perf-style text output options.
 
 ## Live views
 
@@ -41,18 +91,21 @@ overflow instead of silently growing memory.
 ## Offline trace and scheduling
 
 ```powershell
-wperf script -i FILE [--pid PID] [--fields LIST] [--limit N] [--csv]
+wperf script -i FILE [-p PID] [-F LIST] [--symbol-path DIR] [--limit N] [--csv]
 wperf trace -i FILE [-e sched|syscall|pagefault|io|lbr] [--pid PID] [--max N] [--json]
 wperf sched -i FILE
 wperf report -i FILE --kind io [--json]
 ```
+
+`script` text is wperf-specific and is not intended as input to
+`stackcollapse-perf.pl`. Use `report --folded` for FlameGraph.
 
 ## Symbols
 
 ```powershell
 wperf report -i FILE --symbol-path DIR
 wperf buildid-list -i FILE
-wperf annotate -i FILE [--pid PID] [--limit N] [--disasm] [--json|--csv]
+wperf annotate -i FILE [--pid PID] [--limit N] [--disasm] [--stdio|--json|--csv]
 ```
 
 `annotate --disasm` shows instruction bytes and Zydis Intel-syntax disassembly.

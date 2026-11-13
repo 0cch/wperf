@@ -20,6 +20,7 @@ struct CpuReportOptions {
     double percent_limit = 0.0;
     bool folded = false;
     bool call_tree = false;
+    bool call_tree_caller = false;
     bool csv = false;
     bool json = false;
     std::vector<std::wstring> sort_fields;

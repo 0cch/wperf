@@ -62,6 +62,15 @@ std::vector<uint64_t> StackForSample(const SampleRecord& sample) {
     return {sample.instruction_pointer};
 }
 
+std::wstring FoldedLabel(std::wstring value) {
+    for (wchar_t& ch : value) {
+        if (ch == L';' || ch == L'\n' || ch == L'\r') {
+            ch = L'_';
+        }
+    }
+    return value;
+}
+
 std::wstring JsonEscape(const std::wstring& value) {
     std::wstring result;
     for (wchar_t ch : value) {
@@ -91,8 +100,15 @@ std::wstring JsonEscape(const std::wstring& value) {
 
 void PrintTree(const TreeNode& node, uint64_t total, int depth,
                const CpuReportOptions& options, std::wostream& output) {
+    if (depth == 0 && node.name.empty()) {
+        for (const auto& [name, child] : node.children) {
+            (void)name;
+            PrintTree(child, total, 0, options, output);
+        }
+        return;
+    }
     const double percent = total == 0 ? 0.0 : 100.0 * node.inclusive / total;
-    if (depth > 0 && percent < options.percent_limit) {
+    if (percent < options.percent_limit) {
         return;
     }
     output << std::wstring(static_cast<size_t>(depth * 2), L' ') << node.name
@@ -131,16 +147,18 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
         ++row.samples;
 
         auto stack = StackForSample(sample);
-        std::reverse(stack.begin(), stack.end());
-        std::wstring folded_stack;
+        const bool reverse_stack =
+            !(options.call_tree && options.call_tree_caller);
+        if (reverse_stack) {
+            std::reverse(stack.begin(), stack.end());
+        }
+        std::wstring folded_stack = FoldedLabel(comm);
         TreeNode* node = &root;
         for (size_t index = 0; index < stack.size(); ++index) {
             const ResolvedSymbol resolved =
                 symbolizer.Resolve(trace, sample.pid, stack[index], sample.timestamp_ns);
-            if (index != 0) {
-                folded_stack += L";";
-            }
-            folded_stack += resolved.symbol;
+            folded_stack += L";";
+            folded_stack += FoldedLabel(resolved.symbol);
             auto [it, inserted] = node->children.try_emplace(resolved.symbol);
             node = &it->second;
             if (inserted) {
@@ -154,6 +172,12 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
 
     if (options.folded) {
         for (const auto& [stack, count] : folded) {
+            const double percent = total_samples == 0
+                                       ? 0.0
+                                       : 100.0 * count / total_samples;
+            if (percent < options.percent_limit) {
+                continue;
+            }
             output << stack << L" " << count << L"\n";
         }
         return;
@@ -169,21 +193,24 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
         (void)key;
         sorted.push_back(row);
     }
-    const std::wstring sort_field =
-        options.sort_fields.empty() ? L"samples" : options.sort_fields.front();
+    std::vector<std::wstring> sort_fields = options.sort_fields;
+    if (sort_fields.empty()) {
+        sort_fields.push_back(L"samples");
+    }
     std::sort(sorted.begin(), sorted.end(),
               [&](const Row& left, const Row& right) {
-                  if (sort_field == L"comm") {
-                      if (left.comm != right.comm) {
+                  for (const std::wstring& field : sort_fields) {
+                      if (field == L"comm" && left.comm != right.comm) {
                           return left.comm < right.comm;
                       }
-                  } else if (sort_field == L"dso") {
-                      if (left.dso != right.dso) {
+                      if (field == L"dso" && left.dso != right.dso) {
                           return left.dso < right.dso;
                       }
-                  } else if (sort_field == L"symbol") {
-                      if (left.symbol != right.symbol) {
+                      if (field == L"symbol" && left.symbol != right.symbol) {
                           return left.symbol < right.symbol;
+                      }
+                      if (field == L"samples" && left.samples != right.samples) {
+                          return left.samples > right.samples;
                       }
                   }
                   return left.samples > right.samples;

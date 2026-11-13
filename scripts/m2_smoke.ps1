@@ -56,6 +56,16 @@ if ($LASTEXITCODE -ne 0) { throw "report failed with $LASTEXITCODE" }
 & $wperf report -i $trace --symbol-path (Join-Path $build 'Release') --folded |
     Out-File -LiteralPath (Join-Path $artifactDir "stacks.folded") -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw "folded report failed with $LASTEXITCODE" }
+$foldedPath = Join-Path $artifactDir "stacks.folded"
+$foldedLines = @(Get-Content -LiteralPath $foldedPath)
+if ($foldedLines.Count -eq 0) { throw "folded report is empty" }
+$validFolded = @($foldedLines | Where-Object { $_ -match '^.+ [0-9]+$' })
+if ($validFolded.Count -ne $foldedLines.Count) {
+    throw "folded report contains lines without a trailing sample count"
+}
+if ($validFolded[0] -notmatch '^[^;]+;') {
+    throw "folded report does not start stacks with the process name"
+}
 
 $attachTrace = Join-Path $artifactDir "attach.etl"
 Remove-Item -LiteralPath $attachTrace -Force -ErrorAction SilentlyContinue

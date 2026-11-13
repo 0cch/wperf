@@ -24,7 +24,7 @@ ctest --test-dir build-nodisasm -C Release --output-on-failure
 - `symbolizer.*`: module identity and DbgHelp.
 - `live_top.*`: real-time consumer.
 - `disassembler.*`: optional Zydis integration.
-- `commands/`: CLI controllers and command-specific logic.
+- `commands/`: CLI controllers, central help/validation and command-specific logic.
 
 ## Regression data
 
@@ -45,6 +45,15 @@ pwsh -NoProfile -File .\scripts\m4_smoke.ps1
 pwsh -NoProfile -File .\scripts\m5_smoke.ps1
 pwsh -NoProfile -File .\scripts\m6_smoke.ps1
 pwsh -NoProfile -File .\scripts\m7_smoke.ps1
+```
+
+FlameGraph integration requires an external `flamegraph.pl` and Perl:
+
+```powershell
+pwsh -NoProfile -File .\scripts\flamegraph.ps1 `
+  -InputFile tests\data\cpu-stack.etl `
+  -SymbolPath .\build\Release `
+  -OutputFile artifacts\flamegraph.svg
 ```
 
 Hardware-dependent tests must be run on the target CPU/OS combination.

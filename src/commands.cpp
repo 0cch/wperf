@@ -1,6 +1,7 @@
 #include "commands.h"
 
 #include "commands/advanced.h"
+#include "commands/help.h"
 #include "commands/offline.h"
 #include "commands/live_worker.h"
 #include "commands/top.h"
@@ -58,17 +59,26 @@ BOOL WINAPI ConsoleControlHandler(DWORD control_type) {
 }
 
 int RunList(const std::vector<std::wstring>& arguments) {
-    if (!arguments.empty() && (arguments[0] == L"--help" || arguments[0] == L"-h")) {
-        std::wcout << L"Usage: wperf list [providers] [--max N]\n";
-        return 0;
-    }
-    if (!arguments.empty() && arguments[0] == L"providers") {
-        uint64_t limit = 500;
-        for (size_t index = 1; index < arguments.size(); ++index) {
-            if (arguments[index] == L"--max" && index + 1 < arguments.size()) {
-                ParseUnsigned(arguments[++index], limit);
-            }
+    const bool providers_mode = !arguments.empty() && arguments[0] == L"providers";
+    uint64_t limit = 500;
+    for (size_t index = providers_mode ? 1 : 0; index < arguments.size(); ++index) {
+        if (arguments[index] == L"--help" || arguments[index] == L"-h") {
+            PrintCommandHelp(L"list");
+            return 0;
         }
+        if (providers_mode && arguments[index] == L"--max") {
+            if (index + 1 >= arguments.size() ||
+                !ParseUnsigned(arguments[++index], limit)) {
+                PrintError(L"--max requires a non-negative provider count");
+                return 2;
+            }
+        } else {
+            PrintError(L"unknown list option: " + arguments[index]);
+            return 2;
+        }
+    }
+
+    if (providers_mode) {
         std::wstring error;
         const auto providers = QueryProviders(&error);
         if (!error.empty()) {
@@ -113,13 +123,27 @@ int RunList(const std::vector<std::wstring>& arguments) {
     }
     return 0;
 }
-
 int RunDoctor(const std::vector<std::wstring>& arguments) {
-    if (HasFlag(arguments, L"--help") || HasFlag(arguments, L"-h")) {
-        std::wcout << L"Usage: wperf doctor [--bundle DIR] [--include-dumps]\n";
-        return 0;
+    bool include_dumps = false;
+    std::wstring bundle;
+    for (size_t index = 0; index < arguments.size(); ++index) {
+        if (arguments[index] == L"--help" || arguments[index] == L"-h") {
+            PrintCommandHelp(L"doctor");
+            return 0;
+        }
+        if (arguments[index] == L"--include-dumps") {
+            include_dumps = true;
+        } else if (arguments[index] == L"--bundle") {
+            if (index + 1 >= arguments.size()) {
+                PrintError(L"--bundle requires a directory");
+                return 2;
+            }
+            bundle = arguments[++index];
+        } else {
+            PrintError(L"unknown doctor option: " + arguments[index]);
+            return 2;
+        }
     }
-    const bool include_dumps = HasFlag(arguments, L"--include-dumps");
     bool elevated = false;
     std::wstring error;
     const bool elevation_ok = IsProcessElevated(elevated, &error);
@@ -163,7 +187,6 @@ int RunDoctor(const std::vector<std::wstring>& arguments) {
     const std::wstring text = report.str();
     std::wcout << text;
 
-    const std::wstring bundle = OptionValue(arguments, L"--bundle");
     if (!bundle.empty()) {
         const std::filesystem::path destination(bundle);
         if (!EnsureDirectory(destination, &error)) {
@@ -242,6 +265,31 @@ int RunTest() {
 }
 
 int RunRecover(const std::vector<std::wstring>& arguments) {
+    std::wstring explicit_session;
+    bool all_stale = false;
+    for (size_t index = 0; index < arguments.size(); ++index) {
+        if (arguments[index] == L"--help" || arguments[index] == L"-h") {
+            PrintCommandHelp(L"recover");
+            return 0;
+        }
+        if (arguments[index] == L"--session") {
+            if (index + 1 >= arguments.size()) {
+                PrintError(L"--session requires an ETW session name");
+                return 2;
+            }
+            explicit_session = arguments[++index];
+        } else if (arguments[index] == L"--all-stale") {
+            all_stale = true;
+        } else {
+            PrintError(L"unknown recover option: " + arguments[index]);
+            return 2;
+        }
+    }
+    if (!explicit_session.empty() && all_stale) {
+        PrintError(L"--session and --all-stale are mutually exclusive");
+        return 2;
+    }
+
     bool elevated = false;
     std::wstring error;
     if (!IsProcessElevated(elevated, &error) || !elevated) {
@@ -250,10 +298,9 @@ int RunRecover(const std::vector<std::wstring>& arguments) {
     }
 
     std::vector<std::wstring> sessions;
-    const std::wstring explicit_session = OptionValue(arguments, L"--session");
     if (!explicit_session.empty()) {
         sessions.push_back(explicit_session);
-    } else if (HasFlag(arguments, L"--all-stale")) {
+    } else if (all_stale) {
         for (const auto& state : StateStore::ReadAll(GetSessionsDirectory())) {
             if (IsStale(state) && !state.session_name.empty()) {
                 sessions.push_back(state.session_name);
@@ -301,6 +348,8 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     const std::wstring lbr_text = OptionValue(arguments, L"--lbr", L"0");
     const std::wstring context_registers_text =
         OptionValue(arguments, L"--context-registers", L"0");
+    const std::wstring call_graph_text =
+        OptionValue(arguments, L"--call-graph", L"1");
     const std::wstring provider_text = OptionValue(arguments, L"--provider");
     const std::wstring controller_pid_text =
         OptionValue(arguments, L"--controller-pid");
@@ -371,6 +420,7 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     trace_options.pmc_source = pmc_source;
     trace_options.enable_lbr = lbr_text == L"1";
     trace_options.enable_context_registers = context_registers_text == L"1";
+    trace_options.enable_stack_tracing = call_graph_text == L"1";
     if (!provider_text.empty()) {
         if (FAILED(IIDFromString(provider_text.c_str(), &trace_options.provider_id))) {
             logger.Log(LogLevel::Error, L"WORKER_READY", L"invalid provider GUID");
@@ -559,6 +609,7 @@ struct RecordOptions {
     bool pmc_source_set = false;
     bool lbr = false;
     bool context_registers = false;
+    bool call_graph = true;
     std::optional<GUID> provider;
     bool elevate = false;
 };
@@ -605,6 +656,10 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
             options.lbr = true;
         } else if (argument == L"--context-registers") {
             options.context_registers = true;
+        } else if (argument == L"-g" || argument == L"--call-graph") {
+            options.call_graph = true;
+        } else if (argument == L"--no-call-graph") {
+            options.call_graph = false;
         } else if (argument == L"--provider") {
             if (index + 1 >= arguments.size()) {
                 error = L"--provider requires a GUID";
@@ -630,6 +685,39 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
                 error = L"unsupported profile: " + options.profile;
                 return false;
             }
+        } else if (argument == L"-e" || argument == L"--event") {
+            if (index + 1 >= arguments.size()) {
+                error = L"--event requires a profile name or PMC source";
+                return false;
+            }
+            const std::wstring event = arguments[++index];
+            uint32_t source = 0;
+            if (ParseUint32(event, source)) {
+                options.pmc_source = source;
+                options.pmc_source_set = true;
+            } else if (event == L"cpu" || event == L"cpu-sched" ||
+                       event == L"sched" || event == L"syscall" ||
+                       event == L"vm" || event == L"io" ||
+                       event == L"kernel" || event == L"all" ||
+                       event == L"pmu") {
+                options.profile = event;
+            } else {
+                std::wstring source_error;
+                const auto sources = QueryProfileSources(&source_error);
+                bool found = false;
+                for (const auto& candidate : sources) {
+                    if (_wcsicmp(candidate.description.c_str(), event.c_str()) == 0) {
+                        options.pmc_source = candidate.source;
+                        options.pmc_source_set = true;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    error = L"unsupported record event: " + event;
+                    return false;
+                }
+            }
         } else if (argument == L"--freq" || argument == L"-F") {
             uint64_t frequency = 0;
             if (index + 1 >= arguments.size() ||
@@ -649,9 +737,7 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
             }
             options.pid = pid;
         } else if (argument == L"--help" || argument == L"-h") {
-            std::wcout << L"Usage: wperf record [--elevate] [-F HZ] [-p PID] "
-                          L"[--duration MS] [-o FILE] [--lbr] "
-                          L"[--context-registers] [--provider GUID] [--] command\n";
+            PrintCommandHelp(L"record");
             return false;
         } else {
             error = L"unknown record option: " + argument;
@@ -752,6 +838,7 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         L"--pmc-source", std::to_wstring(options.pmc_source),
         L"--pmc-source-set", options.pmc_source_set ? L"1" : L"0",
         L"--lbr", options.lbr ? L"1" : L"0",
+        L"--call-graph", options.call_graph ? L"1" : L"0",
         L"--controller-pid", std::to_wstring(GetCurrentProcessId()),
         L"--context-registers", options.context_registers ? L"1" : L"0",
         L"--duration-ms", std::to_wstring(options.duration_ms),
@@ -1049,12 +1136,14 @@ int RunStat(const std::vector<std::wstring>& arguments) {
             uint32_t value = 0;
             if (index + 1 >= arguments.size() ||
                 !ParseUint32(arguments[++index], value)) {
+                PrintError(L"--pid requires a process id");
                 return 2;
             }
             pid = value;
         } else if (arguments[index] == L"--duration") {
             if (index + 1 >= arguments.size() ||
                 !ParseUnsigned(arguments[++index], duration_ms) || duration_ms == 0) {
+                PrintError(L"--duration requires a positive millisecond value");
                 return 2;
             }
         } else if (arguments[index] == L"--per-thread") {
@@ -1064,12 +1153,12 @@ int RunStat(const std::vector<std::wstring>& arguments) {
         } else if (arguments[index] == L"-e" || arguments[index] == L"--event" ||
                    arguments[index] == L"--pmc-source") {
             if (index + 1 >= arguments.size()) {
+                PrintError(L"--event requires an ETW PMC source");
                 return 2;
             }
             pmu_event = arguments[++index];
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            std::wcout << L"Usage: wperf stat [-p PID] [--duration MS] "
-                          L"[--per-thread] [--pmu -e SOURCE] [--] command\n";
+            PrintCommandHelp(L"stat");
             return 0;
         } else {
             PrintError(L"unknown stat option: " + arguments[index]);
@@ -1303,46 +1392,54 @@ int RunStat(const std::vector<std::wstring>& arguments) {
     }
     return 0;
 }
-void PrintUsage() {
-    std::wcout
-        << L"wperf " << kVersion << L"\n\n"
-        << L"Usage: wperf <command> [options]\n\n"
-        << L"Commands:\n"
-        << L"  list       List ETW profile sources and active sessions\n"
-        << L"  doctor     Check environment and wperf state\n"
-        << L"  test       Run a lightweight self-test\n"
-        << L"  record     Capture a system ETW trace\n"
-        << L"  report     Analyze an ETL trace\n"
-        << L"  trace      Print scheduler/syscall/pagefault/IO events\n"
-        << L"  sched      Summarize scheduler events\n"
-        << L"  stat       Collect process time/cycle/I/O counters\n"
-        << L"  top        Snapshot CPU hot functions per interval\n"
-        << L"  script     Export samples from an ETL trace\n"
-        << L"  annotate   Show sampled address heat\n"
-        << L"  diff       Compare two CPU traces\n"
-        << L"  archive    Copy module files and manifest\n"
-        << L"  buildid-list List module identities from an ETL\n"
-        << L"  recover    Stop a stale wperf ETW session\n"
-        << L"  version    Print version\n\n"
-        << L"Record: --elevate -F HZ -p PID --duration MS -o FILE -- command\n"
-        << L"Report: -i FILE --pid PID --folded --call-graph --csv --json\n"
-        << L"Doctor: --bundle DIR\n";
-}
-
 int RunCommandLine(const std::vector<std::wstring>& arguments) {
     if (arguments.empty()) {
-        PrintUsage();
+        PrintGeneralHelp();
         return 0;
     }
 
     const std::wstring command = arguments[0];
     std::vector<std::wstring> rest(arguments.begin() + 1, arguments.end());
-    if (command == L"--version" || command == L"version") {
+    if (command == L"--version") {
         PrintVersion();
         return 0;
     }
-    if (command == L"--help" || command == L"help" || command == L"-h") {
-        PrintUsage();
+    if (command == L"version") {
+        if (!rest.empty()) {
+            if (rest.size() == 1 && (rest[0] == L"--help" || rest[0] == L"-h")) {
+                PrintCommandHelp(L"version");
+                return 0;
+            }
+            PrintError(L"version does not accept arguments");
+            return 2;
+        }
+        PrintVersion();
+        return 0;
+    }
+    if (command == L"--help" || command == L"-h") {
+        if (!rest.empty()) {
+            if (!PrintCommandHelp(rest.front())) {
+                PrintError(L"unknown command: " + rest.front());
+                return 2;
+            }
+        } else {
+            PrintGeneralHelp();
+        }
+        return 0;
+    }
+    if (command == L"help") {
+        if (rest.empty()) {
+            PrintGeneralHelp();
+            return 0;
+        }
+        if (rest.size() != 1) {
+            PrintError(L"help accepts at most one command name");
+            return 2;
+        }
+        if (!PrintCommandHelp(rest.front())) {
+            PrintError(L"unknown command: " + rest.front());
+            return 2;
+        }
         return 0;
     }
     if (command == L"list") {
@@ -1352,6 +1449,14 @@ int RunCommandLine(const std::vector<std::wstring>& arguments) {
         return RunDoctor(rest);
     }
     if (command == L"test") {
+        if (!rest.empty()) {
+            if (rest.size() == 1 && (rest[0] == L"--help" || rest[0] == L"-h")) {
+                PrintCommandHelp(L"test");
+                return 0;
+            }
+            PrintError(L"test does not accept arguments");
+            return 2;
+        }
         return RunTest();
     }
     if (command == L"recover") {
@@ -1406,7 +1511,7 @@ int RunCommandLine(const std::vector<std::wstring>& arguments) {
     }
 
     PrintError(L"unknown command: " + command);
-    PrintUsage();
+    PrintGeneralHelp();
     return 2;
 }
 
