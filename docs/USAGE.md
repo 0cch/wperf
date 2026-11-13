@@ -118,8 +118,9 @@ wperf report -i FILE --kind io [--json]
 
 The script fields `source`, `period` and `stack_quality` expose sample provenance.
 CPU period is in nanoseconds; PMC period is a source-specific count; zero means
-unavailable. Diff time weights use known CPU periods and never assign sampling
-gaps or PMC counts as execution time.
+unavailable. Diff uses CPU sample periods and falls back to the trace-level
+interval when a sample period is unknown; late metadata handling remains a
+follow-up. It does not assign sampling gaps or PMC counts as execution time.
 
 `script` text is wperf-specific and is not intended as input to
 `stackcollapse-perf.pl`. Use `report --folded` for FlameGraph.
