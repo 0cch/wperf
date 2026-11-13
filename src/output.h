@@ -48,6 +48,7 @@ inline void WriteQualityJson(const TraceData& trace, std::wostream& output) {
            << L",\"syscall_orphaned\":" << q.syscall_orphaned
            << L",\"unknown_events\":" << q.unknown_events
            << L",\"profile_interval_ns\":" << trace.profile_interval_ns
+           << L",\"stacks_loaded\":" << (trace.stacks_loaded?L"true":L"false")
            << L",\"incomplete\":" << (q.incomplete ? L"true" : L"false") << L"}";
 }
 }

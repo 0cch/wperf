@@ -5,6 +5,8 @@
 #include <cwctype>
 #include <iomanip>
 #include <map>
+#include <set>
+#include <stdexcept>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -28,12 +30,7 @@ bool ContainsInsensitive(const std::wstring& value, const std::wstring& filter) 
 bool Matches(const SampleRecord& sample,
              const CpuReportOptions& options, const std::wstring& comm,
              const std::wstring& dso, const std::wstring& symbol) {
-    if (options.pid.has_value() && sample.pid != *options.pid) {
-        return false;
-    }
-    if (options.tid.has_value() && sample.tid != *options.tid) {
-        return false;
-    }
+    (void)sample;
     if (!ContainsInsensitive(comm, options.comm_filter) ||
         !ContainsInsensitive(dso, options.dso_filter) ||
         !ContainsInsensitive(symbol, options.symbol_filter)) {
@@ -43,6 +40,10 @@ bool Matches(const SampleRecord& sample,
 }
 
 struct Row {
+    uint32_t pid = 0;
+    uint64_t process_start_ns = 0;
+    std::wstring module_identity;
+    std::wstring module_path;
     std::wstring comm;
     std::wstring dso;
     std::wstring symbol;
@@ -58,7 +59,7 @@ struct TreeNode {
 
 std::vector<uint64_t> StackForSample(const SampleRecord& sample) {
     if (!sample.stack.empty()) {
-        auto stack = sample.stack;
+        std::vector<uint64_t> stack = sample.stack.View();
         if (sample.instruction_pointer != 0 && stack.front() != sample.instruction_pointer)
             stack.insert(stack.begin(), sample.instruction_pointer);
         return stack;
@@ -108,8 +109,36 @@ void PrintTree(const TreeNode& node, uint64_t total, int depth,
 
 }  // namespace
 
-void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
-                    const CpuReportOptions& options, std::wostream& output) {
+bool MatchesSampleSelection(const TraceData& trace,const SampleRecord& sample,const CpuReportOptions& options) {
+    if(options.pid&&sample.pid!=*options.pid) {
+        if(!options.include_children)return false;
+        const auto* process=FindProcess(trace,sample.pid,sample.timestamp_ns);
+        std::set<uint32_t> seen;
+        bool descendant=false;
+        while(process&&seen.insert(process->pid).second) {
+            if(process->parent_pid==*options.pid) { descendant=true; break; }
+            process=FindProcess(trace,process->parent_pid,process->start_ns);
+        }
+        if(!descendant)return false;
+    }
+    if(options.tid&&sample.tid!=*options.tid)return false;
+    if(options.cpu&&sample.cpu!=*options.cpu)return false;
+    const uint64_t origin=trace.start_ns==UINT64_MAX?0:trace.start_ns;
+    const uint64_t relative=sample.timestamp_ns>=origin?sample.timestamp_ns-origin:0;
+    if(options.start_offset_ns&&relative<*options.start_offset_ns)return false;
+    if(options.end_offset_ns&&relative>*options.end_offset_ns)return false;
+    const bool kernel=sample.instruction_pointer>=0xffff800000000000ull ||
+        (trace.pointer_size==4&&sample.instruction_pointer>=0x80000000ull&&sample.instruction_pointer<=UINT32_MAX);
+    if(options.scope==CpuReportOptions::Scope::User&&kernel)return false;
+    if(options.scope==CpuReportOptions::Scope::Kernel&&!kernel)return false;
+    if(options.profile_source&&sample.profile_source!=*options.profile_source)return false;
+    if(options.exact_stacks_only&&sample.stack_quality!=StackQuality::Exact)return false;
+    return true;
+}
+
+void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
+                    const CpuReportOptions& options, std::wostream& output,
+                    const std::function<void(const std::function<void(const SampleRecord&)>&)>& feed) {
     uint64_t total_samples = 0;
     std::unordered_map<std::wstring, Row> rows;
     std::map<std::wstring, uint64_t> folded;
@@ -117,56 +146,70 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
 
     symbolizer.PrepareTrace(trace);
     ProcessNameIndex process_names(trace);
-    for (const auto& sample : trace.samples) {
-        if ((options.pid && sample.pid != *options.pid) ||
-            (options.tid && sample.tid != *options.tid) ||
-            (options.profile_source && sample.profile_source != *options.profile_source) ||
-            (options.exact_stacks_only && sample.stack_quality != StackQuality::Exact)) continue;
+    feed([&](const SampleRecord& sample) {
+        if(!MatchesSampleSelection(trace,sample,options))return;
         const std::wstring comm = process_names.Name(sample.pid, sample.timestamp_ns);
         const auto leaf_address = sample.instruction_pointer;
         const ResolvedSymbol leaf = symbolizer.Resolve(
             trace, sample.pid, leaf_address, sample.timestamp_ns);
         if (!Matches(sample, options, comm, leaf.module, leaf.symbol)) {
-            continue;
+            return;
         }
 
         ++total_samples;
-        const std::wstring key = std::to_wstring(sample.pid) + L"|" + comm + L"|" +
-                                 leaf.module + L"|" + leaf.symbol;
+        const uint64_t instance = process_names.InstanceStart(sample.pid, sample.timestamp_ns);
+        const std::wstring process_key = std::to_wstring(sample.pid) + L"@" + std::to_wstring(instance);
+        const std::wstring key = process_key + L"|" + SymbolAggregateKey(leaf);
+        if(rows.size()>=200000&&!rows.contains(key))throw std::runtime_error("report aggregation exceeds 200000 rows");
         auto& row = rows[key];
+        row.pid = sample.pid;
+        row.process_start_ns = instance;
+        row.module_identity = leaf.module_identity;
+        row.module_path = leaf.module_path;
         row.comm = comm;
         row.dso = leaf.module;
         row.symbol = leaf.symbol;
         ++row.samples;
 
-        if (!options.folded && !options.call_tree) continue;
+        if (!options.folded && !options.call_tree) return;
         auto stack = StackForSample(sample);
         const bool reverse_stack =
             !(options.call_tree && options.call_tree_caller);
         if (reverse_stack) {
             std::reverse(stack.begin(), stack.end());
         }
-        std::wstring folded_stack = FoldedLabel(comm);
+        std::wstring folded_stack = FoldedLabel(comm) + L"[" + process_key + L"]";
         TreeNode* node = &root;
+        if (options.call_tree) {
+            auto& process_node = root.children[process_key];
+            process_node.name = comm + L"[" + process_key + L"]";
+            ++process_node.inclusive;
+            node = &process_node;
+        }
         for (size_t index = 0; index < stack.size(); ++index) {
             const ResolvedSymbol resolved =
                 symbolizer.Resolve(trace, sample.pid, stack[index], sample.timestamp_ns);
-            const std::wstring label = resolved.module + L"!" + resolved.symbol;
-            if (options.folded) {
-                folded_stack += L";";
-                folded_stack += FoldedLabel(label);
-            }
-            if (!options.call_tree) continue;
-            auto [it, inserted] = node->children.try_emplace(label);
-            node = &it->second;
-            if (inserted) {
-                node->name = label;
-            }
-            ++node->inclusive;
+            const auto emit=[&](const std::wstring& frame_key,const std::wstring& label) {
+                if(options.folded) { folded_stack+=L";"; folded_stack+=FoldedLabel(label); }
+                if(options.call_tree) {
+                    auto [it,inserted]=node->children.try_emplace(frame_key);
+                    node=&it->second;
+                    if(inserted)node->name=label;
+                    ++node->inclusive;
+                }
+            };
+            const std::wstring suffix=resolved.module_identity.empty()?L"":L" ["+resolved.module_identity+L"]";
+            const auto emit_inline=[&](const InlineFrame& frame) {
+                emit(resolved.module_identity+L"|inline|"+frame.symbol,
+                     resolved.module+L"!"+frame.symbol+L" (inline)"+suffix);
+            };
+            if(!reverse_stack)for(const auto& frame:resolved.inline_frames)emit_inline(frame);
+            emit(SymbolAggregateKey(resolved),resolved.module+L"!"+resolved.symbol+suffix);
+            if(reverse_stack)for(auto frame=resolved.inline_frames.rbegin();frame!=resolved.inline_frames.rend();++frame)emit_inline(*frame);
         }
         if (options.call_tree) ++node->self;
         if (options.folded) ++folded[folded_stack];
-    }
+    });
 
     if (options.folded) {
         for (const auto& [stack, count] : folded) {
@@ -231,14 +274,17 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
             output << L"  {\"overhead\":" << percent << L",\"samples\":"
                    << row.samples << L",\"comm\":\"" << EscapeJson(row.comm)
                    << L"\",\"dso\":\"" << EscapeJson(row.dso) << L"\",\"symbol\":\""
-                   << EscapeJson(row.symbol) << L"\"}";
+                   << EscapeJson(row.symbol) << L"\",\"pid\":" << row.pid
+                   << L",\"process_start_ns\":" << row.process_start_ns
+                   << L",\"module_identity\":\"" << EscapeJson(row.module_identity)
+                   << L"\",\"module_path\":\"" << EscapeJson(row.module_path) << L"\"}";
         }
         output << L"\n]\n";
         return;
     }
 
     if (options.csv) {
-        output << L"overhead,samples,comm,dso,symbol\n";
+        output << L"overhead,samples,comm,dso,symbol,pid,process_start_ns,module_identity\n";
         for (const auto& row : sorted) {
             const double percent = total_samples == 0
                                        ? 0.0
@@ -247,7 +293,8 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                 continue;
             }
             output << percent << L"," << row.samples << L"," << EscapeCsv(row.comm) << L","
-                   << EscapeCsv(row.dso) << L"," << EscapeCsv(row.symbol) << L"\n";
+                   << EscapeCsv(row.dso) << L"," << EscapeCsv(row.symbol) << L"," << row.pid << L","
+                   << row.process_start_ns << L"," << EscapeCsv(row.module_identity) << L"\n";
         }
         return;
     }
@@ -271,6 +318,10 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                << std::setw(kDsoWidth) << ClampField(row.dso, kDsoWidth) << L"  "
                << row.symbol << L"\n";
     }
+}
+
+void WriteCpuReport(const TraceData& trace,Symbolizer& symbols,const CpuReportOptions& options,std::wostream& output) {
+    WriteCpuReportFeed(trace,symbols,options,output,[&](const auto& observe) { for(const auto& sample:trace.samples)observe(sample); });
 }
 
 }  // namespace wperf

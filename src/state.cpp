@@ -145,6 +145,10 @@ bool StateStore::Write(const RunState& state, std::wstring* error) const {
            << "  \"worker_pid\":" << copy.worker_pid << ",\n"
            << "  \"target_pid\":" << copy.target_pid << ",\n"
            << "  \"guard_pid\":" << copy.guard_pid << ",\n"
+           << "  \"restore_source\":" << copy.restore_source << ",\n"
+           << "  \"restore_interval\":" << copy.restore_interval << ",\n"
+           << "  \"configured_interval\":" << copy.configured_interval << ",\n"
+           << "  \"restore_clear_pmc\":" << copy.restore_clear_pmc << ",\n"
            << "  \"error_code\":" << copy.error_code << ",\n"
            << "  \"updated_utc\":\"" << EscapeJson(copy.updated_utc) << "\"\n"
            << "}\n";
@@ -195,6 +199,10 @@ std::vector<RunState> StateStore::ReadAll(
         state.worker_pid = ExtractJsonNumber(text, L"worker_pid");
         state.target_pid = ExtractJsonNumber(text, L"target_pid");
         state.guard_pid = ExtractJsonNumber(text, L"guard_pid");
+        state.restore_source=ExtractJsonNumber(text,L"restore_source");
+        state.restore_interval=ExtractJsonNumber(text,L"restore_interval");
+        state.configured_interval=ExtractJsonNumber(text,L"configured_interval");
+        state.restore_clear_pmc=ExtractJsonNumber(text,L"restore_clear_pmc");
         state.error_code = ExtractJsonNumber(text, L"error_code");
         if (!state.correlation_id.empty()) {
             result.push_back(std::move(state));

@@ -39,6 +39,12 @@ bool SessionGuard::Start(const std::wstring& session, const ProfileRestoreInfo& 
     CloseHandle(guard.process);
     return true;
 }
+bool SessionGuard::UpdateRestore(const ProfileRestoreInfo& restore,std::wstring* error) {
+    state_.restore_source=restore.source; state_.restore_interval=restore.original_interval;
+    state_.configured_interval=restore.configured_interval; state_.restore_clear_pmc=restore.clear_pmc;
+    state_.phase=L"CONFIGURING";
+    return StateStore(StateStore::PathFor(state_.correlation_id)).Write(state_,error);
+}
 void SessionGuard::Complete() {
     if (clean_event_) {
         state_.phase = L"FINISHED";

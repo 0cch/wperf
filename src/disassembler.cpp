@@ -43,7 +43,7 @@ bool ReadImageBytes(const ImageRecord& image, uint64_t address, size_t size,
         }
         return false;
     }
-    const std::wstring path = NormalizeModulePath(image.path);
+    const std::wstring path = ModuleFilePath(image);
     if (!ModuleIdentityMatches(image, ReadModuleIdentity(path))) {
         if (error) *error = L"module identity does not match the trace";
         return false;
@@ -217,6 +217,15 @@ bool DisassembleImageAddress(const ImageRecord& image, uint64_t address,
     }
     return DisassembleBuffer(bytes.data(), bytes.size(), address, pointer_size,
                              max_instructions, instructions, error);
+}
+
+bool DisassembleImageRange(const ImageRecord& image,uint64_t address,size_t size,uint32_t p,size_t limit,
+                            std::vector<DisassembledInstruction>& output,std::wstring* error) {
+    output.clear();
+    if(size==0||size>65536) { if(error)*error=L"function disassembly range exceeds 64 KiB"; return false; }
+    std::vector<uint8_t> bytes;
+    if(!ReadImageBytes(image,address,size,bytes,error))return false;
+    return DisassembleBuffer(bytes.data(),bytes.size(),address,p,limit,output,error);
 }
 
 }  // namespace wperf

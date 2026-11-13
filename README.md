@@ -89,6 +89,7 @@ Brendan Gregg `flamegraph.pl`. Set `FLAMEGRAPH_PL` or pass
 - [Disassembly](docs/DISASSEMBLY.md)
 - [Correctness and performance changes](docs/HARDENING.md)
 - [Assessment completion audit](docs/ASSESSMENT_STATUS.md)
+- [Main-branch follow-ups](docs/MAIN_FOLLOWUPS.md)
 
 ## Boundaries
 

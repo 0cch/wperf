@@ -3,6 +3,7 @@
 #include "commands/help.h"
 #include "commands/util.h"
 #include "common.h"
+#include "archive.h"
 #include "output.h"
 #include "disassembler.h"
 #include "etl_reader.h"
@@ -13,6 +14,7 @@
 #include <array>
 #include <bcrypt.h>
 #include <cwctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -28,6 +30,7 @@ using namespace commands;
 struct AggregateValue {
     uint64_t samples = 0;
     uint64_t weight_ns = 0;
+    uint64_t known_period_samples=0;
 };
 
 std::wstring Lower(std::wstring value) {
@@ -65,10 +68,11 @@ std::map<std::wstring, AggregateValue> AggregateSymbols(
                 Lower(symbol.module).find(dso_lower) == std::wstring::npos) {
                 continue;
             }
-            const std::wstring key = symbol.module + L"|" + symbol.symbol;
+            const std::wstring key = SymbolAggregateKey(symbol);
             auto& value = result[key];
             ++value.samples;
             value.weight_ns += weights[index];
+            value.known_period_samples+=weights[index]!=0;
             continue;
         }
 
@@ -91,7 +95,7 @@ std::map<std::wstring, AggregateValue> AggregateSymbols(
                 key += L";";
             }
             first = false;
-            key += symbol.module + L"!" + symbol.symbol;
+            key += SymbolAggregateKey(symbol);
         }
         if (!leaf_matches) {
             continue;
@@ -99,6 +103,7 @@ std::map<std::wstring, AggregateValue> AggregateSymbols(
         auto& value = result[key];
         ++value.samples;
         value.weight_ns += weights[index];
+        value.known_period_samples+=weights[index]!=0;
     }
     return result;
 }
@@ -107,6 +112,7 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
     std::filesystem::path first;
     std::filesystem::path second;
     std::wstring symbol_path;
+    std::filesystem::path archive_directory;
     std::wstring dso_filter;
     std::optional<uint32_t> pid;
     bool calltree = false;
@@ -123,6 +129,9 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
                 return 2;
             }
             second = arguments[++index];
+        } else if (arguments[index] == L"--archive") {
+            if(index+1>=arguments.size())return 2;
+            archive_directory=arguments[++index];
         } else if (arguments[index] == L"--symbol-path") {
             if (index + 1 >= arguments.size()) {
                 return 2;
@@ -172,6 +181,12 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
         PrintError(error);
         return 6;
     }
+    if(!archive_directory.empty()) {
+        if(!LoadArchiveModules(archive_directory,first_trace,&error)) { PrintError(error); return 6; }
+        symbol_path+=L";"+ArchiveSymbolPath(archive_directory,first_trace);
+        if(!LoadArchiveModules(archive_directory,second_trace,&error)) { PrintError(error); return 6; }
+        symbol_path+=L";"+ArchiveSymbolPath(archive_directory,second_trace);
+    }
     Symbolizer first_symbolizer;
     Symbolizer second_symbolizer;
     if (!first_symbolizer.Initialize(symbol_path, &error) ||
@@ -192,6 +207,13 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
     const auto after = AggregateSymbols(second_trace, second_symbolizer, pid,
                                         dso_filter, calltree);
 
+    uint64_t before_total=0,after_total=0;
+    for(const auto& [key,value]:before) { (void)key; before_total+=value.samples; }
+    for(const auto& [key,value]:after) { (void)key; after_total+=value.samples; }
+    std::set<std::pair<SampleKind,uint32_t>> first_sources,second_sources;
+    for(const auto& sample:first_trace.samples)first_sources.emplace(sample.kind,sample.profile_source);
+    for(const auto& sample:second_trace.samples)second_sources.emplace(sample.kind,sample.profile_source);
+    if(first_sources!=second_sources) { PrintError(L"diff requires compatible sample kinds and sources"); return 2; }
     std::set<std::wstring> keys;
     for (const auto& [key, value] : before) {
         (void)value;
@@ -206,7 +228,7 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
         std::wcout << L"[\n";
     } else if (csv) {
         std::wcout << L"samples_before,samples_after,delta_samples,"
-                      L"weight_before_ns,weight_after_ns,delta_weight_ns,key\n";
+                      L"weight_before_ns,weight_after_ns,delta_weight_ns,delta_pp,approximate_95_margin_pp,key\n";
     } else {
         std::wcout << std::right << std::setw(13) << L"DeltaSamples"
                    << std::setw(11) << L"DeltaUs" << std::setw(8) << L"Before"
@@ -219,13 +241,18 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
         const AggregateValue new_value = after.count(key) ? after.at(key)
                                                           : AggregateValue{};
         if (old_value.samples == new_value.samples &&
-            old_value.weight_ns == new_value.weight_ns) {
+            old_value.weight_ns == new_value.weight_ns && before_total==after_total) {
             continue;
         }
         const int64_t sample_delta = static_cast<int64_t>(new_value.samples) -
                                      static_cast<int64_t>(old_value.samples);
         const int64_t weight_delta = static_cast<int64_t>(new_value.weight_ns) -
                                      static_cast<int64_t>(old_value.weight_ns);
+        const double before_share=before_total ? double(old_value.samples)/before_total : 0;
+        const double after_share=after_total ? double(new_value.samples)/after_total : 0;
+        const double delta_pp=100*(after_share-before_share);
+        const double margin=196*std::sqrt((before_total?before_share*(1-before_share)/before_total:0)+
+                                         (after_total?after_share*(1-after_share)/after_total:0));
         if (json) {
             if (!first_row) {
                 std::wcout << L",\n";
@@ -237,16 +264,24 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
                        << L",\"delta_samples\":" << sample_delta
                        << L",\"weight_before_ns\":" << old_value.weight_ns
                        << L",\"weight_after_ns\":" << new_value.weight_ns
-                       << L",\"delta_weight_ns\":" << weight_delta << L"}";
+                       << L",\"delta_weight_ns\":" << weight_delta
+                       << L",\"share_before\":" << before_share << L",\"share_after\":" << after_share
+                       << L",\"delta_pp\":" << delta_pp << L",\"approximate_95_margin_pp\":" << margin
+                       << L",\"uncertainty_model\":\"independent-binomial-samples\""
+                       << L",\"known_period_samples_before\":" << old_value.known_period_samples
+                       << L",\"known_period_samples_after\":" << new_value.known_period_samples
+                       << L",\"trace_duration_before_ns\":" << (first_trace.start_ns<=first_trace.end_ns?first_trace.end_ns-first_trace.start_ns:0)
+                       << L",\"trace_duration_after_ns\":" << (second_trace.start_ns<=second_trace.end_ns?second_trace.end_ns-second_trace.start_ns:0)
+                       << L",\"exact_time\":false}";
         } else if (csv) {
             std::wcout << old_value.samples << L"," << new_value.samples << L","
                        << sample_delta << L"," << old_value.weight_ns << L","
                        << new_value.weight_ns << L"," << weight_delta << L","
-                       << EscapeCsv(key) << L"\n";
+                       << delta_pp << L"," << margin << L"," << EscapeCsv(key) << L"\n";
         } else {
             std::wcout << std::showpos << std::right << std::setw(13)
                        << sample_delta << std::noshowpos << std::setw(11)
-                       << weight_delta / 1000 << std::setw(8)
+                       << weight_delta / 1000 << L"  " << delta_pp << L"pp +/-" << margin << L"  " << std::setw(8)
                        << old_value.samples << std::setw(8)
                        << new_value.samples << L"  " << key << L"\n";
         }
@@ -261,6 +296,7 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
 int RunAnnotate(const std::vector<std::wstring>& arguments) {
     std::filesystem::path input;
     std::wstring symbol_path;
+    std::filesystem::path archive_directory;
     std::optional<uint32_t> pid;
     uint64_t limit = 50;
     bool json = false;
@@ -273,6 +309,9 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
                 return 2;
             }
             input = arguments[++index];
+        } else if (arguments[index] == L"--archive") {
+            if(index+1>=arguments.size())return 2;
+            archive_directory=arguments[++index];
         } else if (arguments[index] == L"--symbol-path") {
             if (index + 1 >= arguments.size()) {
                 return 2;
@@ -324,6 +363,10 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         PrintError(error);
         return 6;
     }
+    if(!archive_directory.empty()) {
+        if(!LoadArchiveModules(archive_directory,trace,&error)) { PrintError(error); return 6; }
+        symbol_path+=L";"+ArchiveSymbolPath(archive_directory,trace);
+    }
     Symbolizer symbolizer;
     if (!symbolizer.Initialize(symbol_path, &error)) { PrintError(error); return 6; }
     symbolizer.PrepareTrace(trace);
@@ -340,6 +383,8 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         uint64_t displacement = 0;
         uint32_t line = 0;
         uint64_t samples = 0;
+        uint64_t function_size=0;
+        std::map<uint64_t,uint64_t> instruction_samples;
     };
     std::map<std::wstring, Heat> heat;
     for (const auto& sample : trace.samples) {
@@ -348,15 +393,16 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         }
         const ResolvedSymbol symbol = symbolizer.Resolve(
             trace, sample.pid, sample.instruction_pointer, sample.timestamp_ns);
-        const std::wstring key = symbol.module + L"!" + symbol.symbol + L"+0x" +
-                                 std::to_wstring(symbol.displacement);
+        const std::wstring key = SymbolAggregateKey(symbol);
         auto& value = heat[key];
         value.module = symbol.module;
         value.symbol = symbol.symbol;
         value.source_file = symbol.source_file;
         value.image = FindImage(trace, sample.pid, sample.instruction_pointer,
                                 sample.timestamp_ns);
-        value.address = sample.instruction_pointer;
+        value.address=value.image ? value.image->base+symbol.function_rva : sample.instruction_pointer;
+        value.function_size=symbol.function_size;
+        ++value.instruction_samples[sample.instruction_pointer];
         value.displacement = symbol.displacement;
         value.line = symbol.line;
         ++value.samples;
@@ -378,9 +424,8 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
             }
             std::vector<DisassembledInstruction> decoded;
             std::wstring decode_error;
-            if (!DisassembleImageAddress(*row.image, row.address,
-                                         trace.pointer_size, 8, decoded,
-                                         &decode_error)) {
+            if (!DisassembleImageRange(*row.image,row.address,row.function_size ? std::min<uint64_t>(row.function_size,65536) : 64,
+                                         trace.pointer_size,row.function_size ? 8192 : 8,decoded,&decode_error)) {
                 disassembly_failed = true;
                 continue;
             }
@@ -391,6 +436,10 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
                 wchar_t address_text[32]{};
                 swprintf_s(address_text, L"%llx",
                            static_cast<unsigned long long>(instruction.address));
+                uint64_t hits=0;
+                for(const auto& [address,count]:row.instruction_samples)
+                    if(address>=instruction.address&&address-instruction.address<instruction.length)hits+=count;
+                row.disassembly+=L"samples="+std::to_wstring(hits)+L" ";
                 row.disassembly += address_text;
                 row.disassembly += L"  ";
                 row.disassembly += ToUtf16(instruction.bytes);
@@ -459,68 +508,10 @@ std::string JsonFileEscape(const std::wstring& value) {
     return ToUtf8(EscapeJson(value));
 }
 
-std::wstring Sha256File(const std::filesystem::path& path,
-                         std::wstring* error = nullptr) {
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    BCRYPT_HASH_HANDLE hash = nullptr;
-    DWORD object_size = 0;
-    DWORD hash_size = 0;
-    DWORD result_size = 0;
-    std::vector<BYTE> hash_object;
-    std::vector<BYTE> digest;
-    std::wstring result;
-    do {
-        if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM,
-                                        nullptr, 0) < 0 ||
-            BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH,
-                              reinterpret_cast<PUCHAR>(&object_size),
-                              sizeof(object_size), &result_size, 0) < 0 ||
-            BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH,
-                              reinterpret_cast<PUCHAR>(&hash_size),
-                              sizeof(hash_size), &result_size, 0) < 0) {
-            break;
-        }
-        hash_object.resize(object_size);
-        digest.resize(hash_size);
-        if (BCryptCreateHash(algorithm, &hash, hash_object.data(), object_size,
-                             nullptr, 0, 0) < 0) {
-            break;
-        }
-        std::ifstream stream(path, std::ios::binary);
-        if (!stream) {
-            break;
-        }
-        std::vector<char> buffer(1024 * 1024);
-        while (stream) {
-            stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            const std::streamsize count = stream.gcount();
-            if (count > 0 &&
-                BCryptHashData(hash, reinterpret_cast<PUCHAR>(buffer.data()),
-                               static_cast<ULONG>(count), 0) < 0) {
-                stream.setstate(std::ios::failbit);
-                break;
-            }
-        }
-        if (stream.bad() || BCryptFinishHash(hash, digest.data(), hash_size, 0) < 0) {
-            break;
-        }
-        for (BYTE byte : digest) {
-            wchar_t text[3]{};
-            swprintf_s(text, L"%02X", byte);
-            result += text;
-        }
-    } while (false);
-
-    if (hash != nullptr) {
-        BCryptDestroyHash(hash);
-    }
-    if (algorithm != nullptr) {
-        BCryptCloseAlgorithmProvider(algorithm, 0);
-    }
-    if (result.empty() && error != nullptr) {
-        *error = L"SHA256 failed for " + path.wstring();
-    }
-    return result;
+std::wstring Sha256File(const std::filesystem::path& path, std::wstring* error = nullptr) {
+    const auto digest=FileSha256(path);
+    if(digest.empty() && error)*error=L"cannot hash file: "+path.wstring();
+    return digest;
 }
 
 int RunArchive(const std::vector<std::wstring>& arguments) {
@@ -529,6 +520,7 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
     std::optional<uint32_t> pid;
     std::wstring symbol_path;
     uint64_t max_size_mb = 512;
+    bool include_trace = false;
     for (size_t index = 0; index < arguments.size(); ++index) {
         if (arguments[index] == L"-i" || arguments[index] == L"--input") {
             if (index + 1 >= arguments.size()) {
@@ -552,6 +544,8 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
                 return 2;
             }
             symbol_path = arguments[++index];
+        } else if (arguments[index] == L"--include-trace") {
+            include_trace = true;
         } else if (arguments[index] == L"--max-size-mb") {
             if (index + 1 >= arguments.size() ||
                 !ParseUnsigned(arguments[++index], max_size_mb)) {
@@ -632,7 +626,7 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
         (void)key;
         ArchiveEntry entry;
         entry.source = image.path;
-        const std::filesystem::path source = NormalizeModulePath(image.path);
+        const std::filesystem::path source = ModuleFilePath(image);
         std::error_code ec;
         if (!std::filesystem::exists(source, ec) ||
             !std::filesystem::is_regular_file(source, ec)) {
@@ -691,9 +685,28 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
                 entry.pdb_archived = std::filesystem::relative(pdb_destination, output).generic_wstring();
                 entry.pdb_copied = true;
                 entry.pdb_sha256 = Sha256File(pdb_destination);
+                std::filesystem::copy_file(pdb_destination,destination.parent_path()/pdb.filename(),
+                    std::filesystem::copy_options::overwrite_existing,ec);
+                if(ec) { PrintError(L"cannot place matching PDB next to archived module"); return 9; }
             }
         }
         entries.push_back(std::move(entry));
+    }
+
+    {
+        std::ofstream map(output/L"modules.tsv",std::ios::binary);
+        if(!map) { PrintError(L"cannot write archive map"); return 9; }
+        map<<"wperf-archive-map-v1\n";
+        for(const auto& entry:entries) if(entry.copied)
+            map<<HexText(entry.source)<<' '<<entry.identity.timestamp<<' '<<entry.identity.checksum<<' '
+               <<entry.identity.size_of_image<<' '<<HexText(entry.archived)<<' '<<ToUtf8(entry.sha256)<<'\n';
+        if(!map) { PrintError(L"cannot finish archive map"); return 9; }
+    }
+    if(include_trace) {
+        std::error_code ec;
+        if(std::filesystem::file_size(input,ec)>max_bytes || ec) { PrintError(L"ETL exceeds archive file limit"); return 9; }
+        std::filesystem::copy_file(input,output/L"trace.etl",std::filesystem::copy_options::overwrite_existing,ec);
+        if(ec) { PrintError(L"cannot archive trace.etl"); return 9; }
     }
 
     auto write_manifest = [&](const std::filesystem::path& path, bool json,

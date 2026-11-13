@@ -3,6 +3,7 @@
 #include <bcrypt.h>
 
 #include <array>
+#include <fstream>
 #include <system_error>
 
 namespace wperf {
@@ -276,6 +277,82 @@ bool EnablePrivilege(std::wstring_view privilege, std::wstring* error) {
         return false;
     }
     return true;
+}
+
+std::string HexText(std::wstring_view value) {
+    const auto text = ToUtf8(value);
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result;
+    for (unsigned char byte : text) { result += hex[byte >> 4]; result += hex[byte & 15]; }
+    return result;
+}
+bool UnhexText(std::string_view text, std::wstring& value) {
+    if (text.size() % 2 != 0 || text.size() > 131072) return false;
+    const auto nibble = [](char ch) { return ch >= '0' && ch <= '9' ? ch - '0' :
+        ch >= 'a' && ch <= 'f' ? ch - 'a' + 10 : ch >= 'A' && ch <= 'F' ? ch - 'A' + 10 : -1; };
+    std::string bytes;
+    for (size_t i=0; i<text.size(); i+=2) {
+        const int a=nibble(text[i]), b=nibble(text[i+1]);
+        if (a<0 || b<0) return false;
+        bytes += char((a<<4)|b);
+    }
+    value=ToUtf16(bytes);
+    return bytes.empty() || !value.empty();
+}
+
+std::wstring TextSha256(std::wstring_view value) {
+    const auto bytes=ToUtf8(value);
+    BYTE digest[32]{};
+    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0,
+                  reinterpret_cast<PUCHAR>(const_cast<char*>(bytes.data())),
+                  static_cast<ULONG>(bytes.size()), digest, sizeof(digest)) < 0) return {};
+    std::wstring result;
+    for (BYTE byte : digest) { result += kHex[byte>>4]; result += kHex[byte&15]; }
+    return result;
+}
+
+std::wstring FileSha256(const std::filesystem::path& path) {
+    BCRYPT_ALG_HANDLE algorithm=nullptr;
+    BCRYPT_HASH_HANDLE hash=nullptr;
+    DWORD object_size=0, returned=0;
+    if (BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0) return {};
+    std::wstring result;
+    std::vector<BYTE> object;
+    do {
+        if (BCryptGetProperty(algorithm,BCRYPT_OBJECT_LENGTH,reinterpret_cast<PUCHAR>(&object_size),
+                              sizeof(object_size),&returned,0)<0) break;
+        object.resize(object_size);
+        if (BCryptCreateHash(algorithm,&hash,object.data(),object_size,nullptr,0,0)<0) break;
+        std::ifstream file(path,std::ios::binary);
+        if (!file) break;
+        std::array<char,65536> buffer{};
+        bool valid=true;
+        while (file) {
+            file.read(buffer.data(),buffer.size());
+            if (file.gcount()>0 && BCryptHashData(hash,reinterpret_cast<PUCHAR>(buffer.data()),
+                                                static_cast<ULONG>(file.gcount()),0)<0) { valid=false; break; }
+        }
+        BYTE digest[32]{};
+        if (!valid || file.bad() || BCryptFinishHash(hash,digest,sizeof(digest),0)<0) break;
+        for (BYTE byte : digest) { result += kHex[byte>>4]; result += kHex[byte&15]; }
+    } while (false);
+    if (hash) BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(algorithm,0);
+    return result;
+}
+
+WorkerStopWatchdog::WorkerStopWatchdog(uint32_t timeout_ms) {
+    finished_=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+    if(!finished_)TerminateProcess(GetCurrentProcess(),ERROR_NOT_ENOUGH_MEMORY);
+    thread_=std::thread([signal=finished_,timeout_ms] {
+        if(WaitForSingleObject(signal,timeout_ms)!=WAIT_OBJECT_0)
+            TerminateProcess(GetCurrentProcess(),ERROR_TIMEOUT);
+    });
+}
+WorkerStopWatchdog::~WorkerStopWatchdog() {
+    SetEvent(finished_);
+    if(thread_.joinable())thread_.join();
+    CloseHandle(finished_);
 }
 
 }  // namespace wperf

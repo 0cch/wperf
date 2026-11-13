@@ -3,10 +3,13 @@
 #include "common.h"
 
 #include <dbghelp.h>
+#include <combaseapi.h>
 
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <limits>
 #include <vector>
 
@@ -225,7 +228,7 @@ Symbolizer::~Symbolizer() {
     Close();
 }
 
-bool Symbolizer::Initialize(std::wstring symbol_path, std::wstring* error) {
+bool Symbolizer::Initialize(std::wstring symbol_path, std::wstring* error, std::filesystem::path cache_directory) {
     std::scoped_lock lock(mutex_, g_dbghelp_mutex);
     if (initialized_) {
         return true;
@@ -247,6 +250,7 @@ bool Symbolizer::Initialize(std::wstring symbol_path, std::wstring* error) {
         session_key_ = nullptr;
         return false;
     }
+    cache_directory_ = cache_directory.empty() ? GetWperfRootDirectory()/L".symcache" : std::move(cache_directory);
     initialized_ = true;
     return true;
 }
@@ -290,6 +294,16 @@ std::wstring Symbolizer::NormalizePath(const std::wstring& path) const {
     return NormalizeModulePath(path);
 }
 
+namespace {
+size_t SymbolBytes(const ResolvedSymbol& symbol) {
+    size_t bytes=sizeof(symbol)+2*(symbol.module.size()+symbol.symbol.size()+symbol.source_file.size()+
+                                symbol.module_path.size()+symbol.module_identity.size());
+    for(const auto& frame:symbol.inline_frames)bytes+=sizeof(frame)+2*(frame.symbol.size()+frame.source_file.size());
+    return bytes;
+}
+constexpr size_t kSymbolCacheBudget=32*1024*1024;
+}
+
 bool ModuleIdentityMatches(const ImageRecord& image, const ModuleIdentity& identity) {
     return identity.valid &&
            (image.timestamp == 0 || image.timestamp == identity.timestamp) &&
@@ -318,13 +332,21 @@ void Symbolizer::PrepareTrace(const TraceData& trace, bool discard_unused) {
     bool removed = false;
     for (auto it = loaded_modules_.begin(); it != loaded_modules_.end();) {
         if (!needed.contains(it->first)) {
+            WriteCache(it->second);
             SymUnloadModule64(session_key_, it->second.synthetic_base);
             it = loaded_modules_.erase(it);
             removed = true;
         } else ++it;
     }
     std::erase_if(rejected_modules_, [&](const auto& key) { return !needed.contains(key); });
-    if (removed) symbol_cache_.clear();
+    if (removed) { symbol_cache_.clear(); symbol_cache_bytes_=0;
+        persistent_cache_bytes_=0;
+        for(const auto& [key,module]:loaded_modules_) { (void)key; for(const auto& [rva,value]:module.persistent_symbols) { (void)rva; persistent_cache_bytes_+=SymbolBytes(value); } }
+    }
+}
+
+std::wstring ModuleFilePath(const ImageRecord& image) {
+    return image.resolved_path.empty() ? NormalizeModulePath(image.path) : image.resolved_path;
 }
 
 std::wstring Symbolizer::ModuleKey(const ImageRecord& image,
@@ -339,8 +361,8 @@ void Symbolizer::AddModule(const ImageRecord& image) {
     if (!initialized_ || image.base == 0 || image.size == 0 || image.path.empty()) {
         return;
     }
-    const std::wstring path = NormalizePath(image.path);
-    const std::wstring key = ModuleKey(image, path);
+    const std::wstring path = ModuleFilePath(image);
+    const std::wstring key = ModuleKey(image, NormalizePath(image.path));
     if (loaded_modules_.find(key) != loaded_modules_.end() ||
         rejected_modules_.find(key) != rejected_modules_.end()) {
         return;
@@ -383,7 +405,13 @@ void Symbolizer::AddModule(const ImageRecord& image) {
         return;
     }
 
-    loaded_modules_.emplace(key, ModuleLoad{loaded_base});
+    ModuleLoad module;
+    module.synthetic_base=loaded_base;
+    const auto pe=PublicIdentity(identity);
+    wchar_t guid[64]{}; StringFromGUID2(pe.pdb_guid,guid,64);
+    module.cache_identity=TextSha256(key+L"|"+guid+L"|"+std::to_wstring(pe.pdb_age)+L"|"+std::to_wstring(pe.machine));
+    ReadCache(module);
+    loaded_modules_.emplace(key,std::move(module));
 }
 
 std::wstring Symbolizer::PdbPath(const ImageRecord& image) {
@@ -399,7 +427,7 @@ std::wstring Symbolizer::PdbPath(const ImageRecord& image) {
     SymFromAddrW(session_key_, found->second.synthetic_base + 1, &displacement, symbol);
     IMAGEHLP_MODULEW64 info{};
     info.SizeOfStruct = sizeof(info);
-    const auto identity = ReadModuleIdentity(NormalizePath(image.path));
+    const auto identity = ReadModuleIdentity(ModuleFilePath(image));
     if (!SymGetModuleInfoW64(session_key_, found->second.synthetic_base, &info) ||
         !identity.has_pdb_guid || info.PdbUnmatched || info.DbgUnmatched ||
         !IsEqualGUID(identity.pdb_guid, info.PdbSig70) || identity.pdb_age != info.PdbAge)
@@ -421,6 +449,9 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
     const ImageRecord* image = image_index_.Find(pid, address, timestamp_ns);
     result.module = image != nullptr ? FileNameForImage(*image) : L"[unknown]";
     if (image != nullptr) {
+        result.module_identity = ModuleIdentityKey(*image);
+        result.module_path = image->path;
+        result.rva = result.function_rva = address - image->base;
         result.displacement = address >= image->base ? address - image->base : 0;
     }
 
@@ -440,6 +471,14 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
         ++stats_.cache_hits;
         return cached->second;
     }
+    const auto persisted=module->second.persistent_symbols.find(result.rva);
+    if(persisted!=module->second.persistent_symbols.end()) {
+        auto value=persisted->second;
+        value.module=result.module; value.module_identity=result.module_identity; value.module_path=result.module_path;
+        ++stats_.cache_hits;
+        CacheSymbol(symbol_address,value);
+        return value;
+    }
     ++stats_.cache_misses;
 
     BYTE buffer[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t)]{};
@@ -452,6 +491,8 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
         result.symbol.assign(symbol->Name, symbol->NameLen);
         result.displacement = displacement;
         result.resolved = true;
+        result.function_rva = result.rva - displacement;
+        result.function_size = symbol->Size;
     } else {
         result.symbol = result.module + L"+0x" + ToHex(result.displacement);
     }
@@ -464,14 +505,100 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
         result.source_file = line.FileName != nullptr ? line.FileName : L"";
         result.line = line.LineNumber;
     }
-    if (symbol_cache_.size() >= 200000) symbol_cache_.clear();
-    symbol_cache_.emplace(symbol_address, result);
+    const DWORD inline_count=std::min<DWORD>(SymAddrIncludeInlineTrace(session_key_,symbol_address),32);
+    DWORD context=0, frame_index=0;
+    if(inline_count>0 && SymQueryInlineTrace(session_key_,symbol_address,0,symbol_address,symbol_address,&context,&frame_index)) {
+        for(DWORD i=0;i<inline_count;++i) {
+            BYTE storage[sizeof(SYMBOL_INFOW)+MAX_SYM_NAME*sizeof(wchar_t)]{};
+            auto* info=reinterpret_cast<SYMBOL_INFOW*>(storage);
+            info->SizeOfStruct=sizeof(SYMBOL_INFOW); info->MaxNameLen=MAX_SYM_NAME;
+            DWORD64 offset=0;
+            if(!SymFromInlineContextW(session_key_,symbol_address,context+i,&offset,info)) continue;
+            InlineFrame entry; entry.symbol.assign(info->Name,info->NameLen);
+            IMAGEHLP_LINEW64 source{}; source.SizeOfStruct=sizeof(source); DWORD ignored=0;
+            if(SymGetLineFromInlineContextW(session_key_,symbol_address,context+i,module->second.synthetic_base,&ignored,&source)) {
+                entry.source_file=source.FileName ? source.FileName : L""; entry.line=source.LineNumber;
+            }
+            result.inline_frames.push_back(std::move(entry));
+        }
+    }
+    if(result.resolved && module->second.persistent_symbols.size()<10000 &&
+       persistent_cache_bytes_+SymbolBytes(result)<=kSymbolCacheBudget) {
+        persistent_cache_bytes_+=SymbolBytes(result);
+        module->second.persistent_symbols[result.rva]=result;
+        module->second.dirty=true;
+    }
+    CacheSymbol(symbol_address,result);
     return result;
+}
+
+void Symbolizer::CacheSymbol(uint64_t address,const ResolvedSymbol& value) {
+    const auto symbol_bytes=SymbolBytes(value);
+    if(symbol_cache_bytes_+symbol_bytes>kSymbolCacheBudget || symbol_cache_.size()>=200000) {
+        symbol_cache_.clear(); symbol_cache_bytes_=0;
+    }
+    if(symbol_bytes<=kSymbolCacheBudget && symbol_cache_.emplace(address,value).second)symbol_cache_bytes_+=symbol_bytes;
+}
+
+void Symbolizer::ReadCache(ModuleLoad& module) {
+    const auto path=cache_directory_/module.cache_identity/L"symbols.v1";
+    std::error_code ec;
+    const auto bytes=std::filesystem::file_size(path,ec);
+    if(ec || bytes>16*1024*1024)return;
+    std::ifstream file(path,std::ios::binary);
+    std::string header;
+    if(!std::getline(file,header)||header!="wperf-symcache-v1 "+ToUtf8(module.cache_identity))return;
+    std::map<uint64_t,ResolvedSymbol> values;
+    std::string line;
+    while(std::getline(file,line)) {
+        if(values.size()>=10000)return;
+        std::istringstream fields(line); ResolvedSymbol value; uint32_t count=0;
+        std::string symbol,source;
+        if(!(fields>>value.rva>>value.function_rva>>value.function_size>>value.displacement>>value.line>>symbol>>source>>count)||count>32)return;
+        if(!UnhexText(symbol,value.symbol)||!UnhexText(source=="-"?"":source,value.source_file))return;
+        for(uint32_t i=0;i<count;++i) {
+            InlineFrame frame; std::string name,path_text;
+            if(!(fields>>frame.line>>name>>path_text)||!UnhexText(name,frame.symbol)||
+               !UnhexText(path_text=="-"?"":path_text,frame.source_file))return;
+            value.inline_frames.push_back(std::move(frame));
+        }
+        value.resolved=true;
+        const auto symbol_bytes=SymbolBytes(value);
+        if(persistent_cache_bytes_+symbol_bytes>kSymbolCacheBudget)break;
+        persistent_cache_bytes_+=symbol_bytes;
+        values.emplace(value.rva,std::move(value));
+    }
+    module.persistent_symbols=std::move(values);
+}
+void Symbolizer::WriteCache(const ModuleLoad& module) {
+    if(!module.dirty||module.cache_identity.empty())return;
+    const auto directory=cache_directory_/module.cache_identity;
+    if(!EnsureDirectory(directory,nullptr))return;
+    const auto temporary=directory/(L"symbols-"+NewId()+L".tmp");
+    std::ofstream file(temporary,std::ios::binary);
+    if(!file)return;
+    file<<"wperf-symcache-v1 "<<ToUtf8(module.cache_identity)<<'\n';
+    size_t count=0;
+    const auto field=[](const std::wstring& text){auto value=HexText(text);return value.empty()?std::string("-"):value;};
+    for(const auto& [rva,value]:module.persistent_symbols) {
+        if(++count>10000)break;
+        file<<rva<<' '<<value.function_rva<<' '<<value.function_size<<' '<<value.displacement<<' '
+            <<value.line<<' '<<field(value.symbol)<<' '<<field(value.source_file)<<' '<<value.inline_frames.size();
+        for(const auto& frame:value.inline_frames) file<<' '<<frame.line<<' '<<field(frame.symbol)<<' '<<field(frame.source_file);
+        file<<'\n';
+    }
+    file.close();
+    if(file) MoveFileExW(temporary.c_str(),(directory/L"symbols.v1").c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+    std::error_code ignored; std::filesystem::remove(temporary,ignored);
+}
+
+std::wstring SymbolAggregateKey(const ResolvedSymbol& symbol) {
+    return symbol.module_identity + L"|" + std::to_wstring(symbol.function_rva) + L"|" + symbol.symbol;
 }
 
 SymbolizerStats Symbolizer::Stats() const {
     std::scoped_lock lock(mutex_, g_dbghelp_mutex);
-    return stats_;
+    auto stats=stats_; stats.cache_bytes=symbol_cache_bytes_+persistent_cache_bytes_; return stats;
 }
 
 void Symbolizer::Close() {
@@ -485,9 +612,11 @@ void Symbolizer::Close() {
     indexed_trace_ = nullptr;
     indexed_images_ = nullptr;
     indexed_image_count_ = 0;
+    for(const auto& [key,module]:loaded_modules_) { (void)key; WriteCache(module); }
     loaded_modules_.clear();
     rejected_modules_.clear();
     symbol_cache_.clear();
+    symbol_cache_bytes_=persistent_cache_bytes_=0;
     stats_ = {};
     next_synthetic_base_ = 0x100000000ull;
 }

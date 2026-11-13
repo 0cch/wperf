@@ -21,8 +21,13 @@ private:
         uint64_t size = 0;
         uint64_t thread_start_ns = 0;
         uint32_t pid = 0;
+        uint64_t file_key = 0;
+        std::wstring file_path;
+        uint32_t operation_id = 0;
+        uint32_t tid = UINT32_MAX;
     };
     std::unordered_map<uint64_t, Pending> ready_, syscalls_, files_, disks_;
+    std::unordered_map<uint64_t,std::wstring> file_names_;
     size_t maximum_pending_;
     uint64_t maximum_age_ns_;
     uint64_t last_prune_ns_ = 0;

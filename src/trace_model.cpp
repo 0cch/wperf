@@ -140,12 +140,30 @@ std::wstring ProcessDisplayName(const TraceData& trace, uint32_t pid,
 }
 
 uint64_t SampleWeightNs(const TraceData& trace, const SampleRecord& sample) {
+    (void)trace;
     if (sample.kind != SampleKind::Cpu) return 0;
-    return sample.period != 0 ? sample.period : trace.profile_interval_ns;
+    return sample.period;
+}
+
+std::wstring ModuleIdentityKey(const ImageRecord& image) {
+    std::wstring path = image.path;
+    std::transform(path.begin(), path.end(), path.begin(), [](wchar_t ch) { return wchar_t(towlower(ch)); });
+    return path + L"|" + std::to_wstring(image.timestamp) + L"|" +
+           std::to_wstring(image.checksum) + L"|" + std::to_wstring(image.size);
+}
+
+uint64_t ProcessInstanceStart(const TraceData& trace, uint32_t pid, uint64_t time) {
+    if (const auto* process = FindProcess(trace, pid, time)) return process->start_ns;
+    uint64_t start = UINT64_MAX;
+    for (const auto& thread : trace.threads)
+        if (thread.pid == pid && thread.start_ns <= time &&
+            (thread.end_ns == 0 || thread.end_ns >= time)) start = std::min(start, thread.start_ns);
+    return start == UINT64_MAX ? 0 : start;
 }
 
 ProcessNameIndex::ProcessNameIndex(const TraceData& trace) {
     for (const auto& process : trace.processes) {
+        instances_[process.pid].emplace_back(process.start_ns, process.end_ns);
         if (!process.image_name.empty()) {
             const auto name = std::filesystem::path(process.image_name).filename().wstring();
             if (name.find(L".exe") != std::wstring::npos || name.find(L".EXE") != std::wstring::npos)
@@ -161,6 +179,7 @@ ProcessNameIndex::ProcessNameIndex(const TraceData& trace) {
         (void)pid;
         std::stable_sort(names.begin(), names.end(), [](const auto& a, const auto& b) { return a.start < b.start; });
     }
+    for (auto& [pid, values] : instances_) { (void)pid; std::sort(values.begin(), values.end()); }
 }
 
 std::wstring ProcessNameIndex::Name(uint32_t pid, uint64_t timestamp_ns) const {
@@ -179,11 +198,46 @@ std::wstring ProcessNameIndex::Name(uint32_t pid, uint64_t timestamp_ns) const {
     return std::to_wstring(pid);
 }
 
+uint64_t ProcessNameIndex::InstanceStart(uint32_t pid, uint64_t time) const {
+    const auto instances = instances_.find(pid);
+    if (instances != instances_.end()) {
+        auto upper = std::upper_bound(instances->second.begin(), instances->second.end(), time,
+                                     [](uint64_t value, const auto& item) { return value < item.first; });
+        while (upper != instances->second.begin()) {
+            --upper;
+            if (upper->second == 0 || upper->second >= time) return upper->first;
+        }
+    }
+    const auto found = names_.find(pid);
+    if (found == names_.end()) return 0;
+    auto upper = std::upper_bound(found->second.begin(), found->second.end(), time,
+                                 [](uint64_t value, const auto& name) { return value < name.start; });
+    while (upper != found->second.begin()) {
+        --upper;
+        if (upper->end == 0 || upper->end >= time) return upper->start;
+    }
+    return 0;
+}
+
 void ImageIndex::Build(const TraceData& trace) {
     trace_ = &trace;
     by_pid_.clear();
     for (size_t i = 0; i < trace.images.size(); ++i)
         by_pid_[trace.images[i].pid][trace.images[i].base].push_back(i);
+}
+
+void ThreadIndex::Build(const TraceData& trace) {
+    values_.clear();
+    for(const auto& thread:trace.threads)values_[thread.tid].push_back(&thread);
+    for(auto& [tid,values]:values_) { (void)tid; std::sort(values.begin(),values.end(),
+        [](const auto* a,const auto* b){return a->start_ns<b->start_ns;}); }
+}
+const ThreadRecord* ThreadIndex::Find(uint32_t tid,uint64_t time) const {
+    const auto found=values_.find(tid); if(found==values_.end())return nullptr;
+    auto upper=std::upper_bound(found->second.begin(),found->second.end(),time,
+                               [](uint64_t value,const auto* thread){return value<thread->start_ns;});
+    while(upper!=found->second.begin()) { --upper; if((*upper)->end_ns==0||(*upper)->end_ns>=time)return *upper; }
+    return nullptr;
 }
 
 const ImageRecord* ImageIndex::Find(uint32_t pid, uint64_t address,

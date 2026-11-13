@@ -27,6 +27,8 @@ Options:
                             all, or pmu (default: cpu).
   --pmc-source ID           Select an ETW PMC profile source.
   --period N                PMC events per interrupt (source-specific count).
+  --pmc-counters IDS        Counter snapshots on CSwitch (comma-separated IDs).
+  --stack-cache             Emit modern StackWalkRef/Def records when supported.
   -b, --lbr                 Enable LBR call-stack collection when supported.
   --context-registers       Enable context-register collection when supported.
   --provider GUID           Capture a private ETW provider session.
@@ -53,12 +55,22 @@ Options:
   --dso TEXT                Filter by module/shared-object substring.
   --symbol TEXT             Filter by symbol substring.
   --symbol-path DIR         Add a local PDB search directory.
+  --archive DIR             Resolve unavailable paths through verified modules.tsv.
   --percent-limit N         Hide rows below N percent.
   -s, --sort FIELD          Sort by samples, comm, dso, or symbol.
   -g, --call-graph [MODE]   Text call tree; MODE is callee (default) or caller.
   --metadata               With --json, include quality metadata and rows.
   --strict-quality         Fail on lost/dropped/malformed data.
+  --max-lost-events N       Maximum acceptable ETW lost-event count.
+  --max-missing-stacks N    Maximum acceptable missing-stack count.
   --exact-stacks            Include only exact stack correlations.
+  --stream                  Two-pass CPU table; omits stacks and retains no samples.
+  --archive DIR             Load verified binaries/PDBs from an archive.
+  --include-children        Include descendants of --pid.
+  --cpu N                   Select processor index.
+  --time-start MS           Select samples after capture-relative time.
+  --time-end MS             Select samples before capture-relative time.
+  --scope all|user|kernel   Select sampled address space.
   --folded, --collapsed     Print collapsed stacks: comm;frame;... count.
   --stdio                   Text output (default; perf-compatible).
   --quiet                   Suppress quality diagnostics.
@@ -96,6 +108,7 @@ Options:
   -F, --fields LIST         Comma-separated fields (default:
                             timestamp,cpu,pid,tid,ip,comm,dso,symbol).
   --symbol-path DIR         Add a local PDB search directory.
+  --archive DIR             Resolve unavailable paths through verified modules.tsv.
   --limit N                 Emit at most N samples; 0 means unlimited.
   --csv                     Use comma-separated output and CSV quoting.
   -h, --help                Show this help.
@@ -169,6 +182,7 @@ Options:
   --iterations N            Number of snapshots; 0 means until Ctrl-C.
   --sort FIELD              Sort by samples, comm, dso, or symbol.
   --symbol-path DIR         Add a local PDB search directory.
+  --archive DIR             Resolve unavailable paths through verified modules.tsv.
   --percent-limit N         Hide rows below N percent (default: 1).
   --elevate                 Start the hidden elevated worker.
   -h, --help                Show this help.
@@ -183,6 +197,7 @@ Show sampled instruction heat with source lines and optional disassembly.
 Options:
   -i, --input FILE          Read FILE.
   --symbol-path DIR         Add a local PDB search directory.
+  --archive DIR             Resolve unavailable paths through verified modules.tsv.
   -p, --pid PID             Include only PID.
   --limit N                 Limit rows (default: 50).
   --disasm                  Decode instruction bytes with Zydis.
@@ -202,6 +217,7 @@ Compare two CPU profiles. Positive values indicate growth in the second trace.
 
 Options:
   --symbol-path DIR         Add a local PDB search directory.
+  --archive DIR             Resolve unavailable paths through verified modules.tsv.
   --pid PID                 Include only PID.
   --dso TEXT                Filter by module/shared-object substring.
   --calltree                Compare call-tree weights.
@@ -223,6 +239,7 @@ Options:
   -p, --pid PID             Include only modules referenced by PID.
   --symbol-path DIR         Add a local PDB search directory.
   --max-size-mb N           Skip copied files larger than N MiB.
+  --include-trace           Copy input ETL as trace.etl.
   -h, --help                Show this help.
 )";
 

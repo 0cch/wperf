@@ -18,6 +18,10 @@ struct RunState {
     uint32_t target_pid = 0;
     uint32_t guard_pid = 0;
     uint32_t error_code = 0;
+    uint32_t restore_source = 0;
+    uint32_t restore_interval = 0;
+    uint32_t configured_interval = 0;
+    uint32_t restore_clear_pmc = 0;
     std::wstring updated_utc;
 };
 

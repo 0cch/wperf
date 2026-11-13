@@ -390,6 +390,8 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
         return 9;
     }
 
+    ScopedHandle controller(OpenProcess(SYNCHRONIZE,FALSE,expected_controller_pid));
+    if(!controller.get())return 4;
     std::wstring command;
     if (!pipe.ReceiveLine(command, 10000, &error) || command != L"START") {
         logger.Log(LogLevel::Error, L"ELEVATING", L"START handshake failed");
@@ -422,6 +424,12 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     if (!ParseUint32(OptionValue(arguments, L"--period", L"0"), trace_options.pmc_interval)) return 2;
     trace_options.enable_lbr = lbr_text == L"1";
     trace_options.enable_context_registers = context_registers_text == L"1";
+    trace_options.stack_cache=HasFlag(arguments,L"--stack-cache");
+    const auto counter_text=OptionValue(arguments,L"--pmc-counters");
+    if(!counter_text.empty()) {
+        std::wistringstream values(counter_text); std::wstring token;
+        while(std::getline(values,token,L',')) { uint32_t source=0; if(!ParseUint32(token,source))return 2; trace_options.pmc_counter_sources.push_back(source); }
+    }
     trace_options.enable_stack_tracing = call_graph_text == L"1";
     if (!provider_text.empty()) {
         if (FAILED(IIDFromString(provider_text.c_str(), &trace_options.provider_id))) {
@@ -434,29 +442,6 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
         trace_options.enable_provider = true;
         trace_options.enable_stack_tracing = false;
     }
-    if (!session.Start(trace_options, &error)) {
-        logger.Log(LogLevel::Error, L"WORKER_READY", error);
-        state.phase = L"INTERNAL_ERROR";
-        state.error_code = 4;
-        state_store.Write(state, nullptr);
-        pipe.SendLine(L"ERROR 4 " + error, nullptr);
-        pipe.SendLine(L"FINISHED 4", nullptr);
-        return 4;
-    }
-
-    state.phase = L"CAPTURING";
-    state_store.Write(state, nullptr);
-    pipe.SendLine(L"PHASE CAPTURING", nullptr);
-    if (trace_options.enable_lbr) {
-        pipe.SendLine(L"STATUS lbr=" + session.LbrStatus(), nullptr);
-    }
-    if (trace_options.enable_context_registers) {
-        pipe.SendLine(L"STATUS context-registers=" +
-                          session.ContextRegisterStatus(),
-                      nullptr);
-    }
-    logger.Log(LogLevel::Info, L"CAPTURING", L"ETW session started");
-
     const std::wstring clean_event_name = L"Local\\wperf-clean-" + correlation_id;
     HANDLE clean_event = CreateEventW(nullptr, TRUE, FALSE, clean_event_name.c_str());
     if (clean_event == nullptr) {
@@ -469,7 +454,7 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
         return 9;
     }
 
-    const ProfileRestoreInfo restore = session.RestoreInfo();
+    const ProfileRestoreInfo restore{};
     std::vector<std::wstring> guard_arguments{
         L"--internal-session-guard",
         L"--session", session_name,
@@ -499,11 +484,42 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     state.guard_pid = guard.process_id;
     state_store.Write(state, nullptr);
     pipe.SendLine(L"PHASE GUARD_STARTED " + std::to_wstring(guard.process_id), nullptr);
+    session.SetRecoveryWriter([&](const ProfileRestoreInfo& restore) {
+        state.restore_source=restore.source; state.restore_interval=restore.original_interval;
+        state.configured_interval=restore.configured_interval; state.restore_clear_pmc=restore.clear_pmc;
+        state.phase=L"CONFIGURING";
+        return state_store.Write(state,&error);
+    });
+    if (!session.Start(trace_options, &error)) {
+        logger.Log(LogLevel::Error, L"WORKER_READY", error);
+        state.phase = L"INTERNAL_ERROR";
+        state.error_code = 4;
+        state_store.Write(state, nullptr);
+        pipe.SendLine(L"ERROR 4 " + error, nullptr);
+        pipe.SendLine(L"FINISHED 4", nullptr);
+        if(!session.IsActive()&&!session.RestoreInfo().clear_pmc)SetEvent(clean_event);
+        CloseHandle(clean_event);
+        return 4;
+    }
+
+    state.phase = L"CAPTURING";
+    state_store.Write(state, nullptr);
+    pipe.SendLine(L"PHASE CAPTURING", nullptr);
+    if (trace_options.enable_lbr) {
+        pipe.SendLine(L"STATUS lbr=" + session.LbrStatus(), nullptr);
+    }
+    if (trace_options.enable_context_registers) {
+        pipe.SendLine(L"STATUS context-registers=" +
+                          session.ContextRegisterStatus(),
+                      nullptr);
+    }
+    logger.Log(LogLevel::Info, L"CAPTURING", L"ETW session started");
+
     pipe.SendLine(L"READY " + session_name, nullptr);
 
     const ULONGLONG deadline = duration_ms == 0 ? 0 : GetTickCount64() + duration_ms;
     while (deadline == 0 || GetTickCount64() < deadline) {
-        if (!pipe.IsConnected()) break;
+        if (!pipe.IsConnected() || WaitForSingleObject(controller.get(),0)!=WAIT_TIMEOUT) break;
         if (pipe.HasData()) {
             std::wstring line;
             if (!pipe.ReceiveLine(line, 1000, &error)) {
@@ -523,7 +539,8 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
 
     state.phase = L"STOPPING";
     state_store.Write(state, nullptr);
-    int exit_code = session.Stop(&error) ? 0 : 4;
+    int exit_code=4;
+    { WorkerStopWatchdog timeout; exit_code=session.Stop(&error)?0:4; }
     TraceQuality quality;
     session.QueryQuality(quality, nullptr);
     if (quality.lost_events || quality.lost_buffers) {
@@ -588,7 +605,7 @@ int RunGuard(const std::vector<std::wstring>& arguments) {
 
         StateStore state_store(state_path);
         RunState state;
-        for (const auto& candidate : StateStore::ReadAll(GetSessionsDirectory())) {
+        for (const auto& candidate : StateStore::ReadAll(std::filesystem::path(state_path).parent_path())) {
             if (candidate.correlation_id == correlation_id) {
                 state = candidate;
                 break;
@@ -605,11 +622,14 @@ int RunGuard(const std::vector<std::wstring>& arguments) {
         ParseUint32(OptionValue(arguments, L"--restore-interval", L"0"), restore.original_interval);
         ParseUint32(OptionValue(arguments, L"--configured-interval", L"0"), restore.configured_interval);
         restore.clear_pmc = OptionValue(arguments, L"--clear-pmc", L"0") == L"1";
+        if(state.restore_interval||state.restore_clear_pmc) {
+            restore={state.restore_source,state.restore_interval,state.configured_interval,state.restore_clear_pmc!=0};
+        }
         EnablePrivilege(L"SeSystemProfilePrivilege", nullptr);
         if (!RestoreProfileConfiguration(restore, &error)) {
             logger.Log(LogLevel::Error, L"WORKER_LOST", error);
             result = 4;
-        }
+        } else { state.restore_interval=state.configured_interval=state.restore_clear_pmc=0; }
         state_store.Write(state, nullptr);
     } else if (wait != WAIT_OBJECT_0) {
         result = 9;
@@ -632,6 +652,8 @@ struct RecordOptions {
     uint32_t pmc_source = 0;
     bool pmc_source_set = false;
     uint32_t pmc_interval = 0;
+    std::vector<uint32_t> pmc_counter_sources;
+    bool stack_cache = false;
     bool frequency_explicit = false;
     bool lbr = false;
     bool context_registers = false;
@@ -678,6 +700,20 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
                 return false;
             }
             options.pmc_source_set = true;
+        } else if(argument==L"--stack-cache") {
+            options.stack_cache=true;
+        } else if(argument==L"--pmc-counters") {
+            if(index+1>=arguments.size())return false;
+            std::wistringstream values(arguments[++index]); std::wstring token;
+            while(std::getline(values,token,L',')) {
+                uint32_t source=0;
+                if(!ParseUint32(token,source)||source==0) { error=L"--pmc-counters requires hardware source IDs"; return false; }
+                if(std::find(options.pmc_counter_sources.begin(),options.pmc_counter_sources.end(),source)!=options.pmc_counter_sources.end()) {
+                    error=L"duplicate PMC snapshot source"; return false;
+                }
+                options.pmc_counter_sources.push_back(source);
+            }
+            if(options.pmc_counter_sources.empty()) { error=L"empty PMC snapshot source list"; return false; }
         } else if (argument == L"--period") {
             if (index + 1 >= arguments.size() ||
                 !ParseUint32(arguments[++index], options.pmc_interval) || options.pmc_interval == 0) {
@@ -780,6 +816,7 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
         error = L"--pid and a target command are mutually exclusive";
         return false;
     }
+    if(options.stack_cache&&!options.call_graph) { error=L"--stack-cache requires call graphs"; return false; }
     const bool pmc = options.profile == L"pmu" || options.pmc_source_set;
     if ((pmc && options.frequency_explicit) || (!pmc && options.pmc_interval != 0)) {
         error = L"use --period for PMC event counts and -F for CPU sampling frequency";
@@ -884,6 +921,12 @@ int RunRecord(const std::vector<std::wstring>& arguments, uint32_t* captured_pid
         L"--context-registers", options.context_registers ? L"1" : L"0",
         L"--duration-ms", std::to_wstring(options.duration_ms),
     };
+    if(options.stack_cache)worker_arguments.push_back(L"--stack-cache");
+    if(!options.pmc_counter_sources.empty()) {
+        std::wstring values;
+        for(uint32_t source:options.pmc_counter_sources) { if(!values.empty())values+=L","; values+=std::to_wstring(source); }
+        worker_arguments.push_back(L"--pmc-counters"); worker_arguments.push_back(values);
+    }
     if (options.provider.has_value()) {
         wchar_t provider_text[64]{};
         StringFromGUID2(*options.provider, provider_text,
@@ -1058,9 +1101,12 @@ int RunRecord(const std::vector<std::wstring>& arguments, uint32_t* captured_pid
         CloseHandle(observed_process);
     }
 
-    if (finished && worker_result == 0 && (options.pmc_source_set || options.profile == L"pmu" || options.lbr)) {
+    if (finished && worker_result == 0 && (options.pmc_source_set || options.profile == L"pmu" || options.lbr || !options.pmc_counter_sources.empty())) {
         TraceData captured;
         if (!ReadEtwFile(output, captured, &error)) { PrintError(error); worker_result = 6; }
+        else if(!options.pmc_counter_sources.empty()&&captured.quality.pmc_counter_events==0) {
+            PrintError(L"requested PMC snapshots produced no counter payloads; unavailable"); worker_result=5;
+        }
         else if (options.lbr && captured.quality.lbr_events == 0) {
             PrintError(L"LBR configuration produced no LBR events; unavailable"); worker_result = 5;
         } else if ((options.pmc_source_set || options.profile == L"pmu") &&
@@ -1310,7 +1356,7 @@ int RunStat(const std::vector<std::wstring>& arguments) {
             return 6;
         }
         Symbolizer symbolizer;
-        symbolizer.Initialize({}, nullptr);
+        if (!symbolizer.Initialize({}, &error)) { PrintError(error); return 6; }
         for (const auto& image : trace.images) {
             symbolizer.AddModule(image);
         }
@@ -1521,6 +1567,12 @@ int RunCommandLine(const std::vector<std::wstring>& arguments) {
     }
     if (command == L"--internal-session-guard") {
         return RunGuard(rest);
+    }
+    if(command==L"--internal-stop-timeout-test") {
+        if(GetEnvironmentVariableW(L"WPERF_ENABLE_TEST_FAULTS",nullptr,0)==0)return 2;
+        WorkerStopWatchdog timeout(200);
+        Sleep(INFINITE);
+        return 9;
     }
     if (command == L"--internal-test-crash") {
         InstallCrashHandler(GetCrashesDirectory(), NewId());

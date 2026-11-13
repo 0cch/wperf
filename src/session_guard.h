@@ -12,6 +12,7 @@ public:
     bool Start(const std::wstring& session, const ProfileRestoreInfo& restore,
                std::wstring* error = nullptr);
     void Complete();
+    bool UpdateRestore(const ProfileRestoreInfo& restore, std::wstring* error = nullptr);
 private:
     HANDLE clean_event_ = nullptr;
     RunState state_;

@@ -2,12 +2,14 @@
 
 #include <windows.h>
 #include <evntrace.h>
+#include <evntprov.h>
 #include "trace_model.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace wperf {
 
@@ -48,6 +50,8 @@ struct TraceOptions {
     uint32_t pmc_source = 0;
     uint32_t pmc_interval = 0;
     bool enable_lbr = false;
+    bool stack_cache = false;
+    std::vector<uint32_t> pmc_counter_sources;
 };
 
 struct ProfileRestoreInfo {
@@ -74,6 +78,7 @@ public:
     const std::wstring& LbrStatus() const;
     bool QueryQuality(TraceQuality& quality, std::wstring* error = nullptr) const;
     ProfileRestoreInfo RestoreInfo() const;
+    void SetRecoveryWriter(std::function<bool(const ProfileRestoreInfo&)> writer) { recovery_writer_=std::move(writer); }
 
 private:
     TRACEHANDLE handle_ = 0;
@@ -88,6 +93,8 @@ private:
     bool RestoreProfile(std::wstring* error);
     std::wstring context_register_status_;
     std::wstring lbr_status_;
+    REGHANDLE metadata_provider_ = 0;
+    std::function<bool(const ProfileRestoreInfo&)> recovery_writer_;
 };
 
 struct PmcCounterOwnerInfo {

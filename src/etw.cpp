@@ -1,6 +1,8 @@
 #include "etw.h"
 
 #include "common.h"
+#include "etw_decode.h"
+#include <sstream>
 
 #include <algorithm>
 #include <cstring>
@@ -119,6 +121,17 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         EVENT_TRACE_USE_GLOBAL_SEQUENCE |
         (options.system_logger ? EVENT_TRACE_SYSTEM_LOGGER_MODE : 0);
 
+    if(options.pmc_profile && !options.pmc_counter_sources.empty()) {
+        if(error)*error=L"PMC interrupt sampling and event-counter snapshots require separate captures";
+        return false;
+    }
+    if(!options.pmc_counter_sources.empty()) {
+        if(options.pmc_counter_sources.size()>QueryMaxPmcCounters(error))return false;
+        std::wstring query_error;
+        const auto owners=QueryPmcCounterOwners(&query_error);
+        if(!query_error.empty()||!owners.empty()) { if(error)*error=L"PMC counters are unavailable or already owned"; return false; }
+        properties->EnableFlags|=EVENT_TRACE_FLAG_CSWITCH;
+    }
     const bool needs_profile = options.system_logger &&
         (options.pmc_profile || (options.enable_flags & EVENT_TRACE_FLAG_PROFILE) != 0);
     if (needs_profile && !ConfigureProfile(options, error)) return false;
@@ -168,6 +181,24 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         }
     }
 
+    if(!options.pmc_counter_sources.empty()) {
+        const auto sources=QueryProfileSources(error);
+        for(uint32_t requested:options.pmc_counter_sources)
+            if(requested==0 || std::none_of(sources.begin(),sources.end(),[&](const auto& source){return source.source==requested;})) {
+                Stop(nullptr); if(error)*error=L"requested snapshot PMC source was not found"; return false;
+            }
+        CLASSIC_EVENT_ID hook{};
+        hook.EventGuid={0x3d6fa8d1,0xfe05,0x11d0,{0x9d,0xda,0x00,0xc0,0x4f,0xd7,0xba,0x7c}}; hook.Type=36;
+        ULONG status=TraceSetInformation(handle_,TracePmcCounterListInfo,
+            const_cast<uint32_t*>(options.pmc_counter_sources.data()),static_cast<ULONG>(options.pmc_counter_sources.size()*sizeof(uint32_t)));
+        if(status==ERROR_SUCCESS)status=TraceSetInformation(handle_,TracePmcEventListInfo,&hook,sizeof(hook));
+        if(status!=ERROR_SUCCESS) { Stop(nullptr); if(error)*error=LastErrorWith(L"configure PMC event snapshots",status); return false; }
+    }
+    if(options.stack_cache) {
+        TRACE_STACK_CACHING_INFO cache{}; cache.Enabled=TRUE; cache.CacheSize=4096; cache.BucketCount=4096;
+        const ULONG status=TraceSetInformation(handle_,TraceStackCachingInfo,&cache,sizeof(cache));
+        if(status!=ERROR_SUCCESS) { Stop(nullptr); if(error)*error=LastErrorWith(L"configure ETW stack cache",status); return false; }
+    }
     if (options.enable_stack_tracing) {
         CLASSIC_EVENT_ID stack_event{};
         stack_event.EventGuid = kPerfInfoGuid;
@@ -223,6 +254,22 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         }
     }
 
+    ULONG metadata_status=EventRegister(&kWperfMetadataGuid,nullptr,nullptr,&metadata_provider_);
+    if(metadata_status==ERROR_SUCCESS)metadata_status=EnableTraceEx2(handle_,&kWperfMetadataGuid,
+        EVENT_CONTROL_CODE_ENABLE_PROVIDER,TRACE_LEVEL_INFORMATION,0,0,0,nullptr);
+    if(metadata_status==ERROR_SUCCESS) {
+        std::ostringstream metadata; metadata<<"wperf-meta-v1\nsession "<<HexText(options.session_name)<<'\n';
+        if(configured_interval_!=0)metadata<<"period "<<original_interval_.Source<<' '<<configured_interval_<<'\n';
+        const auto sources=QueryProfileSources(nullptr);
+        for(uint32_t id:options.pmc_counter_sources) {
+            const auto source=std::find_if(sources.begin(),sources.end(),[&](const auto& value){return value.source==id;});
+            metadata<<"counter "<<id<<' '<<HexText(source==sources.end()?std::to_wstring(id):source->description)<<'\n';
+        }
+        const auto text=metadata.str(); EVENT_DESCRIPTOR descriptor{}; descriptor.Id=1; descriptor.Level=TRACE_LEVEL_INFORMATION;
+        EVENT_DATA_DESCRIPTOR data{}; EventDataDescCreate(&data,text.data(),static_cast<ULONG>(text.size()));
+        metadata_status=EventWrite(metadata_provider_,&descriptor,1,&data);
+    }
+    if(metadata_status!=ERROR_SUCCESS) { Stop(nullptr); if(error)*error=LastErrorWith(L"write capture metadata",metadata_status); return false; }
     return true;
 }
 
@@ -258,6 +305,7 @@ bool EtwSession::Stop(std::wstring* error) {
         final_quality_.lost_events = properties->EventsLost;
         final_quality_.lost_buffers = uint64_t{properties->LogBuffersLost} + properties->RealTimeBuffersLost;
     }
+    if(metadata_provider_) { EventUnregister(metadata_provider_); metadata_provider_=0; }
     handle_ = 0;
     name_.clear();
     return RestoreProfile(error);
@@ -386,6 +434,14 @@ bool EtwSession::ConfigureProfile(const TraceOptions& options, std::wstring* err
     ULONG result = TraceQueryInformation(0, TraceSampledProfileIntervalInfo, &original_interval_,
                                          sizeof(original_interval_), &returned);
     original_interval_valid_ = result == ERROR_SUCCESS;
+    configured_interval_=interval;
+    if(result==ERROR_SUCCESS&&recovery_writer_ &&
+       !recovery_writer_({original_interval_.Source,original_interval_.Interval,interval,options.pmc_profile})) {
+        configured_interval_=original_interval_.Interval;
+        RestoreProfile(nullptr);
+        if(error)*error=L"cannot persist sampling recovery checkpoint";
+        return false;
+    }
     if (result == ERROR_SUCCESS && options.pmc_profile) {
         ULONG source = options.pmc_source;
         result = TraceSetInformation(0, TraceProfileSourceConfigInfo, &source, sizeof(source));
@@ -400,6 +456,9 @@ bool EtwSession::ConfigureProfile(const TraceOptions& options, std::wstring* err
         const ULONG query = TraceQueryInformation(0, TraceSampledProfileIntervalInfo, &actual,
                                                   sizeof(actual), &returned);
         if (query == ERROR_SUCCESS) configured_interval_ = actual.Interval;
+        if(recovery_writer_&&!recovery_writer_(RestoreInfo())) {
+            RestoreProfile(nullptr); if(error)*error=L"cannot persist configured sampling interval"; return false;
+        }
     }
     if (result != ERROR_SUCCESS) {
         if (error) *error = LastErrorWith(L"configure profile interval/source", result);
@@ -442,7 +501,7 @@ ULONG TraceFlagsForProfile(std::wstring_view profile) {
                  EVENT_TRACE_FLAG_VIRTUAL_ALLOC | EVENT_TRACE_FLAG_VAMAP;
     }
     if (profile == L"io") {
-        flags |= EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_FILE_IO |
+        flags |= EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_IO_INIT | EVENT_TRACE_FLAG_DISK_FILE_IO |
                  EVENT_TRACE_FLAG_FILE_IO | EVENT_TRACE_FLAG_FILE_IO_INIT;
     }
     if (profile == L"kernel") {
@@ -469,7 +528,7 @@ ULONG TraceFlagsForLiveFilter(std::wstring_view filter) {
     } else if (filter == L"pagefault" || filter == L"vm") {
         flags |= EVENT_TRACE_FLAG_MEMORY_PAGE_FAULTS;
     } else if (filter == L"io") {
-        flags |= EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_FILE_IO |
+        flags |= EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_IO_INIT | EVENT_TRACE_FLAG_DISK_FILE_IO |
                  EVENT_TRACE_FLAG_FILE_IO | EVENT_TRACE_FLAG_FILE_IO_INIT;
     } else if (filter == L"all" || filter.empty()) {
         flags |= EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER |

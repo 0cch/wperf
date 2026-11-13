@@ -8,6 +8,7 @@
 #include <ostream>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace wperf {
 
@@ -16,6 +17,10 @@ struct CpuReportOptions {
     std::optional<uint32_t> tid;
     std::optional<uint32_t> profile_source;
     bool exact_stacks_only = false;
+    std::optional<uint32_t> cpu;
+    std::optional<uint64_t> start_offset_ns, end_offset_ns;
+    bool include_children = false;
+    enum class Scope { All, User, Kernel } scope = Scope::All;
     std::wstring comm_filter;
     std::wstring dso_filter;
     std::wstring symbol_filter;
@@ -30,5 +35,10 @@ struct CpuReportOptions {
 
 void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                     const CpuReportOptions& options, std::wostream& output);
+bool MatchesSampleSelection(const TraceData& trace, const SampleRecord& sample,
+                             const CpuReportOptions& options);
+void WriteCpuReportFeed(const TraceData& metadata, Symbolizer& symbolizer,
+                        const CpuReportOptions& options, std::wostream& output,
+                        const std::function<void(const std::function<void(const SampleRecord&)>&)>& feed);
 
 }  // namespace wperf

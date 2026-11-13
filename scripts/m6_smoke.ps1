@@ -72,7 +72,8 @@ if ($pmuStatExit -ne 0) {
 
 $lbrTrace = Join-Path $artifactDir "lbr.etl"
 Remove-Item -LiteralPath $lbrTrace -Force -ErrorAction SilentlyContinue
-& $wperf record --profile cpu --lbr -F 999 -o $lbrTrace -- $workload 800 1
+$lbrOutput = & $wperf record --profile cpu --lbr -F 999 -o $lbrTrace -- $workload 800 1 2>&1
+$lbrOutput | Out-File -LiteralPath (Join-Path $artifactDir 'lbr-capture.txt') -Encoding utf8
 $lbrExit = $LASTEXITCODE
 if ($lbrExit -ne 0) {
     "LBR unsupported or failed with exit $lbrExit" |
@@ -83,7 +84,10 @@ if ($pmuExit -ne 0 -or $pmuStatExit -ne 0) {
     throw "PMC source was advertised, but capture/stat did not produce usable PMC samples"
 }
 if ($lbrExit -ne 0) {
-    Write-Host "SKIP: LBR capture unavailable (exit $lbrExit); PMC checks passed."
+    if (($lbrOutput -join "`n") -notmatch 'TraceConfigureLastBranchRecord.*\((50|1|120)\)') {
+        throw "LBR capture failed without a documented unsupported capability: $lbrExit"
+    }
+    Write-Host "SKIP: native LBR API reports unsupported; PMC checks passed."
 } else {
     $branches = & $wperf trace -i $lbrTrace -e lbr --max 1 --json | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $branches.Count -eq 0) { throw 'LBR enabled without decoded branches' }

@@ -25,5 +25,9 @@ bool DisassembleImageAddress(const ImageRecord& image, uint64_t address,
                              size_t max_instructions,
                              std::vector<DisassembledInstruction>& instructions,
                              std::wstring* error = nullptr);
+bool DisassembleImageRange(const ImageRecord& image, uint64_t address, size_t bytes,
+                            uint32_t pointer_size, size_t max_instructions,
+                            std::vector<DisassembledInstruction>& instructions,
+                            std::wstring* error = nullptr);
 
 }  // namespace wperf

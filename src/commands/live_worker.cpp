@@ -47,7 +47,8 @@ bool MatchesEventFilter(const TraceEvent& event, const std::wstring& filter) {
     return TraceEventKindName(event.kind) == filter;
 }
 
-bool ReceiveCommand(PipeClient& pipe, bool& stop) {
+bool ReceiveCommand(PipeClient& pipe, HANDLE controller, bool& stop) {
+    if(WaitForSingleObject(controller,0)!=WAIT_TIMEOUT)return false;
     if (!pipe.IsConnected()) return false;
     if (!pipe.HasData()) {
         return true;
@@ -63,11 +64,11 @@ bool ReceiveCommand(PipeClient& pipe, bool& stop) {
     return true;
 }
 
-bool WaitInterruptibly(PipeClient& pipe, uint64_t duration_ms, bool& stop,
+bool WaitInterruptibly(PipeClient& pipe, HANDLE controller, uint64_t duration_ms, bool& stop,
                        std::wstring& error) {
     const ULONGLONG deadline = GetTickCount64() + duration_ms;
     while (GetTickCount64() < deadline) {
-        if (!ReceiveCommand(pipe, stop)) {
+        if (!ReceiveCommand(pipe,controller,stop)) {
             error = L"live control pipe disconnected";
             return false;
         }
@@ -155,6 +156,8 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
         actual_controller_pid != expected_controller_pid) {
         return 4;
     }
+    ScopedHandle controller(OpenProcess(SYNCHRONIZE,FALSE,expected_controller_pid));
+    if(!controller.get()) { pipe.SendLine(L"FINISHED 4",nullptr); return 4; }
     if (!pipe.SendLine(L"HELLO " + nonce + L" " +
                            std::to_wstring(GetCurrentProcessId()), &error)) {
         return 4;
@@ -164,7 +167,12 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
         return 4;
     }
 
+    SessionGuard guard;
+    if(!guard.Start(session_name,{},&error)) {
+        pipe.SendLine(L"ERROR "+error,nullptr); pipe.SendLine(L"FINISHED 4",nullptr); return 4;
+    }
     LiveTopCapture capture;
+    capture.SetRecoveryWriter([&](const ProfileRestoreInfo& restore){ return guard.UpdateRestore(restore,&error); });
     const ULONG enable_flags = mode == L"top"
                                    ? TraceFlagsForProfile(L"cpu")
                                    : TraceFlagsForLiveFilter(event_filter);
@@ -177,13 +185,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     }
 
     bool stop = false;
-    SessionGuard guard;
-    if (!guard.Start(session_name, capture.RestoreInfo(), &error)) {
-        capture.Stop();
-        pipe.SendLine(L"ERROR " + error, nullptr);
-        pipe.SendLine(L"FINISHED 4", nullptr);
-        return 4;
-    }
+    uint64_t observed_lbr=0;
     int result = 0;
     const ULONGLONG started = GetTickCount64();
     if (mode == L"top") {
@@ -193,7 +195,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
             result = 4;
         } else {
             while (!stop) {
-                if (!WaitInterruptibly(pipe, interval_ms, stop, error)) {
+                if (!WaitInterruptibly(pipe,controller.get(),interval_ms,stop,error)) {
                     result = 5;
                     break;
                 }
@@ -261,7 +263,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
             pipe.SendLine(L"OUT timestamp_ns cpu pid tid event values comm", &error);
         }
         while (!stop && emitted < max_events) {
-            if (!WaitInterruptibly(pipe, std::min<uint64_t>(interval_ms, 250), stop,
+            if (!WaitInterruptibly(pipe,controller.get(),std::min<uint64_t>(interval_ms,250),stop,
                                    error)) {
                 result = 5;
                 break;
@@ -271,6 +273,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
             }
             if (!capture.Running()) { error = capture.LastError(); result = 5; break; }
             TraceData trace = capture.Snapshot();
+            observed_lbr+=trace.quality.lbr_events;
             if (trace.quality.incomplete) {
                 pipe.SendLine(L"WARN ring_dropped=" +
                                   std::to_wstring(trace.quality.ring_dropped) +
@@ -332,6 +335,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                             L",\"wait_reason\":" + std::to_wstring(event.wait_reason) +
                             L",\"previous_state\":" + std::to_wstring(event.previous_state) +
                             L",\"flags\":" + std::to_wstring(event.flags) +
+                            L",\"file_path\":\""+EscapeJson(event.file_path)+L"\""+
                             L",\"size\":" + std::to_wstring(event.size) +
                             L",\"offset\":" + std::to_wstring(event.offset) +
                             L",\"correlation_id\":" + std::to_wstring(event.correlation_id) +
@@ -365,8 +369,18 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
         }
     }
 
-    if (capture.Stop()) guard.Complete();
-    else { error = capture.LastError(); result = 4; }
+    {
+        WorkerStopWatchdog timeout;
+        if(capture.Stop())guard.Complete();
+        else { error=capture.LastError(); result=4; }
+    }
+    const auto final=capture.Snapshot();
+    if(final.quality.incomplete)pipe.SendLine(L"WARN final_lost="+std::to_wstring(final.quality.lost_events)+
+        L" final_lost_buffers="+std::to_wstring(final.quality.lost_buffers),nullptr);
+    observed_lbr+=final.quality.lbr_events;
+    if(mode==L"trace" && event_filter==L"lbr" && !stop && result==0 && observed_lbr==0) {
+        error=L"LBR configuration produced no LBR events; unavailable"; result=5;
+    }
     if (!error.empty()) {
         pipe.SendLine(L"ERROR " + error, nullptr);
     }

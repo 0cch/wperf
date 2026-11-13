@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -33,10 +34,30 @@ struct ImageRecord {
     uint64_t load_ns = 0;
     uint64_t unload_ns = 0;
     std::wstring path;
+    std::wstring resolved_path;  // Validated archive location; path remains the recorded identity.
 };
 
 enum class SampleKind { Cpu, Pmc };
 enum class StackQuality { Missing, Exact, Approximate };
+
+class SharedStack {
+public:
+    SharedStack() = default;
+    SharedStack(std::initializer_list<uint64_t> frames) : data_(std::make_shared<std::vector<uint64_t>>(frames)) {}
+    SharedStack& operator=(std::initializer_list<uint64_t> frames) { data_=std::make_shared<std::vector<uint64_t>>(frames); return *this; }
+    SharedStack& operator=(const std::vector<uint64_t>& frames) { data_=std::make_shared<std::vector<uint64_t>>(frames); return *this; }
+    void Share(std::shared_ptr<std::vector<uint64_t>> frames) { data_=std::move(frames); }
+    bool empty() const { return !data_ || data_->empty(); }
+    size_t size() const { return data_ ? data_->size() : 0; }
+    uint64_t front() const { return View().front(); }
+    uint64_t operator[](size_t index) const { return View()[index]; }
+    auto begin() const { return View().begin(); }
+    auto end() const { return View().end(); }
+    const std::vector<uint64_t>& View() const { static const std::vector<uint64_t> empty; return data_ ? *data_ : empty; }
+    operator std::vector<uint64_t>() const { return View(); }
+private:
+    std::shared_ptr<std::vector<uint64_t>> data_;
+};
 
 struct SampleRecord {
     uint64_t timestamp_ns = 0;
@@ -44,7 +65,7 @@ struct SampleRecord {
     uint32_t pid = 0;
     uint32_t tid = 0;
     uint64_t instruction_pointer = 0;
-    std::vector<uint64_t> stack;
+    SharedStack stack;
     std::vector<uint64_t> pmc_counters;
     bool stack_missing = false;
     SampleKind kind = SampleKind::Cpu;
@@ -88,6 +109,10 @@ struct TraceEvent {
     bool has_status = false;
     bool has_duration = false;
     bool is_completion = false;
+    uint64_t file_key = 0;
+    uint64_t file_object = 0;
+    std::wstring file_path;
+    uint32_t operation_id = 0;
 };
 
 struct TraceQuality {
@@ -117,6 +142,7 @@ struct TraceQuality {
     uint64_t correlation_evicted = 0;
     uint64_t syscall_orphaned = 0;
     uint64_t pmc_samples = 0;
+    uint64_t pmc_counter_resets = 0;
     bool incomplete = false;
 };
 
@@ -132,6 +158,12 @@ struct TraceData {
     uint64_t profile_interval_ns = 0;  // Unknown until interval metadata is read.
     std::unordered_map<uint32_t, uint64_t> profile_intervals;
     std::wstring source_path;
+    std::wstring session_name;
+    uint64_t start_ns = UINT64_MAX;
+    uint64_t end_ns = 0;
+    std::vector<uint32_t> pmc_counter_sources;
+    std::unordered_map<uint32_t,std::wstring> pmc_source_names;
+    bool stacks_loaded = true;
 };
 
 const wchar_t* TraceEventKindName(TraceEventKind kind);
@@ -144,6 +176,8 @@ const ImageRecord* FindImage(const TraceData& trace, uint32_t pid, uint64_t addr
 std::wstring ProcessDisplayName(const TraceData& trace, uint32_t pid,
                                 uint64_t timestamp_ns = UINT64_MAX);
 uint64_t SampleWeightNs(const TraceData& trace, const SampleRecord& sample);
+std::wstring ModuleIdentityKey(const ImageRecord& image);
+uint64_t ProcessInstanceStart(const TraceData& trace, uint32_t pid, uint64_t time);
 
 class ImageIndex {
 public:
@@ -154,13 +188,23 @@ private:
     std::unordered_map<uint32_t, std::map<uint64_t, std::vector<size_t>>> by_pid_;
 };
 
+class ThreadIndex {
+public:
+    void Build(const TraceData& trace);
+    const ThreadRecord* Find(uint32_t tid,uint64_t time) const;
+private:
+    std::unordered_map<uint32_t,std::vector<const ThreadRecord*>> values_;
+};
+
 class ProcessNameIndex {
 public:
     explicit ProcessNameIndex(const TraceData& trace);
     std::wstring Name(uint32_t pid, uint64_t timestamp_ns) const;
+    uint64_t InstanceStart(uint32_t pid, uint64_t timestamp_ns) const;
 private:
     struct NameRecord { uint64_t start, end; std::wstring name; };
     std::unordered_map<uint32_t, std::vector<NameRecord>> names_;
+    std::unordered_map<uint32_t, std::vector<std::pair<uint64_t, uint64_t>>> instances_;
 };
 
 }  // namespace wperf

@@ -1,6 +1,10 @@
 # wperf Changelog
 
 ## Unreleased
+- Added unknown-period and full-identity aggregation fixes, inline expansion, dedicated symcache and epoch-aware stack references.
+- Added verified archive loading, sample streaming, PMC event snapshots, report selectors, scheduler/I/O quantiles and function heat.
+- Moved lifecycle work out of the ETW callback lock, added managed budgets, early recovery checkpoints and owned-worker teardown deadlines.
+- Added elevated live/fault integration that CI requires instead of accepting access-denied smoke results.
 - Fixed live syscall/thread attribution, cross-window correlation and controller/worker cleanup.
 - Isolated DbgHelp sessions, indexed module/name lookup, reused module identities and avoided unused stack aggregation.
 - Enabled source-aware PMC interrupt sampling and LBR triggers; added native PMC periods and zero-event validation.

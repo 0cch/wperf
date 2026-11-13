@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <unordered_map>
 
 namespace wperf {
@@ -62,6 +63,7 @@ struct StackRecord {
     uint32_t cpu = 0;
     uint64_t timestamp_ns = 0;
     uint64_t stack_key = 0;
+    uint64_t order = 0;
     bool compressed = false;
     bool kernel = false;
     std::vector<uint64_t> frames;
@@ -104,7 +106,8 @@ struct ResolvedStack {
 
 struct StackStore {
     std::vector<StackRecord> records;
-    std::unordered_map<uint64_t, std::vector<uint64_t>> definitions;
+    struct Definition { uint64_t order, end_ns; std::vector<uint64_t> frames; };
+    std::unordered_map<uint64_t, std::vector<Definition>> definitions;
 };
 
 struct IndexKey {
@@ -134,13 +137,6 @@ struct ReplayIndexes {
     std::unordered_map<IndexKey, std::vector<size_t>, IndexKeyHash>
         images_by_pid_base;
 };
-uint8_t ReadU8(const BYTE* data, size_t size, size_t offset) {
-    if (data == nullptr || offset >= size) {
-        return 0;
-    }
-    return data[offset];
-}
-
 uint32_t ReadU32(const BYTE* data, size_t size, size_t offset) {
     if (offset + sizeof(uint32_t) > size) {
         return 0;
@@ -172,31 +168,6 @@ uint64_t ReadPointer(const BYTE* data, size_t size, size_t offset,
     return ReadU32(data, size, offset);
 }
 
-std::wstring ReadWideString(const BYTE* data, size_t size, size_t offset) {
-    if (offset >= size) {
-        return {};
-    }
-    const size_t chars = (size - offset) / sizeof(wchar_t);
-    const auto* text = reinterpret_cast<const wchar_t*>(data + offset);
-    size_t length = 0;
-    while (length < chars && text[length] != L'\0') {
-        ++length;
-    }
-    if (length == 0) {
-        return {};
-    }
-    return std::wstring(text, length);
-}
-
-size_t SidLength(const BYTE* data, size_t size, size_t offset) {
-    if (offset + 8 > size) {
-        return 0;
-    }
-    const uint8_t subauthority_count = data[offset + 1];
-    const size_t length = 8 + static_cast<size_t>(subauthority_count) * 4;
-    return offset + length <= size ? length : 0;
-}
-
 uint64_t QpcToNs(uint64_t qpc, uint64_t frequency) {
     if (frequency == 0) {
         frequency = 10000000;
@@ -212,16 +183,11 @@ uint64_t TimestampToNs(const EVENT_RECORD& record, const TraceData& trace) {
 
 void ParseProcess(const EVENT_RECORD& record, TraceData& trace,
                   ReplayIndexes& indexes) {
-    const BYTE* data = static_cast<const BYTE*>(record.UserData);
-    const size_t size = record.UserDataLength;
-    const uint32_t p = trace.pointer_size;
-    if (size < p + 24) {
-        return;
-    }
-
-    const uint8_t opcode = record.EventHeader.EventDescriptor.Opcode;
-    const uint32_t pid = ReadU32(data, size, p);
-    const uint64_t timestamp_ns = TimestampToNs(record, trace);
+    ProcessRecord process;
+    if(!DecodeProcessPayload(record,trace.pointer_size,trace.qpc_frequency,process)) { ++trace.quality.decode_errors; return; }
+    const uint8_t opcode=record.EventHeader.EventDescriptor.Opcode;
+    const uint32_t pid=process.pid;
+    const uint64_t timestamp_ns=process.start_ns;
     auto& active = indexes.processes_by_pid[pid];
     if (opcode == 2 || opcode == 4) {
         for (auto iterator = active.rbegin(); iterator != active.rend();
@@ -234,20 +200,6 @@ void ParseProcess(const EVENT_RECORD& record, TraceData& trace,
             }
         }
         return;
-    }
-
-    ProcessRecord process;
-    process.pid = pid;
-    process.parent_pid = ReadU32(data, size, p + 4);
-    process.start_ns = timestamp_ns;
-
-    const size_t fixed_before_dtb = p + 16;
-    const size_t dtb_offset = static_cast<size_t>((fixed_before_dtb + p - 1) / p) * p;
-    const size_t sid_offset = dtb_offset + p;
-    const size_t sid_length = SidLength(data, size, sid_offset);
-    if (sid_length != 0) {
-        const size_t image_offset = sid_offset + sid_length;
-        process.image_name = ReadWideString(data, size, image_offset);
     }
 
     for (const size_t index : active) {
@@ -264,15 +216,11 @@ void ParseProcess(const EVENT_RECORD& record, TraceData& trace,
 
 void ParseThread(const EVENT_RECORD& record, TraceData& trace,
                  ReplayIndexes& indexes) {
-    const BYTE* data = static_cast<const BYTE*>(record.UserData);
-    const size_t size = record.UserDataLength;
-    if (size < 8) {
-        return;
-    }
-    const uint8_t opcode = record.EventHeader.EventDescriptor.Opcode;
-    const uint32_t pid = ReadU32(data, size, 0);
-    const uint32_t tid = ReadU32(data, size, 4);
-    const uint64_t timestamp_ns = TimestampToNs(record, trace);
+    ThreadRecord thread;
+    if(!DecodeThreadPayload(record,trace.qpc_frequency,thread)) { ++trace.quality.decode_errors; return; }
+    const uint8_t opcode=record.EventHeader.EventDescriptor.Opcode;
+    const uint32_t pid=thread.pid,tid=thread.tid;
+    const uint64_t timestamp_ns=thread.start_ns;
     auto& active = indexes.threads_by_pid_tid[IndexKey{pid, tid}];
     if (opcode == 2 || opcode == 4) {
         for (auto iterator = active.rbegin(); iterator != active.rend();
@@ -293,10 +241,7 @@ void ParseThread(const EVENT_RECORD& record, TraceData& trace,
             return;
         }
     }
-    ThreadRecord thread;
-    thread.pid = pid;
-    thread.tid = tid;
-    thread.start_ns = timestamp_ns;
+
     const size_t index = trace.threads.size();
     trace.threads.push_back(std::move(thread));
     active.push_back(index);
@@ -304,46 +249,9 @@ void ParseThread(const EVENT_RECORD& record, TraceData& trace,
 
 void ParseImage(const EVENT_RECORD& record, TraceData& trace,
                 ReplayIndexes& indexes) {
-    const BYTE* data = static_cast<const BYTE*>(record.UserData);
-    const size_t size = record.UserDataLength;
-    const uint32_t p = trace.pointer_size;
-    const uint16_t version = record.EventHeader.EventDescriptor.Version;
-    const uint8_t opcode = record.EventHeader.EventDescriptor.Opcode;
-
     ImageRecord image;
-    image.load_ns = TimestampToNs(record, trace);
-    size_t filename_offset = 0;
-    if (version == 0) {
-        if (size < p + 4) {
-            return;
-        }
-        image.base = ReadPointer(data, size, 0, p);
-        image.size = ReadU32(data, size, p);
-        filename_offset = p + 4;
-    } else if (version == 1) {
-        if (size < 2 * p + 4) {
-            return;
-        }
-        image.base = ReadPointer(data, size, 0, p);
-        image.size = ReadPointer(data, size, p, p);
-        image.pid = ReadU32(data, size, 2 * p);
-        filename_offset = 2 * p + 4;
-    } else {
-        if (size < 3 * p + 32) {
-            return;
-        }
-        image.base = ReadPointer(data, size, 0, p);
-        image.size = ReadPointer(data, size, p, p);
-        image.pid = ReadU32(data, size, 2 * p);
-        image.checksum = ReadU32(data, size, 2 * p + 4);
-        image.timestamp = ReadU32(data, size, 2 * p + 8);
-        filename_offset = 3 * p + 32;
-    }
-    if (image.pid == 0 || image.pid == UINT32_MAX) {
-        image.pid = record.EventHeader.ProcessId;
-    }
-    image.path = ReadWideString(data, size, filename_offset);
-
+    if(!DecodeImagePayload(record,trace.pointer_size,trace.qpc_frequency,image)) { ++trace.quality.decode_errors; return; }
+    const uint8_t opcode=record.EventHeader.EventDescriptor.Opcode;
     auto& active =
         indexes.images_by_pid_base[IndexKey{image.pid, image.base}];
     if (opcode == 2 || opcode == 4) {
@@ -376,121 +284,14 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace,
 }
 
 
-TraceEvent& AddEvent(const EVENT_RECORD& record, TraceData& trace,
-                     TraceEventKind kind, uint64_t value1 = 0,
-                     uint64_t value2 = 0) {
+
+void ParseKernelEvent(const EVENT_RECORD& record, TraceData& trace, TraceEventKind kind) {
     TraceEvent event;
-    event.timestamp_ns = TimestampToNs(record, trace);
-    event.cpu = EtwProcessorIndex(record);
-    event.pid = record.EventHeader.ProcessId;
-    event.tid = record.EventHeader.ThreadId;
-    event.kind = kind;
-    event.value1 = value1;
-    event.value2 = value2;
-    event.event_id = record.EventHeader.EventDescriptor.Opcode;
-    CopyEtwPmcCounters(record, event.pmc_counters, trace.quality);
-    trace.events.push_back(event);
-    return trace.events.back();
-}
-
-void ParseThreadEvent(const EVENT_RECORD& record, TraceData& trace,
-                      TraceEventKind kind) {
-    const BYTE* data = static_cast<const BYTE*>(record.UserData);
-    const size_t size = record.UserDataLength;
-    uint64_t value1 = 0;
-    uint64_t value2 = 0;
-    if (size >= 8) {
-        value1 = ReadU32(data, size, 0);
-        value2 = ReadU32(data, size, 4);
+    if(!DecodeKernelEvent(record,trace.pointer_size,trace.qpc_frequency,kind,event)) {
+        ++trace.quality.decode_errors; return;
     }
-    TraceEvent& event = AddEvent(record, trace, kind, value1, value2);
-    if (kind == TraceEventKind::ContextSwitch) {
-        const uint32_t old_tid = static_cast<uint32_t>(value2);
-        const uint32_t new_tid =
-            record.EventHeader.ThreadId != 0 &&
-                    record.EventHeader.ThreadId != UINT32_MAX
-                ? record.EventHeader.ThreadId
-                : static_cast<uint32_t>(value1);
-        event.tid = new_tid;
-        event.related_tid = old_tid;
-        event.value1 = old_tid;
-        event.value2 = new_tid;
-        if (size >= 16) {
-            event.wait_reason = ReadU8(data, size, 12);
-            event.previous_state = ReadU8(data, size, 14);
-        }
-    } else if (kind == TraceEventKind::ReadyThread) {
-        const uint32_t awakened_tid = static_cast<uint32_t>(value1);
-        event.related_tid = awakened_tid;
-        event.value2 = ReadU8(data, size, 6);
-        event.flags = static_cast<uint32_t>(event.value2);
-    }
-}
-
-void ParsePageFault(const EVENT_RECORD& record, TraceData& trace) {
-    const BYTE* data = static_cast<const BYTE*>(record.UserData);
-    const size_t size = record.UserDataLength;
-    const uint64_t virtual_address = ReadPointer(data, size, 0, trace.pointer_size);
-    const uint64_t program_counter = ReadPointer(data, size, trace.pointer_size,
-                                                 trace.pointer_size);
-    AddEvent(record, trace, TraceEventKind::PageFault, virtual_address,
-             program_counter);
-}
-void ParseSyscallExit(const EVENT_RECORD& record, TraceData& trace) {
-    const BYTE* data = static_cast<const BYTE*>(record.UserData);
-    const size_t size = record.UserDataLength;
-    TraceEvent& event = AddEvent(record, trace, TraceEventKind::SyscallExit);
-    if (size >= sizeof(uint32_t)) {
-        event.status = static_cast<int32_t>(ReadU32(data, size, 0));
-        event.value2 = static_cast<uint32_t>(event.status);
-        event.has_status = true;
-    }
-}
-
-void ParseDiskIo(const EVENT_RECORD& record, TraceData& trace) {
-    const BYTE* data = static_cast<const BYTE*>(record.UserData);
-    const size_t size = record.UserDataLength;
-    const uint32_t p = trace.pointer_size;
-    TraceEvent& event = AddEvent(record, trace, TraceEventKind::DiskIo);
-    event.size = ReadU32(data, size, 8);
-    event.offset = ReadU64(data, size, 16);
-    const size_t irp_offset = p == 8 ? 32 : 28;
-    event.correlation_id = ReadPointer(data, size, irp_offset, p);
-    const uint32_t code = record.EventHeader.EventDescriptor.Opcode;
-    event.is_completion = code == 10 || code == 11 || code == 14;
-    if (event.is_completion) {
-        const size_t duration_offset = p == 8 ? 40 : 32;
-        const uint64_t ticks = ReadU64(data, size, duration_offset);
-        event.duration_ns = QpcToNs(ticks, trace.qpc_frequency);
-        event.has_duration = ticks != 0;
-    }
-}
-
-void ParseFileIo(const EVENT_RECORD& record, TraceData& trace) {
-    const BYTE* data = static_cast<const BYTE*>(record.UserData);
-    const size_t size = record.UserDataLength;
-    const uint32_t p = trace.pointer_size;
-    const uint32_t code = record.EventHeader.EventDescriptor.Opcode;
-    TraceEvent& event = AddEvent(record, trace, TraceEventKind::FileIo);
-    if (code == 67 || code == 68) {
-        event.offset = ReadU64(data, size, 0);
-        event.correlation_id = ReadPointer(data, size, 8, p);
-        const uint16_t version = record.EventHeader.EventDescriptor.Version;
-        const size_t size_offset =
-            version <= 2 ? (p == 8 ? 40 : 24) : (p == 8 ? 36 : 24);
-        event.size = ReadU32(data, size, size_offset);
-    } else if (code == 76) {
-        event.is_completion = true;
-        event.correlation_id = ReadPointer(data, size, 0, p);
-        const size_t status_offset = p == 8 ? 16 : 8;
-        if (size >= status_offset + sizeof(uint32_t)) {
-            event.status = static_cast<int32_t>(ReadU32(data, size, status_offset));
-            event.has_status = true;
-            event.value2 = static_cast<uint32_t>(event.status);
-        }
-    } else if (size >= p) {
-        event.correlation_id = ReadPointer(data, size, 0, p);
-    }
+    CopyEtwPmcCounters(record,event.pmc_counters,trace.quality);
+    trace.events.push_back(std::move(event));
 }
 
 void ParseLbr(const EVENT_RECORD& record, TraceData& trace) {
@@ -553,9 +354,7 @@ void AddDistinctStack(std::vector<std::vector<uint64_t>>& target,
 void ParseStack(const EVENT_RECORD& record, TraceData& trace, StackStore& stacks) {
     const BYTE* data = static_cast<const BYTE*>(record.UserData);
     const size_t size = record.UserDataLength;
-    if (size < 16) {
-        return;
-    }
+    if(size<16 || trace.pointer_size==0 || (size-16)%trace.pointer_size!=0) { ++trace.quality.decode_errors; return; }
 
     StackRecord stack;
     stack.timestamp_ns =
@@ -579,9 +378,7 @@ void ParseStackDefinition(const EVENT_RECORD& record, TraceData& trace,
     const BYTE* data = static_cast<const BYTE*>(record.UserData);
     const size_t size = record.UserDataLength;
     const uint32_t p = trace.pointer_size;
-    if (size < p || p == 0) {
-        return;
-    }
+    if(size<p || (p!=4&&p!=8) || (size-p)%p!=0) { ++trace.quality.decode_errors; return; }
     const uint64_t key = ReadPointer(data, size, 0, p);
     std::vector<uint64_t> frames;
     for (size_t offset = p; offset + p <= size; offset += p) {
@@ -591,7 +388,7 @@ void ParseStackDefinition(const EVENT_RECORD& record, TraceData& trace,
         }
     }
     if (key != 0 && !frames.empty()) {
-        stacks.definitions[key] = std::move(frames);
+        stacks.definitions[key].push_back({trace.quality.events_total,TimestampToNs(record,trace),std::move(frames)});
     }
 }
 
@@ -600,9 +397,7 @@ void ParseStackReference(const EVENT_RECORD& record, TraceData& trace,
     const BYTE* data = static_cast<const BYTE*>(record.UserData);
     const size_t size = record.UserDataLength;
     const uint32_t p = trace.pointer_size;
-    if (size < 16 + p || p == 0) {
-        return;
-    }
+    if(size<16+p || (p!=4&&p!=8)) { ++trace.quality.decode_errors; return; }
 
     StackRecord stack;
     stack.timestamp_ns =
@@ -611,6 +406,7 @@ void ParseStackReference(const EVENT_RECORD& record, TraceData& trace,
     stack.tid = ReadU32(data, size, 12);
     stack.cpu = EtwProcessorIndex(record);
     stack.stack_key = ReadPointer(data, size, 16, p);
+    stack.order = trace.quality.events_total;
     stack.compressed = true;
     stack.kernel = kernel;
     stacks.records.push_back(std::move(stack));
@@ -629,7 +425,11 @@ std::unordered_map<StackKey, ResolvedStack, StackKeyHash> ResolveStacks(
                 ++quality.stack_key_mismatch;
                 continue;
             }
-            frames = definition->second;
+            const auto& definitions=definition->second;
+            const auto next=std::lower_bound(definitions.begin(),definitions.end(),stack.timestamp_ns,
+                [](const auto& value,uint64_t time){return value.end_ns<time;});
+            if(next==definitions.end()) { ++quality.stack_key_mismatch; continue; }
+            frames=next->frames;
         }
         if (frames.empty()) {
             continue;
@@ -675,9 +475,15 @@ struct ReplayContext {
     TraceData* trace = nullptr;
     ReplayIndexes indexes;
     StackStore stacks;
+    bool metadata_only=false;
+    const std::function<void(const SampleRecord&)>* sample_consumer=nullptr;
+    TraceData sampling_metadata;
+    ThreadIndex thread_index;
+    uint64_t charged_bytes=0;
+    const wchar_t* failure=nullptr;
 };
 
-void EventRecordCallback(PEVENT_RECORD record) {
+void ConsumeEventRecord(PEVENT_RECORD record) {
     if (record == nullptr || record->UserData == nullptr) {
         return;
     }
@@ -687,7 +493,34 @@ void EventRecordCallback(PEVENT_RECORD record) {
     }
     auto* trace = context->trace;
 
+    if(context->failure)return;
+    if(context->sample_consumer) {
+        const auto code=record->EventHeader.EventDescriptor.Opcode;
+        GUID provider=GetClassGuid(*record);
+        if(IsZeroGuid(provider))provider=record->EventHeader.ProviderId;
+        if(IsEqualGUID(record->EventHeader.ProviderId,kWperfMetadataGuid)) {
+            if(!DecodeWperfMetadata(*record,context->sampling_metadata))++trace->quality.decode_errors;
+        } else if(IsEqualGUID(provider,kPerfInfoGuid) && code>=72 && code<=74) {
+            if(!DecodeProfileInterval(*record,context->sampling_metadata))++trace->quality.decode_errors;
+        } else if((IsEqualGUID(provider,kPerfInfoGuid)||IsEqualGUID(provider,kSystemTraceGuid))&&(code==46||code==47)) {
+            SampleRecord sample;
+            if(!DecodeProfileSample(*record,context->sampling_metadata,sample)) { ++trace->quality.decode_errors; return; }
+            if(sample.pid==0||sample.pid==UINT32_MAX) {
+                if(const auto* thread=context->thread_index.Find(sample.tid,sample.timestamp_ns))sample.pid=thread->pid;
+            }
+            ++trace->quality.samples_total; ++trace->quality.samples_without_stack;
+            if(sample.kind==SampleKind::Pmc)++trace->quality.pmc_samples;
+            (*context->sample_consumer)(sample);
+        }
+        return;
+    }
     ++trace->quality.events_total;
+    const auto event_time=EtwTimestampNs(*record,trace->qpc_frequency);
+    trace->start_ns=std::min(trace->start_ns,event_time); trace->end_ns=std::max(trace->end_ns,event_time);
+    if(IsEqualGUID(record->EventHeader.ProviderId,kWperfMetadataGuid)) {
+        if(!DecodeWperfMetadata(*record,*trace))++trace->quality.decode_errors;
+        return;
+    }
     if ((record->EventHeader.Flags & EVENT_HEADER_FLAG_32_BIT_HEADER) != 0) {
         trace->pointer_size = 4;
     } else if ((record->EventHeader.Flags & EVENT_HEADER_FLAG_64_BIT_HEADER) != 0) {
@@ -701,6 +534,24 @@ void EventRecordCallback(PEVENT_RECORD record) {
     const uint8_t opcode = record->EventHeader.EventDescriptor.Opcode;
     const uint16_t id = record->EventHeader.EventDescriptor.Id;
     const uint32_t event_code = opcode != 0 ? opcode : id;
+    if(context->metadata_only) {
+        const bool lifecycle=(IsEqualGUID(class_guid,kProcessGuid)&&(opcode==1||opcode==2||opcode==3||opcode==4||opcode==39)) ||
+            (IsEqualGUID(class_guid,kThreadGuid)&&(opcode==1||opcode==2||opcode==3||opcode==4)) || IsEqualGUID(class_guid,kImageGuid);
+        if(IsEqualGUID(class_guid,kPerfInfoGuid)&&opcode>=72&&opcode<=74) {
+            DecodeProfileInterval(*record,*trace); return;
+        }
+        if(!lifecycle)return;
+    }
+    const bool stored=IsEqualGUID(class_guid,kProcessGuid)||IsEqualGUID(class_guid,kThreadGuid)||
+        IsEqualGUID(class_guid,kImageGuid)||IsEqualGUID(class_guid,kStackWalkGuid)||IsEqualGUID(class_guid,kPageFaultGuid)||
+        IsEqualGUID(class_guid,kDiskIoGuid)||IsEqualGUID(class_guid,kFileIoGuid)||IsEqualGUID(class_guid,kLbrGuid)||
+        (IsEqualGUID(class_guid,kPerfInfoGuid)&&(opcode==46||opcode==47||opcode==51||opcode==52));
+    if(stored)context->charged_bytes+=(IsEqualGUID(class_guid,kStackWalkGuid)?4:2)*
+        (uint64_t{record->UserDataLength}+sizeof(SampleRecord)+sizeof(TraceEvent));
+    if(context->charged_bytes>512ull*1024*1024) {
+        context->failure=L"replay exceeded 512 MiB managed budget; use report --stream or a shorter capture";
+        trace->quality.incomplete=true; return;
+    }
     const bool is_stack_event =
         IsEqualGUID(class_guid, kStackWalkGuid) ||
         IsEqualGUID(record->EventHeader.ProviderId, kStackWalkGuid);
@@ -727,7 +578,7 @@ void EventRecordCallback(PEVENT_RECORD record) {
     } else if (is_stack_event && event_code == 32) {
         ++trace->quality.stack_events_total;
         ParseStack(*record, *trace, context->stacks);
-    } else if (is_stack_event && event_code >= 34 && event_code <= 36) {
+    } else if (is_stack_event && (event_code == 35 || event_code == 36)) {
         ++trace->quality.stack_def_events_total;
         ParseStackDefinition(*record, *trace, context->stacks);
     } else if (is_stack_event && (event_code == 37 || event_code == 38)) {
@@ -737,32 +588,29 @@ void EventRecordCallback(PEVENT_RECORD record) {
     } else if ((IsEqualGUID(class_guid, kThreadGuid) ||
                 IsEqualGUID(record->EventHeader.ProviderId, kThreadGuid)) &&
                opcode == 36) {
-        ParseThreadEvent(*record, *trace, TraceEventKind::ContextSwitch);
+        ParseKernelEvent(*record, *trace, TraceEventKind::ContextSwitch);
     } else if ((IsEqualGUID(class_guid, kThreadGuid) ||
                 IsEqualGUID(record->EventHeader.ProviderId, kThreadGuid)) &&
                opcode == 50) {
-        ParseThreadEvent(*record, *trace, TraceEventKind::ReadyThread);
+        ParseKernelEvent(*record, *trace, TraceEventKind::ReadyThread);
     } else if ((IsEqualGUID(class_guid, kPageFaultGuid) ||
                 IsEqualGUID(record->EventHeader.ProviderId, kPageFaultGuid)) &&
                opcode >= 10 && opcode <= 15) {
-        ParsePageFault(*record, *trace);
+        ParseKernelEvent(*record,*trace,TraceEventKind::PageFault);
     } else if ((IsEqualGUID(class_guid, kPerfInfoGuid) ||
                 IsEqualGUID(record->EventHeader.ProviderId, kPerfInfoGuid)) &&
                opcode == 51) {
-        const uint64_t address = ReadPointer(
-            static_cast<const BYTE*>(record->UserData), record->UserDataLength, 0,
-            trace->pointer_size);
-        AddEvent(*record, *trace, TraceEventKind::SyscallEnter, address);
+        ParseKernelEvent(*record,*trace,TraceEventKind::SyscallEnter);
     } else if ((IsEqualGUID(class_guid, kPerfInfoGuid) ||
                 IsEqualGUID(record->EventHeader.ProviderId, kPerfInfoGuid)) &&
                opcode == 52) {
-        ParseSyscallExit(*record, *trace);
+        ParseKernelEvent(*record,*trace,TraceEventKind::SyscallExit);
     } else if (IsEqualGUID(class_guid, kDiskIoGuid) ||
                IsEqualGUID(record->EventHeader.ProviderId, kDiskIoGuid)) {
-        ParseDiskIo(*record, *trace);
+        ParseKernelEvent(*record,*trace,TraceEventKind::DiskIo);
     } else if (IsEqualGUID(class_guid, kFileIoGuid) ||
                IsEqualGUID(record->EventHeader.ProviderId, kFileIoGuid)) {
-        ParseFileIo(*record, *trace);
+        ParseKernelEvent(*record,*trace,TraceEventKind::FileIo);
     } else if (IsEqualGUID(record->EventHeader.ProviderId, kSystemTraceGuid) &&
                (opcode == 46 || opcode == 47)) {
         ++trace->quality.samples_total;
@@ -771,53 +619,17 @@ void EventRecordCallback(PEVENT_RECORD record) {
         ++trace->quality.unknown_events;
     }
 }
-}  // namespace
-
-bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
-                 std::wstring* error) {
-    trace = TraceData{};
-    trace.source_path = path.wstring();
-
-    ReplayContext context;
-    context.trace = &trace;
-
-    EVENT_TRACE_LOGFILEW logfile{};
-    logfile.LogFileName = const_cast<wchar_t*>(path.c_str());
-    logfile.ProcessTraceMode =
-        PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
-    logfile.EventRecordCallback = EventRecordCallback;
-    logfile.Context = &context;
-
-    TRACEHANDLE handle = OpenTraceW(&logfile);
-    if (handle == INVALID_PROCESSTRACE_HANDLE) {
-        if (error != nullptr) {
-            *error = L"OpenTraceW failed: " + FormatWindowsError(GetLastError());
-        }
-        return false;
+void WINAPI EventRecordCallback(PEVENT_RECORD record) {
+    try { ConsumeEventRecord(record); }
+    catch(...) {
+        if(record&&record->UserContext)static_cast<ReplayContext*>(record->UserContext)->failure=L"replay allocation or consumer failed";
     }
+}
+ULONG WINAPI ReplayBufferCallback(PEVENT_TRACE_LOGFILEW logfile) {
+    return !static_cast<ReplayContext*>(logfile->Context)->failure;
+}
 
-    trace.quality.lost_events = logfile.LogfileHeader.EventsLost;
-    if (logfile.LogfileHeader.PerfFreq.QuadPart > 0) {
-        trace.qpc_frequency =
-            static_cast<uint64_t>(logfile.LogfileHeader.PerfFreq.QuadPart);
-    }
-    if (logfile.LogfileHeader.PointerSize == 4 ||
-        logfile.LogfileHeader.PointerSize == 8 ||
-        logfile.LogfileHeader.PointerSize == 32 ||
-        logfile.LogfileHeader.PointerSize == 64) {
-        trace.pointer_size = logfile.LogfileHeader.PointerSize <= 8
-                                 ? logfile.LogfileHeader.PointerSize : logfile.LogfileHeader.PointerSize / 8;
-    }
-
-    const ULONG result = ProcessTrace(&handle, 1, nullptr, nullptr);
-    CloseTrace(handle);
-    if (result != ERROR_SUCCESS) {
-        if (error != nullptr) {
-            *error = L"ProcessTrace failed: " + FormatWindowsError(result);
-        }
-        return false;
-    }
-
+void FinishReplay(ReplayContext& context, TraceData& trace) {
     std::unordered_map<uint32_t, std::vector<const ThreadRecord*>> threads_by_tid;
     for (const ThreadRecord& thread : trace.threads) {
         threads_by_tid[thread.tid].push_back(&thread);
@@ -852,6 +664,12 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
         }
     }
 
+    std::map<std::vector<uint64_t>,std::shared_ptr<std::vector<uint64_t>>> interned;
+    const auto attach=[&](SampleRecord& sample,const std::vector<uint64_t>& frames) {
+        auto& shared=interned[frames];
+        if(!shared)shared=std::make_shared<std::vector<uint64_t>>(frames);
+        sample.stack.Share(shared);
+    };
     for (auto& sample : trace.samples) {
         if (sample.pid == 0 || sample.pid == UINT32_MAX) {
             auto found = threads_by_tid.find(sample.tid);
@@ -896,7 +714,7 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
                 if (candidates.size() == 1 || match_count == 1) {
                     const size_t index =
                         candidates.size() == 1 ? 0 : matched;
-                    sample.stack = candidates[index];
+                    attach(sample,candidates[index]);
                     sample.stack_quality = StackQuality::Exact;
                     ++trace.quality.stack_exact_total;
                     attached = true;
@@ -917,7 +735,7 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
                 const auto candidate = resolved_stacks.find(reference.key);
                 if (candidate != resolved_stacks.end() &&
                     reference.index < candidate->second.candidates.size()) {
-                    sample.stack = candidate->second.candidates[reference.index];
+                    attach(sample,candidate->second.candidates[reference.index]);
                     sample.stack_quality = StackQuality::Approximate;
                     ++trace.quality.stack_approximate_total;
                     attached = true;
@@ -934,6 +752,89 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
     }
 
     EnrichTraceEvents(trace);
+}
+
+}  // namespace
+
+bool ReadEtwPass(const std::filesystem::path& path, TraceData& trace,
+                 std::wstring* error,bool metadata_only,const std::function<void(const SampleRecord&)>* consumer) {
+    if(!consumer)trace = TraceData{};
+    trace.source_path = path.wstring();
+
+    ReplayContext context;
+    context.trace = &trace;
+    if(consumer)context.thread_index.Build(trace);
+    context.metadata_only=metadata_only; context.sample_consumer=consumer;
+    context.sampling_metadata.pointer_size=trace.pointer_size; context.sampling_metadata.qpc_frequency=trace.qpc_frequency;
+    context.sampling_metadata.session_name=trace.session_name;
+
+    EVENT_TRACE_LOGFILEW logfile{};
+    logfile.LogFileName = const_cast<wchar_t*>(path.c_str());
+    logfile.ProcessTraceMode =
+        PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
+    logfile.EventRecordCallback = EventRecordCallback;
+    logfile.BufferCallback=ReplayBufferCallback;
+    logfile.Context = &context;
+
+    TRACEHANDLE handle = OpenTraceW(&logfile);
+    if (handle == INVALID_PROCESSTRACE_HANDLE) {
+        if (error != nullptr) {
+            *error = L"OpenTraceW failed: " + FormatWindowsError(GetLastError());
+        }
+        return false;
+    }
+
+    if(logfile.LogfileHeader.LoggerName)trace.session_name=logfile.LogfileHeader.LoggerName;
+    trace.quality.lost_events = logfile.LogfileHeader.EventsLost;
+    if (logfile.LogfileHeader.PerfFreq.QuadPart > 0) {
+        trace.qpc_frequency =
+            static_cast<uint64_t>(logfile.LogfileHeader.PerfFreq.QuadPart);
+    }
+    if (logfile.LogfileHeader.PointerSize == 4 ||
+        logfile.LogfileHeader.PointerSize == 8 ||
+        logfile.LogfileHeader.PointerSize == 32 ||
+        logfile.LogfileHeader.PointerSize == 64) {
+        trace.pointer_size = logfile.LogfileHeader.PointerSize <= 8
+                                 ? logfile.LogfileHeader.PointerSize : logfile.LogfileHeader.PointerSize / 8;
+    }
+
+    const ULONG result = ProcessTrace(&handle, 1, nullptr, nullptr);
+    CloseTrace(handle);
+    if (context.failure) { if(error)*error=context.failure; return false; }
+    if (result != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = L"ProcessTrace failed: " + FormatWindowsError(result);
+        }
+        return false;
+    }
+
+    if(!metadata_only&&!consumer)FinishReplay(context,trace);
+    return true;
+}
+
+bool ReadEtwFile(const std::filesystem::path& path,TraceData& trace,std::wstring* error) {
+    return ReadEtwPass(path,trace,error,false,nullptr);
+}
+bool ReadEtwMetadata(const std::filesystem::path& path,TraceData& trace,std::wstring* error) {
+    trace.stacks_loaded=false;
+    const bool result=ReadEtwPass(path,trace,error,true,nullptr);
+    trace.stacks_loaded=false;
+    return result;
+}
+bool StreamEtwSamples(const std::filesystem::path& path,TraceData& trace,
+    const std::function<void(const SampleRecord&)>& consumer,std::wstring* error) {
+    trace.quality.samples_total=trace.quality.samples_without_stack=trace.quality.pmc_samples=0;
+    return ReadEtwPass(path,trace,error,false,&consumer);
+}
+
+bool ReadEtwRecords(std::span<const EVENT_RECORD> records,TraceData& trace,uint64_t frequency) {
+    trace={}; trace.qpc_frequency=frequency;
+    ReplayContext context; context.trace=&trace;
+    for(const auto& source:records) {
+        EVENT_RECORD record=source; record.UserContext=&context;
+        EventRecordCallback(&record);
+    }
+    FinishReplay(context,trace);
     return true;
 }
 

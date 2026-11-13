@@ -44,6 +44,8 @@ endif()
 
 add_library(wperf_core STATIC
     src/common.cpp
+    src/archive.cpp
+    src/analysis.cpp
     src/logger.cpp
     src/state.cpp
     src/etw.cpp
@@ -103,8 +105,14 @@ add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
 add_executable(wperf_regression_tests tests/regression_tests.cpp)
 target_compile_options(wperf_regression_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
+target_compile_definitions(wperf_regression_tests PRIVATE WPERF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 add_test(NAME wperf_regression_tests COMMAND wperf_regression_tests)
 set_tests_properties(wperf_regression_tests PROPERTIES TIMEOUT 20)
+add_executable(wperf_live_integration_tests tests/live_integration_tests.cpp)
+target_compile_options(wperf_live_integration_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_live_integration_tests PRIVATE wperf_core)
+add_test(NAME live_integration COMMAND wperf_live_integration_tests)
+set_tests_properties(live_integration PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS integration)
 add_test(NAME cli_version COMMAND wperf --version)
 add_test(NAME cli_list COMMAND wperf list)
 add_test(NAME cli_doctor COMMAND wperf doctor)

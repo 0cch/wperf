@@ -75,7 +75,7 @@ const wchar_t* TraceThreadStateName(uint32_t state) {
 }
 
 void TraceCorrelationState::Reset() {
-    ready_.clear(); syscalls_.clear(); files_.clear(); disks_.clear();
+    ready_.clear(); syscalls_.clear(); files_.clear(); disks_.clear(); file_names_.clear();
     last_prune_ns_ = 0;
 }
 
@@ -83,7 +83,7 @@ void TraceCorrelationState::Enrich(TraceData& trace) {
     ThreadResolver threads(trace.threads);
     const auto valid_tid = [](uint32_t tid) { return tid != 0 && tid != UINT32_MAX; };
     const auto make_pending = [&](const TraceEvent& event, uint32_t tid, uint32_t pid) {
-        Pending pending{event.timestamp_ns, event.offset, event.size, 0, pid};
+        Pending pending{event.timestamp_ns,event.offset,event.size,0,pid,event.file_key,event.file_path,event.operation_id,tid};
         if (const auto* thread = threads.Find(tid, event.timestamp_ns)) {
             pending.thread_start_ns = thread->start_ns;
             pending.pid = thread->pid;
@@ -122,6 +122,19 @@ void TraceCorrelationState::Enrich(TraceData& trace) {
         }
         if (valid_tid(event.related_tid) && event.related_pid == 0)
             event.related_pid = threads.Resolve(event.related_tid, event.timestamp_ns);
+        if(event.pid==0 || event.pid==UINT32_MAX) {
+            if(const auto* thread=threads.Find(event.tid,event.timestamp_ns))event.pid=thread->pid;
+        }
+        if(event.kind==TraceEventKind::FileIo && !event.file_path.empty()) {
+            if(file_names_.size()>=maximum_pending_ && maximum_pending_!=0) {
+                trace.quality.correlation_evicted+=file_names_.size(); file_names_.clear();
+            }
+            if(maximum_pending_!=0)file_names_[event.file_key ? event.file_key : event.file_object]=event.file_path;
+        }
+        if(event.file_path.empty()) {
+            auto name=file_names_.find(event.file_key ? event.file_key : event.file_object);
+            if(name!=file_names_.end())event.file_path=name->second;
+        }
         switch (event.kind) {
             case TraceEventKind::ContextSwitch: {
                 const uint32_t tid = valid_tid(event.tid) ? event.tid : static_cast<uint32_t>(event.value2);
@@ -186,6 +199,11 @@ void TraceCorrelationState::Enrich(TraceData& trace) {
                                 event.duration_ns = event.timestamp_ns - pending->second.timestamp_ns;
                                 event.has_duration = true;
                             }
+                            if(event.file_path.empty())event.file_path=pending->second.file_path;
+                            event.operation_id=pending->second.operation_id;
+                            if(event.file_key==0)event.file_key=pending->second.file_key;
+                            if(pending->second.pid!=0&&pending->second.pid!=UINT32_MAX)event.pid=pending->second.pid;
+                            if(pending->second.tid!=0&&pending->second.tid!=UINT32_MAX)event.tid=pending->second.tid;
                             if (event.size == 0) event.size = pending->second.size;
                             if (event.offset == 0) event.offset = pending->second.offset;
                         } else ++trace.quality.io_orphaned;

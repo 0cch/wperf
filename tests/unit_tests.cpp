@@ -50,6 +50,7 @@ void TestStateRoundTrip() {
     state.session_name = L"wperf-test-session";
     state.trace_path = L"C:\\path with space\\trace.etl";
     state.worker_pid = 20;
+    state.restore_source=19; state.restore_interval=1000000; state.configured_interval=2000000; state.restore_clear_pmc=1;
 
     wperf::StateStore store(directory / (state.correlation_id + L".json"));
     Check(store.Write(state, &error), L"write state file");
@@ -58,6 +59,8 @@ void TestStateRoundTrip() {
     if (!states.empty()) {
         Check(states[0].phase == L"CAPTURING", L"state phase round trip");
         Check(states[0].worker_pid == 20, L"state pid round trip");
+        Check(states[0].restore_source==19&&states[0].restore_interval==1000000&&states[0].configured_interval==2000000&&states[0].restore_clear_pmc==1,
+              L"recovery checkpoint round trip");
         Check(states[0].trace_path == state.trace_path, L"state path round trip");
     }
     std::error_code ignored;
@@ -104,7 +107,7 @@ void TestCpuReportSynthetic() {
     folded_options.folded = true;
     std::wostringstream folded_output;
     wperf::WriteCpuReport(trace, symbolizer, folded_options, folded_output);
-    Check(folded_output.str().rfind(L"app.exe;", 0) == 0,
+    Check(folded_output.str().rfind(L"app.exe[42@0];", 0) == 0,
           L"folded report starts with process name");
     Check(!folded_output.str().empty() &&
               folded_output.str().back() == L'\n',
@@ -369,9 +372,10 @@ void TestSymbolizerPdbIdentity() {
     Check(resolved.module.find(L"wperf_unit_tests.exe") != std::wstring::npos,
           L"symbolizer resolves current module");
     Check(resolved.resolved, L"symbolizer loads the matching PDB");
+    const auto hits_before = symbolizer.Stats().cache_hits;
     const auto cached = symbolizer.Resolve(trace, image.pid, address, 1);
     Check(cached.symbol == resolved.symbol, L"symbol cache returns stable result");
-    Check(symbolizer.Stats().cache_hits == 1, L"symbol cache records a hit");
+    Check(symbolizer.Stats().cache_hits == hits_before+1, L"symbol cache records a hit");
 
     wperf::TraceData stale_trace;
     wperf::ImageRecord stale = image;
