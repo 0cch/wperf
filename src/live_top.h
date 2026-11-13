@@ -59,6 +59,7 @@ private:
     uint32_t pointer_size_ = sizeof(void*);
     uint64_t qpc_frequency_ = 10000000;
     uint64_t events_total_ = 0;
+    uint64_t unknown_events_ = 0;
     uint64_t lost_events_ = 0;
     uint64_t ring_dropped_ = 0;
     uint64_t lbr_events_ = 0;

@@ -25,7 +25,8 @@ wperf report -i FILE [--kind cpu|io] [-p PID] [-t TID]
 
 A concise quality summary is written to stderr. Use `--verbose` for the complete
 counter set or `--quiet` for clean machine-readable pipelines. Stack quality
-distinguishes exact, approximate, ambiguous and missing records.
+distinguishes exact, approximate, ambiguous and missing records. ETW samples
+with the `UINT32_MAX` sentinel PID are displayed as `[unattributed]`.
 
 ## Flame graphs
 
@@ -79,11 +80,15 @@ accepted by `report` for scripts that pass perf-style text output options.
 
 ```powershell
 wperf top [-p PID] [-e cpu|SOURCE] [--interval MS] [--iterations N]
-          [--sort FIELD] [--percent-limit N] [--elevate]
+          [--sort FIELD] [--symbol-path DIR] [--percent-limit N] [--elevate]
 
 wperf trace --live [-e sched|syscall|pagefault|io|lbr] [-p PID]
              [--duration MS] [--max N] [--json] [--elevate]
 ```
+
+`top --symbol-path DIR` supplies additional PDB locations to the elevated live
+worker. Its summary reports `unattributed`, `unknown_events` and
+`ring_dropped` so incomplete attribution is visible.
 
 Bounded rings cap samples/events at 200000 entries. `ring_dropped` reports
 overflow instead of silently growing memory.

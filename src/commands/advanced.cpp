@@ -235,7 +235,9 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
         std::wcout << L"samples_before,samples_after,delta_samples,"
                       L"weight_before_ns,weight_after_ns,delta_weight_ns,key\n";
     } else {
-        std::wcout << L"DeltaSamples  DeltaUs  Before  After  Key\n";
+        std::wcout << std::right << std::setw(13) << L"DeltaSamples"
+                   << std::setw(11) << L"DeltaUs" << std::setw(8) << L"Before"
+                   << std::setw(8) << L"After" << L"  Key\n";
     }
     bool first_row = true;
     for (const auto& key : keys) {
@@ -269,10 +271,11 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
                        << new_value.weight_ns << L"," << weight_delta << L",\""
                        << key << L"\"\n";
         } else {
-            std::wcout << (sample_delta >= 0 ? L"+" : L"") << sample_delta
-                       << L"  " << (weight_delta >= 0 ? L"+" : L"")
-                       << weight_delta / 1000 << L"us  " << old_value.samples
-                       << L" -> " << new_value.samples << L"  " << key << L"\n";
+            std::wcout << std::showpos << std::right << std::setw(13)
+                       << sample_delta << std::noshowpos << std::setw(11)
+                       << weight_delta / 1000 << std::setw(8)
+                       << old_value.samples << std::setw(8)
+                       << new_value.samples << L"  " << key << L"\n";
         }
     }
     if (json) {
@@ -486,13 +489,19 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         }
         return 0;
     }
-    std::wcout << L"Samples  Module  Symbol  Source  Line\n";
+    constexpr size_t kLocationWidth = 56;
+    std::wcout << std::left << std::setw(8) << L"Samples" << L"  "
+               << std::setw(kLocationWidth) << L"Location" << L"  Source\n";
     for (size_t index = 0; index < rows.size() && index < limit; ++index) {
-        std::wcout << rows[index].samples << L"  " << rows[index].module << L"!"
-                   << rows[index].symbol << L"+0x" << std::hex
-                   << rows[index].displacement << std::dec;
+        std::wostringstream location;
+        location << rows[index].module << L"!" << rows[index].symbol << L"+0x"
+                 << std::hex << rows[index].displacement;
+        std::wcout << std::right << std::setw(8) << rows[index].samples << L"  "
+                   << std::left << std::setw(kLocationWidth)
+                   << ClampText(location.str(), kLocationWidth) << L"  ";
         if (!rows[index].source_file.empty()) {
-            std::wcout << L"  " << rows[index].source_file << L":" << rows[index].line;
+            std::wcout << rows[index].source_file << L":" << std::dec
+                       << rows[index].line;
         }
         std::wcout << L"\n";
         if (!rows[index].disassembly.empty()) {

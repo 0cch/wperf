@@ -88,6 +88,9 @@ const ImageRecord* FindImage(const TraceData& trace, uint32_t pid, uint64_t addr
 }
 
 std::wstring ProcessDisplayName(const TraceData& trace, uint32_t pid) {
+    if (pid == UINT32_MAX) {
+        return L"[unattributed]";
+    }
     if (pid == 0) {
         return L"Idle";
     }

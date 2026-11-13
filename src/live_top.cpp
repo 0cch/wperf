@@ -228,6 +228,7 @@ TraceData LiveTopCapture::Snapshot() {
     trace.images = images_;
     trace.threads = threads_;
     trace.quality.events_total = events_total_;
+    trace.quality.unknown_events = unknown_events_;
     trace.quality.lost_events = lost_events_;
     trace.quality.ring_dropped = ring_dropped_;
     trace.quality.samples_total = samples_.size();
@@ -245,6 +246,7 @@ TraceData LiveTopCapture::Snapshot() {
     samples_.clear();
     events_.clear();
     events_total_ = 0;
+    unknown_events_ = 0;
     ring_dropped_ = 0;
     return trace;
 }
@@ -297,6 +299,8 @@ void LiveTopCapture::OnEvent(PEVENT_RECORD record) {
         } else if (event_code == 36 || event_code == 50) {
             ParseEvent(record, event_code == 36 ? TraceEventKind::ContextSwitch
                                                 : TraceEventKind::ReadyThread);
+        } else {
+            ++unknown_events_;
         }
     } else if (perf_event && event_code == 46) {
         ParseSample(record);
@@ -316,6 +320,8 @@ void LiveTopCapture::OnEvent(PEVENT_RECORD record) {
             const uint64_t program_counter = ReadPointer(
                 data, record->UserDataLength, pointer_size_, pointer_size_);
             ParseEvent(record, TraceEventKind::PageFault, address, program_counter);
+        } else {
+            ++unknown_events_;
         }
     } else if (IsEqualGUID(class_guid, kDiskIoGuid) ||
                IsEqualGUID(record->EventHeader.ProviderId, kDiskIoGuid)) {
@@ -323,6 +329,8 @@ void LiveTopCapture::OnEvent(PEVENT_RECORD record) {
     } else if (IsEqualGUID(class_guid, kFileIoGuid) ||
                IsEqualGUID(record->EventHeader.ProviderId, kFileIoGuid)) {
         ParseEvent(record, TraceEventKind::FileIo);
+    } else {
+        ++unknown_events_;
     }
 }
 

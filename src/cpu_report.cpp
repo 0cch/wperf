@@ -62,6 +62,15 @@ std::vector<uint64_t> StackForSample(const SampleRecord& sample) {
     return {sample.instruction_pointer};
 }
 
+std::wstring ClampField(std::wstring value, size_t width) {
+    if (width < 4 || value.size() <= width) {
+        return value;
+    }
+    value.resize(width - 3);
+    value += L"...";
+    return value;
+}
+
 std::wstring FoldedLabel(std::wstring value) {
     for (wchar_t& ch : value) {
         if (ch == L';' || ch == L'\n' || ch == L'\r') {
@@ -254,16 +263,24 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
         return;
     }
 
-    output << L"Overhead  Samples  Command  Shared Object  Symbol\n";
+    constexpr size_t kCommandWidth = 24;
+    constexpr size_t kDsoWidth = 28;
+    output << std::left << std::setw(9) << L"Overhead" << L"  "
+           << std::setw(7) << L"Samples" << L"  " << std::setw(kCommandWidth)
+           << L"Command" << L"  " << std::setw(kDsoWidth) << L"Shared Object"
+           << L"  Symbol\n";
     for (const auto& row : sorted) {
         const double percent = total_samples == 0 ? 0.0
                                                    : 100.0 * row.samples / total_samples;
         if (percent < options.percent_limit) {
             continue;
         }
-        output << std::fixed << std::setprecision(2) << std::setw(8) << percent << L"%  "
-               << std::setw(7) << row.samples << L"  " << row.comm << L"  "
-               << row.dso << L"  " << row.symbol << L"\n";
+        output << std::right << std::fixed << std::setprecision(2) << std::setw(8)
+               << percent << L"%  " << std::setw(7) << row.samples << L"  "
+               << std::left << std::setw(kCommandWidth)
+               << ClampField(row.comm, kCommandWidth) << L"  "
+               << std::setw(kDsoWidth) << ClampField(row.dso, kDsoWidth) << L"  "
+               << row.symbol << L"\n";
     }
 }
 
