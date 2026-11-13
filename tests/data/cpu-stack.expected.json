@@ -7,9 +7,9 @@
   "stack_ref_events_total": 0,
   "stack_def_events_total": 0,
   "stack_exact_total": 16104,
-  "stack_approximate_total": 44,
+  "stack_approximate_total": 0,
   "stack_key_mismatch": 0,
-  "samples_without_stack": 1175,
+  "samples_without_stack": 1219,
   "stack_ambiguous": 496,
   "lost_events": 0
 }

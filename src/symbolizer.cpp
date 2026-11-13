@@ -13,6 +13,9 @@
 namespace wperf {
 namespace {
 
+// Every DbgHelp entry point is single-threaded, including distinct sessions.
+std::mutex g_dbghelp_mutex;
+
 struct SectionRange {
     DWORD virtual_address = 0;
     DWORD virtual_size = 0;
@@ -208,21 +211,14 @@ std::wstring FileNameForImage(const ImageRecord& image) {
 
 }  // namespace
 
+ModuleIdentity PublicIdentity(const PeImageIdentity& identity) {
+    return {identity.valid, identity.timestamp, identity.checksum, identity.size_of_image,
+            identity.machine, identity.pdb_guid, identity.pdb_age, identity.has_pdb_guid};
+}
+
 ModuleIdentity ReadModuleIdentity(const std::wstring& path) {
     PeImageIdentity identity;
-    ModuleIdentity result;
-    if (!ReadPeImageIdentity(path, identity)) {
-        return result;
-    }
-    result.valid = true;
-    result.timestamp = identity.timestamp;
-    result.checksum = identity.checksum;
-    result.size_of_image = identity.size_of_image;
-    result.machine = identity.machine;
-    result.pdb_guid = identity.pdb_guid;
-    result.pdb_age = identity.pdb_age;
-    result.has_pdb_guid = identity.has_pdb_guid;
-    return result;
+    return ReadPeImageIdentity(path, identity) ? PublicIdentity(identity) : ModuleIdentity{};
 }
 
 Symbolizer::~Symbolizer() {
@@ -230,25 +226,32 @@ Symbolizer::~Symbolizer() {
 }
 
 bool Symbolizer::Initialize(std::wstring symbol_path, std::wstring* error) {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_, g_dbghelp_mutex);
     if (initialized_) {
         return true;
     }
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES |
                   SYMOPT_OMAP_FIND_NEAREST | SYMOPT_EXACT_SYMBOLS |
                   SYMOPT_FAIL_CRITICAL_ERRORS);
-    if (!SymInitializeW(GetCurrentProcess(),
+    session_key_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (session_key_ == nullptr) {
+        if (error) *error = L"cannot allocate symbol session: " + FormatWindowsError(GetLastError());
+        return false;
+    }
+    if (!SymInitializeW(session_key_,
                         symbol_path.empty() ? nullptr : symbol_path.c_str(), FALSE)) {
         if (error != nullptr) {
             *error = L"SymInitializeW failed: " + FormatWindowsError(GetLastError());
         }
+        CloseHandle(session_key_);
+        session_key_ = nullptr;
         return false;
     }
     initialized_ = true;
     return true;
 }
 
-std::wstring Symbolizer::NormalizePath(const std::wstring& path) const {
+std::wstring NormalizeModulePath(const std::wstring& path) {
     std::wstring value = path;
     if (value.rfind(L"\\SystemRoot\\", 0) == 0) {
         const DWORD required = GetEnvironmentVariableW(L"SystemRoot", nullptr, 0);
@@ -283,16 +286,56 @@ std::wstring Symbolizer::NormalizePath(const std::wstring& path) const {
     return value;
 }
 
+std::wstring Symbolizer::NormalizePath(const std::wstring& path) const {
+    return NormalizeModulePath(path);
+}
+
+bool ModuleIdentityMatches(const ImageRecord& image, const ModuleIdentity& identity) {
+    return identity.valid &&
+           (image.timestamp == 0 || image.timestamp == identity.timestamp) &&
+           (image.checksum == 0 || image.checksum == identity.checksum) &&
+           (image.size == 0 || image.size == identity.size_of_image);
+}
+
+bool PdbIdentityMatches(const std::wstring& path, const ModuleIdentity& identity) {
+    if (!identity.has_pdb_guid) return false;
+    std::lock_guard lock(g_dbghelp_mutex);
+    SYMSRV_INDEX_INFOW info{};
+    info.sizeofstruct = sizeof(info);
+    return SymSrvGetFileIndexInfoW(path.c_str(), &info, 0) != FALSE &&
+           IsEqualGUID(identity.pdb_guid, info.guid) && identity.pdb_age == info.age;
+}
+
+void Symbolizer::PrepareTrace(const TraceData& trace, bool discard_unused) {
+    std::scoped_lock lock(mutex_, g_dbghelp_mutex);
+    image_index_.Build(trace);
+    indexed_trace_ = &trace;
+    indexed_images_ = trace.images.data();
+    indexed_image_count_ = trace.images.size();
+    if (!discard_unused) return;
+    std::unordered_set<std::wstring> needed;
+    for (const auto& image : trace.images) needed.insert(ModuleKey(image, NormalizePath(image.path)));
+    bool removed = false;
+    for (auto it = loaded_modules_.begin(); it != loaded_modules_.end();) {
+        if (!needed.contains(it->first)) {
+            SymUnloadModule64(session_key_, it->second.synthetic_base);
+            it = loaded_modules_.erase(it);
+            removed = true;
+        } else ++it;
+    }
+    std::erase_if(rejected_modules_, [&](const auto& key) { return !needed.contains(key); });
+    if (removed) symbol_cache_.clear();
+}
+
 std::wstring Symbolizer::ModuleKey(const ImageRecord& image,
                                    const std::wstring& normalized_path) const {
-    return normalized_path + L"|" + std::to_wstring(image.pid) + L"|" +
-           std::to_wstring(image.base) + L"|" + std::to_wstring(image.size) +
+    return normalized_path + L"|" + std::to_wstring(image.size) +
            L"|" + std::to_wstring(image.timestamp) + L"|" +
            std::to_wstring(image.checksum);
 }
 
 void Symbolizer::AddModule(const ImageRecord& image) {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_, g_dbghelp_mutex);
     if (!initialized_ || image.base == 0 || image.size == 0 || image.path.empty()) {
         return;
     }
@@ -305,10 +348,7 @@ void Symbolizer::AddModule(const ImageRecord& image) {
 
     PeImageIdentity identity;
     if (!ReadPeImageIdentity(path, identity) ||
-        (image.timestamp != 0 && identity.timestamp != 0 &&
-         image.timestamp != identity.timestamp) ||
-        (image.checksum != 0 && identity.checksum != 0 &&
-         image.checksum != identity.checksum)) {
+        !ModuleIdentityMatches(image, PublicIdentity(identity))) {
         rejected_modules_.insert(key);
         return;
     }
@@ -318,7 +358,7 @@ void Symbolizer::AddModule(const ImageRecord& image) {
     const DWORD64 synthetic_base = next_synthetic_base_;
     next_synthetic_base_ += aligned_size;
     const DWORD64 loaded_base = SymLoadModuleExW(
-        GetCurrentProcess(), nullptr, path.c_str(), nullptr, synthetic_base,
+        session_key_, nullptr, path.c_str(), nullptr, synthetic_base,
         static_cast<DWORD>(std::min<uint64_t>(image.size, UINT32_MAX)), nullptr,
         0);
     if (loaded_base == 0) {
@@ -329,7 +369,7 @@ void Symbolizer::AddModule(const ImageRecord& image) {
     IMAGEHLP_MODULEW64 module_info{};
     module_info.SizeOfStruct = sizeof(module_info);
     const bool have_module_info =
-        SymGetModuleInfoW64(GetCurrentProcess(), loaded_base, &module_info) != FALSE;
+        SymGetModuleInfoW64(session_key_, loaded_base, &module_info) != FALSE;
     const bool identity_mismatch =
         have_module_info &&
         (module_info.PdbUnmatched != FALSE || module_info.DbgUnmatched != FALSE ||
@@ -338,7 +378,7 @@ void Symbolizer::AddModule(const ImageRecord& image) {
          (identity.has_pdb_guid && module_info.PdbAge != 0 &&
           identity.pdb_age != module_info.PdbAge));
     if (identity_mismatch) {
-        SymUnloadModule64(GetCurrentProcess(), loaded_base);
+        SymUnloadModule64(session_key_, loaded_base);
         rejected_modules_.insert(key);
         return;
     }
@@ -346,16 +386,44 @@ void Symbolizer::AddModule(const ImageRecord& image) {
     loaded_modules_.emplace(key, ModuleLoad{loaded_base});
 }
 
+std::wstring Symbolizer::PdbPath(const ImageRecord& image) {
+    AddModule(image);
+    std::scoped_lock lock(mutex_, g_dbghelp_mutex);
+    const auto found = loaded_modules_.find(ModuleKey(image, NormalizePath(image.path)));
+    if (found == loaded_modules_.end()) return {};
+    BYTE buffer[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t)]{};
+    auto* symbol = reinterpret_cast<SYMBOL_INFOW*>(buffer);
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFOW);
+    symbol->MaxNameLen = MAX_SYM_NAME;
+    DWORD64 displacement = 0;
+    SymFromAddrW(session_key_, found->second.synthetic_base + 1, &displacement, symbol);
+    IMAGEHLP_MODULEW64 info{};
+    info.SizeOfStruct = sizeof(info);
+    const auto identity = ReadModuleIdentity(NormalizePath(image.path));
+    if (!SymGetModuleInfoW64(session_key_, found->second.synthetic_base, &info) ||
+        !identity.has_pdb_guid || info.PdbUnmatched || info.DbgUnmatched ||
+        !IsEqualGUID(identity.pdb_guid, info.PdbSig70) || identity.pdb_age != info.PdbAge)
+        return {};
+    return info.LoadedPdbName;
+}
+
 ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
                                    uint64_t address, uint64_t timestamp_ns) {
     ResolvedSymbol result;
-    const ImageRecord* image = FindImage(trace, pid, address, timestamp_ns);
+    std::scoped_lock lock(mutex_, g_dbghelp_mutex);
+    if (indexed_trace_ != &trace || indexed_images_ != trace.images.data() ||
+        indexed_image_count_ != trace.images.size()) {
+        image_index_.Build(trace);
+        indexed_trace_ = &trace;
+        indexed_images_ = trace.images.data();
+        indexed_image_count_ = trace.images.size();
+    }
+    const ImageRecord* image = image_index_.Find(pid, address, timestamp_ns);
     result.module = image != nullptr ? FileNameForImage(*image) : L"[unknown]";
     if (image != nullptr) {
         result.displacement = address >= image->base ? address - image->base : 0;
     }
 
-    std::lock_guard lock(mutex_);
     const std::wstring key =
         image != nullptr ? ModuleKey(*image, NormalizePath(image->path)) : L"";
     auto module = loaded_modules_.find(key);
@@ -379,7 +447,7 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
     symbol->SizeOfStruct = sizeof(SYMBOL_INFOW);
     symbol->MaxNameLen = MAX_SYM_NAME;
     DWORD64 displacement = 0;
-    if (SymFromAddrW(GetCurrentProcess(), symbol_address, &displacement, symbol) &&
+    if (SymFromAddrW(session_key_, symbol_address, &displacement, symbol) &&
         symbol->NameLen != 0) {
         result.symbol.assign(symbol->Name, symbol->NameLen);
         result.displacement = displacement;
@@ -391,26 +459,32 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
     IMAGEHLP_LINEW64 line{};
     line.SizeOfStruct = sizeof(line);
     DWORD line_displacement = 0;
-    if (SymGetLineFromAddrW64(GetCurrentProcess(), symbol_address, &line_displacement,
+    if (SymGetLineFromAddrW64(session_key_, symbol_address, &line_displacement,
                               &line)) {
         result.source_file = line.FileName != nullptr ? line.FileName : L"";
         result.line = line.LineNumber;
     }
+    if (symbol_cache_.size() >= 200000) symbol_cache_.clear();
     symbol_cache_.emplace(symbol_address, result);
     return result;
 }
 
 SymbolizerStats Symbolizer::Stats() const {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_, g_dbghelp_mutex);
     return stats_;
 }
 
 void Symbolizer::Close() {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_, g_dbghelp_mutex);
     if (initialized_) {
-        SymCleanup(GetCurrentProcess());
+        SymCleanup(session_key_);
         initialized_ = false;
     }
+    if (session_key_ != nullptr) CloseHandle(session_key_);
+    session_key_ = nullptr;
+    indexed_trace_ = nullptr;
+    indexed_images_ = nullptr;
+    indexed_image_count_ = 0;
     loaded_modules_.clear();
     rejected_modules_.clear();
     symbol_cache_.clear();

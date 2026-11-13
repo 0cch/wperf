@@ -33,6 +33,9 @@ struct ModuleIdentity {
 };
 
 ModuleIdentity ReadModuleIdentity(const std::wstring& path);
+bool ModuleIdentityMatches(const ImageRecord& image, const ModuleIdentity& identity);
+bool PdbIdentityMatches(const std::wstring& path, const ModuleIdentity& identity);
+std::wstring NormalizeModulePath(const std::wstring& path);
 
 struct SymbolizerStats {
     uint64_t cache_hits = 0;
@@ -49,6 +52,8 @@ public:
 
     bool Initialize(std::wstring symbol_path, std::wstring* error = nullptr);
     void AddModule(const ImageRecord& image);
+    void PrepareTrace(const TraceData& trace, bool discard_unused = false);
+    std::wstring PdbPath(const ImageRecord& image);
     ResolvedSymbol Resolve(const TraceData& trace, uint32_t pid, uint64_t address,
                            uint64_t timestamp_ns);
     SymbolizerStats Stats() const;
@@ -65,6 +70,11 @@ private:
 
     mutable std::mutex mutex_;
     bool initialized_ = false;
+    HANDLE session_key_ = nullptr;
+    ImageIndex image_index_;
+    const TraceData* indexed_trace_ = nullptr;
+    const ImageRecord* indexed_images_ = nullptr;
+    size_t indexed_image_count_ = 0;
     std::unordered_map<std::wstring, ModuleLoad> loaded_modules_;
     std::unordered_set<std::wstring> rejected_modules_;
     std::unordered_map<uint64_t, ResolvedSymbol> symbol_cache_;

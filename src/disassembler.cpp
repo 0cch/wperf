@@ -1,6 +1,7 @@
 #include "disassembler.h"
 
 #include "common.h"
+#include "symbolizer.h"
 
 #include <algorithm>
 #include <cstring>
@@ -22,35 +23,6 @@ struct Section {
     uint32_t raw_offset = 0;
 };
 
-std::wstring NormalizeImagePath(const std::wstring& value) {
-    std::wstring path = value;
-    if (path.rfind(L"\\SystemRoot\\", 0) == 0) {
-        wchar_t root[32768]{};
-        const DWORD length = GetEnvironmentVariableW(
-            L"SystemRoot", root, static_cast<DWORD>(std::size(root)));
-        if (length != 0) {
-            path = std::wstring(root, length) + path.substr(11);
-        }
-    }
-    if (path.rfind(L"\\??\\", 0) == 0) {
-        path.erase(0, 4);
-    }
-    if (path.rfind(L"\\Device\\", 0) == 0) {
-        for (wchar_t drive = L'C'; drive <= L'Z'; ++drive) {
-            const std::wstring name{drive, L':'};
-            wchar_t target[1024]{};
-            if (QueryDosDeviceW(name.c_str(), target,
-                                static_cast<DWORD>(std::size(target))) != 0) {
-                const std::wstring prefix = std::wstring(target) + L"\\";
-                if (path.rfind(prefix, 0) == 0) {
-                    path = name + path.substr(prefix.size() - 1);
-                    break;
-                }
-            }
-        }
-    }
-    return path;
-}
 
 bool ReadExact(std::ifstream& stream, uint64_t offset, void* data, size_t size) {
     stream.clear();
@@ -71,8 +43,13 @@ bool ReadImageBytes(const ImageRecord& image, uint64_t address, size_t size,
         }
         return false;
     }
+    const std::wstring path = NormalizeModulePath(image.path);
+    if (!ModuleIdentityMatches(image, ReadModuleIdentity(path))) {
+        if (error) *error = L"module identity does not match the trace";
+        return false;
+    }
     const uint64_t rva = address - image.base;
-    std::ifstream file(std::filesystem::path(NormalizeImagePath(image.path)),
+    std::ifstream file(std::filesystem::path(path),
                        std::ios::binary);
     if (!file) {
         if (error != nullptr) {
@@ -81,7 +58,7 @@ bool ReadImageBytes(const ImageRecord& image, uint64_t address, size_t size,
         return false;
     }
     IMAGE_DOS_HEADER dos{};
-    if (!ReadExact(file, 0, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE) {
+    if (!ReadExact(file, 0, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0) {
         if (error != nullptr) {
             *error = L"invalid DOS header";
         }
@@ -105,6 +82,7 @@ bool ReadImageBytes(const ImageRecord& image, uint64_t address, size_t size,
         }
         return false;
     }
+    if (header.NumberOfSections > 96) return false;
     std::vector<Section> sections;
     const uint64_t section_offset =
         static_cast<uint64_t>(dos.e_lfanew) + sizeof(signature) + sizeof(header) +
@@ -120,12 +98,13 @@ bool ReadImageBytes(const ImageRecord& image, uint64_t address, size_t size,
                                    section.PointerToRawData});
     }
     for (const Section& section : sections) {
-        const uint32_t span = std::max(section.virtual_size, section.raw_size);
+        const uint32_t span = section.raw_size;
         if (rva >= section.virtual_address &&
             rva - section.virtual_address < span) {
             const uint64_t file_offset =
                 section.raw_offset + (rva - section.virtual_address);
-            bytes.resize(size);
+            const size_t available = static_cast<size_t>(section.raw_size - (rva - section.virtual_address));
+            bytes.resize(std::min(size, available));
             if (!ReadExact(file, file_offset, bytes.data(), bytes.size())) {
                 bytes.clear();
                 if (error != nullptr) {
@@ -231,6 +210,7 @@ bool DisassembleImageAddress(const ImageRecord& image, uint64_t address,
                              size_t max_instructions,
                              std::vector<DisassembledInstruction>& instructions,
                              std::wstring* error) {
+    instructions.clear();
     std::vector<uint8_t> bytes;
     if (!ReadImageBytes(image, address, 64, bytes, error)) {
         return false;

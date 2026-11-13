@@ -10,6 +10,9 @@
 
 namespace wperf {
 
+bool WaitForCaptureReady(PipeServer& pipe, HANDLE worker, const std::wstring& session,
+                         uint32_t timeout_ms, std::wstring* error = nullptr);
+
 struct LiveWorkerOptions {
     std::wstring mode;
     std::wstring session_name;

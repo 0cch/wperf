@@ -3,6 +3,7 @@
 #include "common.h"
 
 #include <algorithm>
+#include <cstring>
 #include <tdh.h>
 #include <vector>
 
@@ -62,6 +63,7 @@ std::wstring LastErrorWith(const wchar_t* operation, ULONG code) {
 EtwSession::~EtwSession() {
     std::wstring ignored;
     Stop(&ignored);
+    RestoreProfile(&ignored);
 }
 
 ULONG ConfigureLbrCompat(CONTROLTRACE_ID trace_id, TRACE_LBR_CONFIGURATION configuration,
@@ -69,6 +71,7 @@ ULONG ConfigureLbrCompat(CONTROLTRACE_ID trace_id, TRACE_LBR_CONFIGURATION confi
 bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     context_register_status_.clear();
     lbr_status_.clear();
+    if (!IsActive() && original_interval_valid_ && !RestoreProfile(error)) return false;
     if (IsActive()) {
         if (error != nullptr) {
             *error = L"ETW session is already active";
@@ -84,8 +87,9 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         }
         return false;
     }
+    final_quality_ = {};
     std::wstring privilege_error;
-    if (!EnablePrivilege(L"SeSystemProfilePrivilege", &privilege_error)) {
+    if (options.system_logger && !EnablePrivilege(L"SeSystemProfilePrivilege", &privilege_error)) {
         if (error != nullptr) {
             *error = L"EnablePrivilege(SeSystemProfilePrivilege) failed: " +
                      privilege_error;
@@ -107,21 +111,22 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     properties->MaximumFileSize = options.maximum_file_size_mb;
     properties->FlushTimer = options.flush_timer_seconds;
     properties->EnableFlags = options.system_logger ? options.enable_flags : 0;
-    if (options.system_logger && options.pmc_profile) {
-        properties->EnableFlags |= EVENT_TRACE_FLAG_CSWITCH |
-                                   EVENT_TRACE_FLAG_DISPATCHER |
-                                   EVENT_TRACE_FLAG_SYSTEMCALL;
-    }
+    if (options.system_logger && options.pmc_profile)
+        properties->EnableFlags &= ~EVENT_TRACE_FLAG_PROFILE;
     properties->LogFileMode =
         (options.realtime ? EVENT_TRACE_REAL_TIME_MODE
                           : EVENT_TRACE_FILE_MODE_SEQUENTIAL) |
         EVENT_TRACE_USE_GLOBAL_SEQUENCE |
         (options.system_logger ? EVENT_TRACE_SYSTEM_LOGGER_MODE : 0);
 
+    const bool needs_profile = options.system_logger &&
+        (options.pmc_profile || (options.enable_flags & EVENT_TRACE_FLAG_PROFILE) != 0);
+    if (needs_profile && !ConfigureProfile(options, error)) return false;
     TRACEHANDLE handle = 0;
     const ULONG start_result =
         StartTraceW(&handle, options.session_name.c_str(), properties);
     if (start_result != ERROR_SUCCESS) {
+        RestoreProfile(nullptr);
         if (error != nullptr) {
             *error = LastErrorWith(L"StartTraceW", start_result);
         }
@@ -151,46 +156,22 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     }
 
     if (options.pmc_profile) {
-        ULONG source = options.pmc_source;
-        const ULONG source_result = TraceSetInformation(
-            0, TraceProfileSourceConfigInfo, &source, sizeof(source));
-        if (source_result != ERROR_SUCCESS) {
-            pmc_config_changed_ = false;
-            std::wstring stop_error;
-            Stop(&stop_error);
-            if (error != nullptr) {
-                *error = LastErrorWith(L"TraceSetInformation(PMC source)",
-                                       source_result);
-            }
+        struct GroupMask { ULONG masks[8]; } mask{};
+        mask.masks[0] = properties->EnableFlags;
+        mask.masks[1] = 0x00000400;  // PERF_PMC_PROFILE, not timer sampling.
+        const ULONG result = TraceSetInformation(handle_, TraceSystemTraceEnableFlagsInfo,
+                                                 &mask, sizeof(mask));
+        if (result != ERROR_SUCCESS) {
+            Stop(nullptr);
+            if (error) *error = LastErrorWith(L"enable PMC profile events", result);
             return false;
         }
-    }
-
-    TRACE_PROFILE_INTERVAL interval{};
-    interval.Source = options.pmc_profile ? options.pmc_source : 0;
-    interval.Interval = options.profile_interval_100ns;
-    ULONG returned = 0;
-    const ULONG query_result = TraceQueryInformation(
-        0, TraceSampledProfileIntervalInfo, &original_interval_,
-        sizeof(original_interval_), &returned);
-    original_interval_valid_ = query_result == ERROR_SUCCESS;
-
-    const ULONG interval_result = TraceSetInformation(
-        0, TraceSampledProfileIntervalInfo, &interval, sizeof(interval));
-    if (interval_result != ERROR_SUCCESS) {
-        std::wstring stop_error;
-        Stop(&stop_error);
-        if (error != nullptr) {
-            *error = LastErrorWith(L"TraceSetInformation(profile interval)",
-                                   interval_result);
-        }
-        return false;
     }
 
     if (options.enable_stack_tracing) {
         CLASSIC_EVENT_ID stack_event{};
         stack_event.EventGuid = kPerfInfoGuid;
-        stack_event.Type = 46;
+        stack_event.Type = options.pmc_profile ? 47 : 46;
         const ULONG stack_result = TraceSetInformation(
             handle_, TraceStackTracingInfo, &stack_event, sizeof(stack_event));
         if (stack_result != ERROR_SUCCESS) {
@@ -212,7 +193,7 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         request.Info.RegisterTypes = static_cast<ETW_CONTEXT_REGISTER_TYPES>(
             EtwContextRegisterTypeControl | EtwContextRegisterTypeInteger);
         request.Event.EventGuid = kPerfInfoGuid;
-        request.Event.Type = 46;
+        request.Event.Type = options.pmc_profile ? 47 : 46;
         const ULONG context_result = TraceSetInformation(
             handle_, TraceContextRegisterInfo, &request, sizeof(request));
         context_register_status_ =
@@ -225,7 +206,7 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     if (options.enable_lbr) {
         CLASSIC_EVENT_ID lbr_event{};
         lbr_event.EventGuid = kPerfInfoGuid;
-        lbr_event.Type = 46;
+        lbr_event.Type = options.pmc_profile ? 47 : 46;
         const ULONG lbr_result = ConfigureLbrCompat(
             handle_, TRACE_LBR_CONFIGURATION_CALLSTACK_ENABLE, &lbr_event, 1);
         lbr_status_ = lbr_result == ERROR_SUCCESS
@@ -264,28 +245,167 @@ ULONG ConfigureLbrCompat(CONTROLTRACE_ID trace_id, TRACE_LBR_CONFIGURATION confi
     return function(trace_id, configuration, events, event_count);
 }
 bool EtwSession::Stop(std::wstring* error) {
-    if (!IsActive()) {
-        return true;
-    }
-
+    if (!IsActive()) return RestoreProfile(error);
     std::vector<BYTE> buffer(kPropertiesBufferSize, 0);
     auto* properties = reinterpret_cast<PEVENT_TRACE_PROPERTIES>(buffer.data());
     properties->Wnode.BufferSize = static_cast<ULONG>(buffer.size());
-    const ULONG stop_result = ControlTraceW(handle_, name_.c_str(), properties,
-                                            EVENT_TRACE_CONTROL_STOP);
-
-    if (original_interval_valid_) {
-        TraceSetInformation(0, TraceSampledProfileIntervalInfo, &original_interval_,
-                            sizeof(original_interval_));
-        original_interval_valid_ = false;
+    const ULONG result = ControlTraceW(handle_, name_.c_str(), properties, EVENT_TRACE_CONTROL_STOP);
+    if (result != ERROR_SUCCESS && result != ERROR_WMI_INSTANCE_NOT_FOUND) {
+        if (error) *error = LastErrorWith(L"ControlTraceW(stop)", result);
+        return false;  // Preserve session identity for retry/recovery.
     }
-
+    if (result == ERROR_SUCCESS) {
+        final_quality_.lost_events = properties->EventsLost;
+        final_quality_.lost_buffers = uint64_t{properties->LogBuffersLost} + properties->RealTimeBuffersLost;
+    }
     handle_ = 0;
     name_.clear();
-    if (stop_result != ERROR_SUCCESS && stop_result != ERROR_WMI_INSTANCE_NOT_FOUND) {
-        if (error != nullptr) {
-            *error = LastErrorWith(L"ControlTraceW(stop)", stop_result);
+    return RestoreProfile(error);
+}
+
+bool EtwSession::QueryQuality(TraceQuality& quality, std::wstring* error) const {
+    quality = final_quality_;
+    if (!IsActive()) return true;
+    std::vector<BYTE> buffer(kPropertiesBufferSize, 0);
+    auto* properties = reinterpret_cast<PEVENT_TRACE_PROPERTIES>(buffer.data());
+    properties->Wnode.BufferSize = static_cast<ULONG>(buffer.size());
+    const ULONG result = ControlTraceW(handle_, name_.c_str(), properties, EVENT_TRACE_CONTROL_QUERY);
+    if (result != ERROR_SUCCESS) {
+        if (error) *error = LastErrorWith(L"ControlTraceW(query quality)", result);
+        return false;
+    }
+    quality.lost_events = properties->EventsLost;
+    quality.lost_buffers = uint64_t{properties->LogBuffersLost} + properties->RealTimeBuffersLost;
+    quality.incomplete = quality.lost_events != 0 || quality.lost_buffers != 0;
+    return true;
+}
+
+ProfileRestoreInfo EtwSession::RestoreInfo() const {
+    return {original_interval_.Source, original_interval_valid_ ? original_interval_.Interval : 0,
+            configured_interval_, pmc_config_changed_};
+}
+
+namespace {
+constexpr wchar_t kProfileMutexName[] = L"Global\\wperf-profile-configuration-v1";
+bool RestoreOwnedConfiguration(const ProfileRestoreInfo& info, std::wstring* error) {
+    if (info.original_interval == 0) {
+        if (!info.clear_pmc) return true;
+        const ULONG result = TraceSetInformation(0, TraceProfileSourceConfigInfo, nullptr, 0);
+        if (result != ERROR_SUCCESS && error) *error = LastErrorWith(L"clear PMC profile sources", result);
+        return result == ERROR_SUCCESS;
+    }
+    TRACE_PROFILE_INTERVAL current{info.source, 0};
+    ULONG returned = 0;
+    ULONG result = TraceQueryInformation(0, TraceSampledProfileIntervalInfo, &current,
+                                         sizeof(current), &returned);
+    // Do not overwrite a configuration another profiler has changed.
+    if (result == ERROR_SUCCESS && current.Interval != info.configured_interval &&
+        current.Interval != info.original_interval) return true;
+    if (result == ERROR_SUCCESS && current.Interval != info.original_interval) {
+        TRACE_PROFILE_INTERVAL original{info.source, info.original_interval};
+        result = TraceSetInformation(0, TraceSampledProfileIntervalInfo, &original, sizeof(original));
+    }
+    if (result == ERROR_SUCCESS && info.clear_pmc)
+        result = TraceSetInformation(0, TraceProfileSourceConfigInfo, nullptr, 0);
+    if (result != ERROR_SUCCESS && error) *error = LastErrorWith(L"restore profile configuration", result);
+    return result == ERROR_SUCCESS;
+}
+}
+
+bool RestoreProfileConfiguration(const ProfileRestoreInfo& info, std::wstring* error) {
+    if (info.original_interval == 0 && !info.clear_pmc) return true;
+    HANDLE mutex = CreateMutexW(nullptr, FALSE, kProfileMutexName);
+    if (mutex == nullptr) return false;
+    const DWORD wait = WaitForSingleObject(mutex, 0);
+    if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+        CloseHandle(mutex);
+        if (error) *error = L"profile configuration is owned by another capture";
+        return false;
+    }
+    const bool restored = RestoreOwnedConfiguration(info, error);
+    ReleaseMutex(mutex);
+    CloseHandle(mutex);
+    return restored;
+}
+
+bool EtwSession::RestoreProfile(std::wstring* error) {
+    const bool restored = profile_mutex_ != nullptr
+                              ? RestoreOwnedConfiguration(RestoreInfo(), error)
+                              : (!original_interval_valid_ || RestoreProfileConfiguration(RestoreInfo(), error));
+    if (restored) {
+        original_interval_valid_ = false;
+        pmc_config_changed_ = false;
+        configured_interval_ = 0;
+    }
+    if (restored && profile_mutex_ != nullptr) {
+        ReleaseMutex(profile_mutex_);
+        CloseHandle(profile_mutex_);
+        profile_mutex_ = nullptr;
+    }
+    return restored;
+}
+
+bool EtwSession::ConfigureProfile(const TraceOptions& options, std::wstring* error) {
+    profile_mutex_ = CreateMutexW(nullptr, FALSE, kProfileMutexName);
+    if (profile_mutex_ == nullptr) {
+        if (error) *error = L"cannot create profile configuration lock";
+        return false;
+    }
+    const DWORD wait = WaitForSingleObject(profile_mutex_, 0);
+    if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+        CloseHandle(profile_mutex_); profile_mutex_ = nullptr;
+        if (error) *error = L"another wperf capture owns the system sampling configuration";
+        return false;
+    }
+    uint32_t interval = options.profile_interval_100ns;
+    if (options.pmc_profile) {
+        const auto sources = QueryProfileSources(error);
+        const auto source = std::find_if(sources.begin(), sources.end(), [&](const auto& value) {
+            return value.source == options.pmc_source;
+        });
+        if (source == sources.end() || source->source == 0 || source->min_interval > source->max_interval || source->max_interval == 0) {
+            if (error) *error = L"a hardware PMC source is required";
+            RestoreProfile(nullptr); return false;
         }
+        interval = options.pmc_interval != 0 ? options.pmc_interval :
+            std::clamp<uint32_t>(65536, source->min_interval, source->max_interval);
+        if (interval < source->min_interval || interval > source->max_interval) {
+            if (error) *error = L"PMC period is outside the source's supported interval range";
+            RestoreProfile(nullptr); return false;
+        }
+        std::wstring owner_error;
+        const auto owners = QueryPmcCounterOwners(&owner_error);
+        if (!owner_error.empty() || !owners.empty()) {
+            if (error) *error = owner_error.empty() ? L"hardware PMC counters are already in use" : owner_error;
+            RestoreProfile(nullptr); return false;
+        }
+    }
+    original_interval_ = {};
+    original_interval_.Source = options.pmc_profile ? options.pmc_source : 0;
+    ULONG returned = 0;
+    ULONG result = TraceQueryInformation(0, TraceSampledProfileIntervalInfo, &original_interval_,
+                                         sizeof(original_interval_), &returned);
+    original_interval_valid_ = result == ERROR_SUCCESS;
+    if (result == ERROR_SUCCESS && options.pmc_profile) {
+        ULONG source = options.pmc_source;
+        result = TraceSetInformation(0, TraceProfileSourceConfigInfo, &source, sizeof(source));
+        pmc_config_changed_ = result == ERROR_SUCCESS;
+    }
+    TRACE_PROFILE_INTERVAL configured{original_interval_.Source, interval};
+    configured_interval_ = interval;
+    if (result == ERROR_SUCCESS)
+        result = TraceSetInformation(0, TraceSampledProfileIntervalInfo, &configured, sizeof(configured));
+    if (result == ERROR_SUCCESS) {
+        TRACE_PROFILE_INTERVAL actual{original_interval_.Source, 0};
+        const ULONG query = TraceQueryInformation(0, TraceSampledProfileIntervalInfo, &actual,
+                                                  sizeof(actual), &returned);
+        if (query == ERROR_SUCCESS) configured_interval_ = actual.Interval;
+    }
+    if (result != ERROR_SUCCESS) {
+        if (error) *error = LastErrorWith(L"configure profile interval/source", result);
+        // The interval may still be original when source setup alone succeeded.
+        configured_interval_ = original_interval_.Interval;
+        RestoreProfile(nullptr);
         return false;
     }
     return true;
@@ -310,6 +430,7 @@ const std::wstring& EtwSession::Name() const {
 ULONG TraceFlagsForProfile(std::wstring_view profile) {
     ULONG flags = EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
                   EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
+    if (profile == L"pmu") flags &= ~EVENT_TRACE_FLAG_PROFILE;
     if (profile == L"cpu-sched" || profile == L"sched") {
         flags |= EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER;
     }
@@ -339,7 +460,9 @@ ULONG TraceFlagsForProfile(std::wstring_view profile) {
 ULONG TraceFlagsForLiveFilter(std::wstring_view filter) {
     ULONG flags = EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
                   EVENT_TRACE_FLAG_IMAGE_LOAD;
-    if (filter == L"sched") {
+    if (filter == L"lbr") {
+        flags |= EVENT_TRACE_FLAG_PROFILE;
+    } else if (filter == L"sched") {
         flags |= EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER;
     } else if (filter == L"syscall") {
         flags |= EVENT_TRACE_FLAG_SYSTEMCALL;
@@ -559,25 +682,38 @@ std::vector<PmcSessionInfo> QueryPmcSessions(std::wstring* error) {
     }
 
     size_t offset = 0;
-    while (offset + sizeof(ETW_PMC_SESSION_INFO) <= buffer.size()) {
-        const auto* info =
-            reinterpret_cast<const ETW_PMC_SESSION_INFO*>(buffer.data() + offset);
-        PmcSessionInfo session;
-        session.logger_id = info->LoggerId;
-        const auto* sources = reinterpret_cast<const ULONG*>(info + 1);
-        for (ULONG index = 0; index < info->ProfileSourceCount; ++index) {
-            session.sources.push_back(sources[index]);
+    const size_t length = std::min<size_t>(required, buffer.size());
+    while (offset < length) {
+        if (length - offset < sizeof(ETW_PMC_SESSION_INFO)) {
+            if (error) *error = L"truncated PMC session header";
+            return {};
         }
-        const auto* hooks = reinterpret_cast<const USHORT*>(
-            sources + info->ProfileSourceCount);
-        for (ULONG index = 0; index < info->HookIdCount; ++index) {
-            session.hook_ids.push_back(hooks[index]);
+        ETW_PMC_SESSION_INFO info{};
+        std::memcpy(&info, buffer.data() + offset, sizeof(info));
+        const size_t available = info.NextEntryOffset == 0 ? length - offset : info.NextEntryOffset;
+        const uint64_t bytes = sizeof(info) + uint64_t{info.ProfileSourceCount} * sizeof(ULONG) +
+                               uint64_t{info.HookIdCount} * sizeof(USHORT);
+        if (available > length - offset || available < bytes) {
+            if (error) *error = L"invalid PMC session entry size";
+            return {};
+        }
+        PmcSessionInfo session;
+        session.logger_id = info.LoggerId;
+        const BYTE* source = buffer.data() + offset + sizeof(info);
+        for (ULONG i = 0; i < info.ProfileSourceCount; ++i) {
+            ULONG value = 0;
+            std::memcpy(&value, source + i * sizeof(ULONG), sizeof(value));
+            session.sources.push_back(value);
+        }
+        const BYTE* hook = source + info.ProfileSourceCount * sizeof(ULONG);
+        for (ULONG i = 0; i < info.HookIdCount; ++i) {
+            USHORT value = 0;
+            std::memcpy(&value, hook + i * sizeof(USHORT), sizeof(value));
+            session.hook_ids.push_back(value);
         }
         result.push_back(std::move(session));
-        if (info->NextEntryOffset == 0) {
-            break;
-        }
-        offset += info->NextEntryOffset;
+        if (info.NextEntryOffset == 0) break;
+        offset += info.NextEntryOffset;
     }
     return result;
 }

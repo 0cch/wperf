@@ -3,6 +3,7 @@
 #include "commands/help.h"
 #include "commands/util.h"
 #include "common.h"
+#include "output.h"
 #include "disassembler.h"
 #include "etl_reader.h"
 #include "symbolizer.h"
@@ -35,43 +36,11 @@ std::wstring Lower(std::wstring value) {
     return value;
 }
 
-std::wstring JsonEscape(const std::wstring& value) {
-    std::wstring result;
-    for (wchar_t ch : value) {
-        if (ch == L'"' || ch == L'\\') {
-            result.push_back(L'\\');
-        }
-        result.push_back(ch);
-    }
-    return result;
-}
 
 std::vector<uint64_t> SampleWeights(const TraceData& trace) {
-    std::vector<uint64_t> weights(trace.samples.size(),
-                                  trace.profile_interval_ns);
-    std::unordered_map<uint32_t, std::vector<size_t>> by_cpu;
-    for (size_t index = 0; index < trace.samples.size(); ++index) {
-        by_cpu[trace.samples[index].cpu].push_back(index);
-    }
-    for (auto& [cpu, indices] : by_cpu) {
-        (void)cpu;
-        std::sort(indices.begin(), indices.end(), [&](size_t left, size_t right) {
-            return trace.samples[left].timestamp_ns <
-                   trace.samples[right].timestamp_ns;
-        });
-        for (size_t index = 0; index < indices.size(); ++index) {
-            const size_t current = indices[index];
-            uint64_t weight = trace.profile_interval_ns;
-            if (index + 1 < indices.size()) {
-                const uint64_t next = trace.samples[indices[index + 1]].timestamp_ns;
-                const uint64_t now = trace.samples[current].timestamp_ns;
-                if (next > now) {
-                    weight = next - now;
-                }
-            }
-            weights[current] = std::clamp<uint64_t>(weight, 1, 1000000000ull);
-        }
-    }
+    std::vector<uint64_t> weights;
+    weights.reserve(trace.samples.size());
+    for (const auto& sample : trace.samples) weights.push_back(SampleWeightNs(trace, sample));
     return weights;
 }
 
@@ -80,6 +49,7 @@ std::map<std::wstring, AggregateValue> AggregateSymbols(
     const std::optional<uint32_t>& pid, const std::wstring& dso_filter,
     bool calltree) {
     std::map<std::wstring, AggregateValue> result;
+    symbolizer.PrepareTrace(trace);
     const std::vector<uint64_t> weights = SampleWeights(trace);
     const std::wstring dso_lower = Lower(dso_filter);
     for (size_t index = 0; index < trace.samples.size(); ++index) {
@@ -88,9 +58,7 @@ std::map<std::wstring, AggregateValue> AggregateSymbols(
             continue;
         }
         if (!calltree) {
-            const uint64_t address = sample.stack.empty()
-                                         ? sample.instruction_pointer
-                                         : sample.stack.front();
+            const uint64_t address = sample.instruction_pointer;
             const ResolvedSymbol symbol =
                 symbolizer.Resolve(trace, sample.pid, address, sample.timestamp_ns);
             if (!dso_lower.empty() &&
@@ -206,8 +174,13 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
     }
     Symbolizer first_symbolizer;
     Symbolizer second_symbolizer;
-    first_symbolizer.Initialize(symbol_path, nullptr);
-    second_symbolizer.Initialize(symbol_path, nullptr);
+    if (!first_symbolizer.Initialize(symbol_path, &error) ||
+        !second_symbolizer.Initialize(symbol_path, &error)) {
+        PrintError(error);
+        return 6;
+    }
+    if (first_trace.profile_interval_ns == 0 || second_trace.profile_interval_ns == 0)
+        std::wcerr << L"wperf: sampling period unavailable; unknown time weights remain zero\n";
     for (const auto& image : first_trace.images) {
         first_symbolizer.AddModule(image);
     }
@@ -258,7 +231,7 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
                 std::wcout << L",\n";
             }
             first_row = false;
-            std::wcout << L"{\"key\":\"" << JsonEscape(key)
+            std::wcout << L"{\"key\":\"" << EscapeJson(key)
                        << L"\",\"samples_before\":" << old_value.samples
                        << L",\"samples_after\":" << new_value.samples
                        << L",\"delta_samples\":" << sample_delta
@@ -268,8 +241,8 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
         } else if (csv) {
             std::wcout << old_value.samples << L"," << new_value.samples << L","
                        << sample_delta << L"," << old_value.weight_ns << L","
-                       << new_value.weight_ns << L"," << weight_delta << L",\""
-                       << key << L"\"\n";
+                       << new_value.weight_ns << L"," << weight_delta << L","
+                       << EscapeCsv(key) << L"\n";
         } else {
             std::wcout << std::showpos << std::right << std::setw(13)
                        << sample_delta << std::noshowpos << std::setw(11)
@@ -284,35 +257,6 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
     return 0;
 }
 
-std::filesystem::path NormalizeArchivePath(const std::wstring& value) {
-    std::wstring path = value;
-    if (path.rfind(L"\\SystemRoot\\", 0) == 0) {
-        wchar_t system_root[32768]{};
-        const DWORD length = GetEnvironmentVariableW(
-            L"SystemRoot", system_root, static_cast<DWORD>(std::size(system_root)));
-        if (length != 0) {
-            path = std::wstring(system_root, length) + path.substr(11);
-        }
-    }
-    if (path.rfind(L"\\??\\", 0) == 0) {
-        path.erase(0, 4);
-    }
-    if (path.rfind(L"\\Device\\", 0) == 0) {
-        for (wchar_t drive = L'C'; drive <= L'Z'; ++drive) {
-            const std::wstring drive_name{drive, L':'};
-            wchar_t device[1024]{};
-            if (QueryDosDeviceW(drive_name.c_str(), device,
-                                static_cast<DWORD>(std::size(device))) != 0) {
-                const std::wstring prefix = std::wstring(device) + L"\\";
-                if (path.rfind(prefix, 0) == 0) {
-                    path = drive_name + path.substr(prefix.size() - 1);
-                    break;
-                }
-            }
-        }
-    }
-    return path;
-}
 
 int RunAnnotate(const std::vector<std::wstring>& arguments) {
     std::filesystem::path input;
@@ -381,7 +325,8 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         return 6;
     }
     Symbolizer symbolizer;
-    symbolizer.Initialize(symbol_path, nullptr);
+    if (!symbolizer.Initialize(symbol_path, &error)) { PrintError(error); return 6; }
+    symbolizer.PrepareTrace(trace);
     for (const auto& image : trace.images) {
         symbolizer.AddModule(image);
     }
@@ -466,14 +411,14 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
             }
             first = false;
             std::wcout << L"{\"samples\":" << rows[index].samples
-                       << L",\"module\":\"" << JsonEscape(rows[index].module)
-                       << L"\",\"symbol\":\"" << JsonEscape(rows[index].symbol)
+                       << L",\"module\":\"" << EscapeJson(rows[index].module)
+                       << L"\",\"symbol\":\"" << EscapeJson(rows[index].symbol)
                        << L"\",\"displacement\":" << rows[index].displacement
                        << L",\"source_file\":\""
-                       << JsonEscape(rows[index].source_file)
+                       << EscapeJson(rows[index].source_file)
                        << L"\",\"line\":" << rows[index].line
                        << L",\"disassembly\":\""
-                       << JsonEscape(rows[index].disassembly) << L"\"}";
+                       << EscapeJson(rows[index].disassembly) << L"\"}";
         }
         std::wcout << L"\n]\n";
         return 0;
@@ -481,11 +426,10 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
     if (csv) {
         std::wcout << L"samples,module,symbol,displacement,source_file,line,disassembly\n";
         for (size_t index = 0; index < rows.size() && index < limit; ++index) {
-            std::wcout << rows[index].samples << L",\"" << rows[index].module
-                       << L"\",\"" << rows[index].symbol << L"\","
-                       << rows[index].displacement << L",\""
-                       << rows[index].source_file << L"\"," << rows[index].line
-                       << L",\"" << rows[index].disassembly << L"\"\n";
+            std::wcout << rows[index].samples << L"," << EscapeCsv(rows[index].module)
+                       << L"," << EscapeCsv(rows[index].symbol) << L"," << rows[index].displacement
+                       << L"," << EscapeCsv(rows[index].source_file) << L"," << rows[index].line
+                       << L"," << EscapeCsv(rows[index].disassembly) << L"\n";
         }
         return 0;
     }
@@ -512,24 +456,7 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
 }
 
 std::string JsonFileEscape(const std::wstring& value) {
-    std::string result = ToUtf8(value);
-    std::string escaped;
-    escaped.reserve(result.size() + 8);
-    for (char ch : result) {
-        if (ch == '\\' || ch == '"') {
-            escaped.push_back('\\');
-        }
-        if (ch == '\n') {
-            escaped += "\\n";
-        } else if (ch == '\r') {
-            escaped += "\\r";
-        } else if (ch == '\t') {
-            escaped += "\\t";
-        } else {
-            escaped.push_back(ch);
-        }
-    }
-    return escaped;
+    return ToUtf8(EscapeJson(value));
 }
 
 std::wstring Sha256File(const std::filesystem::path& path,
@@ -652,23 +579,32 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
         PrintError(error);
         return 9;
     }
-    std::set<std::wstring> needed_images;
+    Symbolizer archive_symbols;
+    if (!archive_symbols.Initialize(symbol_path, &error)) { PrintError(error); return 6; }
+    ImageIndex archive_images;
+    archive_images.Build(trace);
+    std::map<std::wstring, ImageRecord> needed_images;
+    const auto require_image = [&](const ImageRecord& image) {
+        const std::wstring key = image.path + L"|" + std::to_wstring(image.timestamp) +
+                                 L"|" + std::to_wstring(image.checksum) + L"|" + std::to_wstring(image.size);
+        needed_images.emplace(key, image);
+    };
     for (const auto& sample : trace.samples) {
         if (pid.has_value() && sample.pid != *pid) {
             continue;
         }
-        if (const auto* image = FindImage(trace, sample.pid,
+        if (const auto* image = archive_images.Find(sample.pid,
                                           sample.instruction_pointer,
                                           sample.timestamp_ns)) {
             if (!image->path.empty()) {
-                needed_images.insert(image->path);
+                require_image(*image);
             }
         }
         for (uint64_t frame : sample.stack) {
             if (const auto* image =
-                    FindImage(trace, sample.pid, frame, sample.timestamp_ns)) {
+                    archive_images.Find(sample.pid, frame, sample.timestamp_ns)) {
                 if (!image->path.empty()) {
-                    needed_images.insert(image->path);
+                    require_image(*image);
                 }
             }
         }
@@ -688,13 +624,15 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
         std::wstring pdb_sha256;
     };
     std::vector<ArchiveEntry> entries;
+    if (max_size_mb > UINT64_MAX / (1024ull * 1024ull)) return 2;
     const uint64_t max_bytes = max_size_mb == 0
                                    ? UINT64_MAX
                                    : max_size_mb * 1024ull * 1024ull;
-    for (const auto& path : needed_images) {
+    for (const auto& [key, image] : needed_images) {
+        (void)key;
         ArchiveEntry entry;
-        entry.source = path;
-        const std::filesystem::path source = NormalizeArchivePath(path);
+        entry.source = image.path;
+        const std::filesystem::path source = NormalizeModulePath(image.path);
         std::error_code ec;
         if (!std::filesystem::exists(source, ec) ||
             !std::filesystem::is_regular_file(source, ec)) {
@@ -704,19 +642,20 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
         }
         entry.size = std::filesystem::file_size(source, ec);
         entry.identity = ReadModuleIdentity(source.wstring());
+        if (!ModuleIdentityMatches(image, entry.identity)) {
+            entry.reason = L"identity_mismatch";
+            entries.push_back(std::move(entry));
+            continue;
+        }
         if (entry.size > max_bytes) {
             entry.reason = L"oversized";
             entries.push_back(std::move(entry));
             continue;
         }
-        std::filesystem::path destination = output / source.filename().wstring();
-        if (std::filesystem::exists(destination, ec) &&
-            !entry.identity.valid == false) {
-            destination = output /
-                          (source.stem().wstring() + L"." +
-                           std::to_wstring(entry.identity.timestamp) +
-                           source.extension().wstring());
-        }
+        const std::wstring source_hash = Sha256File(source);
+        if (source_hash.empty()) { entry.reason = L"hash_failed"; entries.push_back(std::move(entry)); continue; }
+        const std::filesystem::path destination = output / L"modules" / source_hash / source.filename();
+        if (!EnsureDirectory(destination.parent_path(), &error)) { PrintError(error); return 9; }
         std::filesystem::copy_file(source, destination,
                                    std::filesystem::copy_options::overwrite_existing,
                                    ec);
@@ -725,22 +664,31 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
             entries.push_back(std::move(entry));
             continue;
         }
-        entry.archived = destination.filename().wstring();
-        entry.copied = true;
+        entry.archived = std::filesystem::relative(destination, output).generic_wstring();
         entry.sha256 = Sha256File(destination);
+        if (entry.sha256 != source_hash ||
+            !ModuleIdentityMatches(image, ReadModuleIdentity(destination.wstring()))) {
+            entry.reason = L"identity_changed";
+            entries.push_back(std::move(entry));
+            continue;
+        }
+        entry.copied = true;
 
-        const std::filesystem::path pdb = source.parent_path() /
-                                          (source.stem().wstring() + L".pdb");
+        const std::filesystem::path pdb = archive_symbols.PdbPath(image);
         entry.pdb_source = pdb.wstring();
-        if (std::filesystem::exists(pdb, ec) &&
-            std::filesystem::is_regular_file(pdb, ec) &&
+        if (!pdb.empty() && std::filesystem::is_regular_file(pdb, ec) &&
             std::filesystem::file_size(pdb, ec) <= max_bytes) {
-            const std::filesystem::path pdb_destination = output / pdb.filename();
-            std::filesystem::copy_file(
-                pdb, pdb_destination,
-                std::filesystem::copy_options::overwrite_existing, ec);
-            if (!ec) {
-                entry.pdb_archived = pdb_destination.filename().wstring();
+            std::wstring guid = FormatGuid(entry.identity.pdb_guid);
+            std::erase_if(guid, [](wchar_t ch) { return ch == L'{' || ch == L'}' || ch == L'-'; });
+            wchar_t age[16]{};
+            swprintf_s(age, L"%x", entry.identity.pdb_age);
+            const std::filesystem::path pdb_destination = output / L"symbols" / pdb.filename() /
+                                                         (guid + age) / pdb.filename();
+            if (!EnsureDirectory(pdb_destination.parent_path(), &error)) { PrintError(error); return 9; }
+            std::filesystem::copy_file(pdb, pdb_destination,
+                                      std::filesystem::copy_options::overwrite_existing, ec);
+            if (!ec && PdbIdentityMatches(pdb_destination.wstring(), entry.identity)) {
+                entry.pdb_archived = std::filesystem::relative(pdb_destination, output).generic_wstring();
                 entry.pdb_copied = true;
                 entry.pdb_sha256 = Sha256File(pdb_destination);
             }
@@ -751,6 +699,7 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
     auto write_manifest = [&](const std::filesystem::path& path, bool json,
                               bool csv) {
         std::ofstream manifest(path, std::ios::binary);
+        if (!manifest) throw std::runtime_error("cannot write archive manifest");
         if (json) {
             manifest << "{\n  \"trace\": \"" << JsonFileEscape(input.wstring())
                      << "\",\n  \"symbol_path\": \"" << JsonFileEscape(symbol_path)
@@ -788,17 +737,17 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
                 const std::wstring guid = entry.identity.has_pdb_guid
                                               ? FormatGuid(entry.identity.pdb_guid)
                                               : L"";
-                manifest << ToUtf8(entry.source) << ','
-                         << ToUtf8(entry.archived) << ','
+                manifest << ToUtf8(EscapeCsv(entry.source)) << ','
+                         << ToUtf8(EscapeCsv(entry.archived)) << ','
                          << (entry.copied ? "true" : "false") << ','
-                         << ToUtf8(entry.reason) << ',' << entry.size << ','
+                         << ToUtf8(EscapeCsv(entry.reason)) << ',' << entry.size << ','
                          << ToUtf8(entry.sha256) << ',' << entry.identity.timestamp
                          << ',' << entry.identity.checksum << ','
                          << entry.identity.size_of_image << ','
                          << entry.identity.machine << ',' << ToUtf8(guid) << ','
                          << entry.identity.pdb_age << ','
-                         << ToUtf8(entry.pdb_source) << ','
-                         << ToUtf8(entry.pdb_archived) << ','
+                         << ToUtf8(EscapeCsv(entry.pdb_source)) << ','
+                         << ToUtf8(EscapeCsv(entry.pdb_archived)) << ','
                          << (entry.pdb_copied ? "true" : "false") << ','
                          << ToUtf8(entry.pdb_sha256) << '\n';
             }

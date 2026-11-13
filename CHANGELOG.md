@@ -1,5 +1,14 @@
 # wperf Changelog
 
+## Unreleased
+- Fixed live syscall/thread attribution, cross-window correlation and controller/worker cleanup.
+- Isolated DbgHelp sessions, indexed module/name lookup, reused module identities and avoided unused stack aggregation.
+- Enabled source-aware PMC interrupt sampling and LBR triggers; added native PMC periods and zero-event validation.
+- Waited for capture READY before launching targets; added conditional sampling rollback and live session guards.
+- Preserved sampling period/stack provenance; added exact-stack reports, JSON quality metadata and strict-quality mode.
+- Validated annotate/archive identities, found matching PDBs and prevented archive filename collisions.
+- Added raw-event/lifecycle regressions and JSON replay contracts; improved hardware smoke and soak accounting.
+
 ## 0.7.1
 - Display ETW `UINT32_MAX` process IDs as `[unattributed]` in text, JSON, CSV and folded stacks.
 - Added `top --symbol-path` and propagated it to the elevated live worker.

@@ -7,6 +7,7 @@
 #include "elevation.h"
 
 #include <atomic>
+#include <cmath>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -106,7 +107,7 @@ int RunTop(const std::vector<std::wstring>& arguments) {
             }
             wchar_t* end = nullptr;
             percent_limit = wcstod(arguments[++index].c_str(), &end);
-            if (end == nullptr || *end != L'\0' || percent_limit < 0.0 ||
+            if (end == nullptr || *end != L'\0' || !std::isfinite(percent_limit) || percent_limit < 0.0 ||
                 percent_limit > 100.0) {
                 PrintError(L"--percent-limit requires a number from 0 to 100");
                 return 2;

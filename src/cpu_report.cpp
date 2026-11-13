@@ -1,4 +1,5 @@
 #include "cpu_report.h"
+#include "output.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -57,7 +58,10 @@ struct TreeNode {
 
 std::vector<uint64_t> StackForSample(const SampleRecord& sample) {
     if (!sample.stack.empty()) {
-        return sample.stack;
+        auto stack = sample.stack;
+        if (sample.instruction_pointer != 0 && stack.front() != sample.instruction_pointer)
+            stack.insert(stack.begin(), sample.instruction_pointer);
+        return stack;
     }
     return {sample.instruction_pointer};
 }
@@ -80,32 +84,6 @@ std::wstring FoldedLabel(std::wstring value) {
     return value;
 }
 
-std::wstring JsonEscape(const std::wstring& value) {
-    std::wstring result;
-    for (wchar_t ch : value) {
-        switch (ch) {
-            case L'"':
-                result += L"\\\"";
-                break;
-            case L'\\':
-                result += L"\\\\";
-                break;
-            case L'\n':
-                result += L"\\n";
-                break;
-            case L'\r':
-                result += L"\\r";
-                break;
-            case L'\t':
-                result += L"\\t";
-                break;
-            default:
-                result.push_back(ch);
-                break;
-        }
-    }
-    return result;
-}
 
 void PrintTree(const TreeNode& node, uint64_t total, int depth,
                const CpuReportOptions& options, std::wostream& output) {
@@ -137,10 +115,15 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
     std::map<std::wstring, uint64_t> folded;
     TreeNode root;
 
+    symbolizer.PrepareTrace(trace);
+    ProcessNameIndex process_names(trace);
     for (const auto& sample : trace.samples) {
-        const std::wstring comm = ProcessDisplayName(trace, sample.pid);
-        const auto leaf_address = sample.stack.empty() ? sample.instruction_pointer
-                                                        : sample.stack.front();
+        if ((options.pid && sample.pid != *options.pid) ||
+            (options.tid && sample.tid != *options.tid) ||
+            (options.profile_source && sample.profile_source != *options.profile_source) ||
+            (options.exact_stacks_only && sample.stack_quality != StackQuality::Exact)) continue;
+        const std::wstring comm = process_names.Name(sample.pid, sample.timestamp_ns);
+        const auto leaf_address = sample.instruction_pointer;
         const ResolvedSymbol leaf = symbolizer.Resolve(
             trace, sample.pid, leaf_address, sample.timestamp_ns);
         if (!Matches(sample, options, comm, leaf.module, leaf.symbol)) {
@@ -148,13 +131,15 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
         }
 
         ++total_samples;
-        const std::wstring key = comm + L"|" + leaf.module + L"|" + leaf.symbol;
+        const std::wstring key = std::to_wstring(sample.pid) + L"|" + comm + L"|" +
+                                 leaf.module + L"|" + leaf.symbol;
         auto& row = rows[key];
         row.comm = comm;
         row.dso = leaf.module;
         row.symbol = leaf.symbol;
         ++row.samples;
 
+        if (!options.folded && !options.call_tree) continue;
         auto stack = StackForSample(sample);
         const bool reverse_stack =
             !(options.call_tree && options.call_tree_caller);
@@ -166,17 +151,21 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
         for (size_t index = 0; index < stack.size(); ++index) {
             const ResolvedSymbol resolved =
                 symbolizer.Resolve(trace, sample.pid, stack[index], sample.timestamp_ns);
-            folded_stack += L";";
-            folded_stack += FoldedLabel(resolved.symbol);
-            auto [it, inserted] = node->children.try_emplace(resolved.symbol);
+            const std::wstring label = resolved.module + L"!" + resolved.symbol;
+            if (options.folded) {
+                folded_stack += L";";
+                folded_stack += FoldedLabel(label);
+            }
+            if (!options.call_tree) continue;
+            auto [it, inserted] = node->children.try_emplace(label);
             node = &it->second;
             if (inserted) {
-                node->name = resolved.symbol;
+                node->name = label;
             }
             ++node->inclusive;
         }
-        ++node->self;
-        ++folded[folded_stack];
+        if (options.call_tree) ++node->self;
+        if (options.folded) ++folded[folded_stack];
     }
 
     if (options.folded) {
@@ -240,9 +229,9 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
             }
             first = false;
             output << L"  {\"overhead\":" << percent << L",\"samples\":"
-                   << row.samples << L",\"comm\":\"" << JsonEscape(row.comm)
-                   << L"\",\"dso\":\"" << JsonEscape(row.dso) << L"\",\"symbol\":\""
-                   << JsonEscape(row.symbol) << L"\"}";
+                   << row.samples << L",\"comm\":\"" << EscapeJson(row.comm)
+                   << L"\",\"dso\":\"" << EscapeJson(row.dso) << L"\",\"symbol\":\""
+                   << EscapeJson(row.symbol) << L"\"}";
         }
         output << L"\n]\n";
         return;
@@ -257,8 +246,8 @@ void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
             if (percent < options.percent_limit) {
                 continue;
             }
-            output << percent << L"," << row.samples << L",\"" << row.comm << L"\",\""
-                   << row.dso << L"\",\"" << row.symbol << L"\"\n";
+            output << percent << L"," << row.samples << L"," << EscapeCsv(row.comm) << L","
+                   << EscapeCsv(row.dso) << L"," << EscapeCsv(row.symbol) << L"\n";
         }
         return;
     }

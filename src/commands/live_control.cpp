@@ -7,6 +7,30 @@
 
 namespace wperf {
 
+bool WaitForCaptureReady(PipeServer& pipe, HANDLE worker, const std::wstring& session,
+                         uint32_t timeout_ms, std::wstring* error) {
+    const uint64_t deadline = GetTickCount64() + timeout_ms;
+    while (GetTickCount64() < deadline) {
+        if (pipe.HasData()) {
+            std::wstring line;
+            if (!pipe.ReceiveLine(line, 1000, error)) return false;
+            if (line == L"READY " + session) return true;
+            if (line.rfind(L"ERROR ", 0) == 0 || line.rfind(L"FINISHED ", 0) == 0) {
+                if (error) *error = L"capture did not become ready: " + line;
+                return false;
+            }
+        } else {
+            if (WaitForSingleObject(worker, 0) != WAIT_TIMEOUT) {
+                if (error) *error = L"capture worker exited before READY";
+                return false;
+            }
+            Sleep(10);
+        }
+    }
+    if (error) *error = L"capture READY timed out";
+    return false;
+}
+
 LiveWorkerClient::~LiveWorkerClient() {
     Close();
 }

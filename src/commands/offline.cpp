@@ -4,6 +4,7 @@
 #include "commands/live_control.h"
 #include "commands/util.h"
 #include "common.h"
+#include "output.h"
 #include "cpu_report.h"
 #include "elevation.h"
 #include "etl_reader.h"
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -94,7 +96,8 @@ int RunScript(const std::vector<std::wstring>& arguments) {
         }
         if (field != L"timestamp" && field != L"cpu" && field != L"pid" &&
             field != L"tid" && field != L"ip" && field != L"comm" &&
-            field != L"dso" && field != L"symbol" && field != L"stack") {
+            field != L"dso" && field != L"symbol" && field != L"stack" &&
+            field != L"source" && field != L"period" && field != L"stack_quality") {
             PrintError(L"unsupported script field: " + field);
             return 2;
         }
@@ -112,7 +115,8 @@ int RunScript(const std::vector<std::wstring>& arguments) {
         return 6;
     }
     Symbolizer symbolizer;
-    symbolizer.Initialize(symbol_path, nullptr);
+    if (!symbolizer.Initialize(symbol_path, &error)) { PrintError(error); return 6; }
+    symbolizer.PrepareTrace(trace);
     for (const auto& image : trace.images) {
         symbolizer.AddModule(image);
     }
@@ -125,6 +129,7 @@ int RunScript(const std::vector<std::wstring>& arguments) {
     }
     std::wcout << L"\n";
 
+    ProcessNameIndex process_names(trace);
     uint64_t emitted = 0;
     for (const auto& sample : trace.samples) {
         if (pid.has_value() && sample.pid != *pid) {
@@ -135,7 +140,7 @@ int RunScript(const std::vector<std::wstring>& arguments) {
         }
         const ResolvedSymbol leaf = symbolizer.Resolve(
             trace, sample.pid, sample.instruction_pointer, sample.timestamp_ns);
-        const std::wstring comm = ProcessDisplayName(trace, sample.pid);
+        const std::wstring comm = process_names.Name(sample.pid, sample.timestamp_ns);
         for (size_t field_index = 0; field_index < field_list.size(); ++field_index) {
             if (field_index != 0) {
                 std::wcout << (csv ? L"," : L" ");
@@ -157,6 +162,13 @@ int RunScript(const std::vector<std::wstring>& arguments) {
                 std::wcout << (csv ? CsvEscape(leaf.module) : leaf.module);
             } else if (field == L"symbol") {
                 std::wcout << (csv ? CsvEscape(leaf.symbol) : leaf.symbol);
+            } else if (field == L"source") {
+                std::wcout << sample.profile_source;
+            } else if (field == L"period") {
+                std::wcout << sample.period;
+            } else if (field == L"stack_quality") {
+                std::wcout << (sample.stack_quality == StackQuality::Exact ? L"exact" :
+                               sample.stack_quality == StackQuality::Approximate ? L"approximate" : L"missing");
             } else if (field == L"stack") {
                 std::wostringstream stack;
                 for (size_t frame = 0; frame < sample.stack.size(); ++frame) {
@@ -493,7 +505,7 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
         const uint64_t relative =
             event.timestamp_ns >= first_timestamp ? event.timestamp_ns - first_timestamp
                                                   : 0;
-        const std::wstring comm = ProcessDisplayName(trace, display_pid);
+        const std::wstring comm = ProcessDisplayName(trace, display_pid, event.timestamp_ns);
         const std::wstring detail = EventDetail(event);
         if (json) {
             if (!first_json) {
@@ -706,6 +718,8 @@ int RunReport(const std::vector<std::wstring>& arguments) {
     bool stdio_output = false;
     bool quiet = false;
     bool verbose = false;
+    bool metadata = false;
+    bool strict_quality = false;
     for (size_t index = 0; index < arguments.size(); ++index) {
         const std::wstring& argument = arguments[index];
         if (argument == L"-i" || argument == L"--input") {
@@ -771,11 +785,17 @@ int RunReport(const std::vector<std::wstring>& arguments) {
             wchar_t* parse_end = nullptr;
             report_options.percent_limit = wcstod(value.c_str(), &parse_end);
             if (parse_end == nullptr || *parse_end != L'\0' ||
-                report_options.percent_limit < 0.0 ||
+                !std::isfinite(report_options.percent_limit) || report_options.percent_limit < 0.0 ||
                 report_options.percent_limit > 100.0) {
                 PrintError(L"--percent-limit requires a number from 0 to 100");
                 return 2;
             }
+        } else if (argument == L"--metadata") {
+            metadata = true;
+        } else if (argument == L"--strict-quality") {
+            strict_quality = true;
+        } else if (argument == L"--exact-stacks") {
+            report_options.exact_stacks_only = true;
         } else if (argument == L"--folded" || argument == L"--collapsed") {
             report_options.folded = true;
         } else if (argument == L"-g" || argument == L"--call-graph") {
@@ -880,9 +900,16 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         PrintError(error);
         return 6;
     }
+    if (metadata && !report_options.json) { PrintError(L"--metadata requires --json"); return 2; }
+    if (metadata) {
+        std::wcout << L"{\"quality\":";
+        WriteQualityJson(trace, std::wcout);
+        std::wcout << L",\"rows\":";
+    }
     if (kind == L"io") {
         WriteIoSummary(trace, report_options.json);
-        return 0;
+        if (metadata) std::wcout << L"}\n";
+        return strict_quality && trace.quality.incomplete ? 6 : 0;
     }
 
     Symbolizer symbolizer;
@@ -923,6 +950,9 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                        << L" unattributed=" << unattributed_samples
                        << L" samples_without_stack=" << trace.quality.samples_without_stack
                        << L" stack_ambiguous=" << trace.quality.stack_ambiguous
+                       << L" decode_errors=" << trace.quality.decode_errors
+                       << L" correlation_evicted=" << trace.quality.correlation_evicted
+                       << L" incomplete=" << trace.quality.incomplete
                        << L" lost=" << trace.quality.lost_events
                        << L"\n";
         } else {
@@ -932,12 +962,16 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                        << L" approximate=" << trace.quality.stack_approximate_total
                        << L" missing=" << trace.quality.samples_without_stack
                        << L" ambiguous=" << trace.quality.stack_ambiguous
+                       << L" decode_errors=" << trace.quality.decode_errors
+                       << L" correlation_evicted=" << trace.quality.correlation_evicted
+                       << L" incomplete=" << trace.quality.incomplete
                        << L" lost=" << trace.quality.lost_events
                        << L" unknown_events=" << trace.quality.unknown_events
                        << L"\n";
         }
     }
     WriteCpuReport(trace, symbolizer, report_options, std::wcout);
-    return trace.samples.empty() ? 6 : 0;
+    if (metadata) std::wcout << L"}\n";
+    return trace.samples.empty() || (strict_quality && trace.quality.incomplete) ? 6 : 0;
 }
 }  // namespace wperf

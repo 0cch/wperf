@@ -1,4 +1,5 @@
 #include "commands.h"
+#include "commands/live_control.h"
 
 #include "commands/advanced.h"
 #include "commands/help.h"
@@ -418,6 +419,7 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     trace_options.enable_flags = TraceFlagsForProfile(profile_text);
     trace_options.pmc_profile = profile_text == L"pmu" || pmc_source_set_text == L"1";
     trace_options.pmc_source = pmc_source;
+    if (!ParseUint32(OptionValue(arguments, L"--period", L"0"), trace_options.pmc_interval)) return 2;
     trace_options.enable_lbr = lbr_text == L"1";
     trace_options.enable_context_registers = context_registers_text == L"1";
     trace_options.enable_stack_tracing = call_graph_text == L"1";
@@ -445,7 +447,6 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     state.phase = L"CAPTURING";
     state_store.Write(state, nullptr);
     pipe.SendLine(L"PHASE CAPTURING", nullptr);
-    pipe.SendLine(L"READY " + session_name, nullptr);
     if (trace_options.enable_lbr) {
         pipe.SendLine(L"STATUS lbr=" + session.LbrStatus(), nullptr);
     }
@@ -468,11 +469,16 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
         return 9;
     }
 
+    const ProfileRestoreInfo restore = session.RestoreInfo();
     std::vector<std::wstring> guard_arguments{
         L"--internal-session-guard",
         L"--session", session_name,
         L"--event", clean_event_name,
         L"--worker-pid", std::to_wstring(GetCurrentProcessId()),
+        L"--restore-source", std::to_wstring(restore.source),
+        L"--restore-interval", std::to_wstring(restore.original_interval),
+        L"--configured-interval", std::to_wstring(restore.configured_interval),
+        L"--clear-pmc", restore.clear_pmc ? L"1" : L"0",
         L"--log", guard_log,
         L"--state", state_path,
         L"--correlation", correlation_id,
@@ -493,9 +499,11 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     state.guard_pid = guard.process_id;
     state_store.Write(state, nullptr);
     pipe.SendLine(L"PHASE GUARD_STARTED " + std::to_wstring(guard.process_id), nullptr);
+    pipe.SendLine(L"READY " + session_name, nullptr);
 
     const ULONGLONG deadline = duration_ms == 0 ? 0 : GetTickCount64() + duration_ms;
     while (deadline == 0 || GetTickCount64() < deadline) {
+        if (!pipe.IsConnected()) break;
         if (pipe.HasData()) {
             std::wstring line;
             if (!pipe.ReceiveLine(line, 1000, &error)) {
@@ -516,7 +524,13 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     state.phase = L"STOPPING";
     state_store.Write(state, nullptr);
     int exit_code = session.Stop(&error) ? 0 : 4;
-    SetEvent(clean_event);
+    TraceQuality quality;
+    session.QueryQuality(quality, nullptr);
+    if (quality.lost_events || quality.lost_buffers) {
+        pipe.SendLine(L"STATUS incomplete lost=" + std::to_wstring(quality.lost_events) +
+                      L" lost_buffers=" + std::to_wstring(quality.lost_buffers), nullptr);
+    }
+    if (exit_code == 0) SetEvent(clean_event);
     CloseHandle(clean_event);
     state.phase = L"FINISHED";
     state.error_code = static_cast<uint32_t>(exit_code);
@@ -586,6 +600,16 @@ int RunGuard(const std::vector<std::wstring>& arguments) {
         state.guard_pid = GetCurrentProcessId();
         state.worker_pid = worker_pid;
         state.error_code = worker_exit;
+        ProfileRestoreInfo restore;
+        ParseUint32(OptionValue(arguments, L"--restore-source", L"0"), restore.source);
+        ParseUint32(OptionValue(arguments, L"--restore-interval", L"0"), restore.original_interval);
+        ParseUint32(OptionValue(arguments, L"--configured-interval", L"0"), restore.configured_interval);
+        restore.clear_pmc = OptionValue(arguments, L"--clear-pmc", L"0") == L"1";
+        EnablePrivilege(L"SeSystemProfilePrivilege", nullptr);
+        if (!RestoreProfileConfiguration(restore, &error)) {
+            logger.Log(LogLevel::Error, L"WORKER_LOST", error);
+            result = 4;
+        }
         state_store.Write(state, nullptr);
     } else if (wait != WAIT_OBJECT_0) {
         result = 9;
@@ -607,6 +631,8 @@ struct RecordOptions {
     std::wstring profile = L"cpu";
     uint32_t pmc_source = 0;
     bool pmc_source_set = false;
+    uint32_t pmc_interval = 0;
+    bool frequency_explicit = false;
     bool lbr = false;
     bool context_registers = false;
     bool call_graph = true;
@@ -652,6 +678,11 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
                 return false;
             }
             options.pmc_source_set = true;
+        } else if (argument == L"--period") {
+            if (index + 1 >= arguments.size() ||
+                !ParseUint32(arguments[++index], options.pmc_interval) || options.pmc_interval == 0) {
+                error = L"--period requires a positive PMC event count"; return false;
+            }
         } else if (argument == L"--lbr" || argument == L"-b") {
             options.lbr = true;
         } else if (argument == L"--context-registers") {
@@ -726,6 +757,7 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
                 error = L"--freq requires HZ between 1 and 100000";
                 return false;
             }
+            options.frequency_explicit = true;
             options.profile_interval_100ns =
                 static_cast<uint32_t>(std::max<uint64_t>(1, 10000000 / frequency));
         } else if (argument == L"--pid" || argument == L"-p") {
@@ -748,9 +780,17 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
         error = L"--pid and a target command are mutually exclusive";
         return false;
     }
+    const bool pmc = options.profile == L"pmu" || options.pmc_source_set;
+    if ((pmc && options.frequency_explicit) || (!pmc && options.pmc_interval != 0)) {
+        error = L"use --period for PMC event counts and -F for CPU sampling frequency";
+        return false;
+    }
+    if (pmc && !options.pmc_source_set) {
+        error = L"PMC sampling requires -e SOURCE or --pmc-source ID"; return false;
+    }
     return true;
 }
-int RunRecord(const std::vector<std::wstring>& arguments) {
+int RunRecord(const std::vector<std::wstring>& arguments, uint32_t* captured_pid = nullptr) {
     RecordOptions options;
     std::wstring error;
     if (!ParseRecordOptions(arguments, options, error)) {
@@ -770,7 +810,7 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         PrintError(error);
         return 9;
     }
-    if (!elevated && !options.elevate) {
+    if (!elevated && !options.elevate && !options.provider.has_value()) {
         PrintError(L"record requires administrator rights; rerun with --elevate");
         return 3;
     }
@@ -836,6 +876,7 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         L"--profile", options.profile,
         L"--profile-interval", std::to_wstring(options.profile_interval_100ns),
         L"--pmc-source", std::to_wstring(options.pmc_source),
+        L"--period", std::to_wstring(options.pmc_interval),
         L"--pmc-source-set", options.pmc_source_set ? L"1" : L"0",
         L"--lbr", options.lbr ? L"1" : L"0",
         L"--call-graph", options.call_graph ? L"1" : L"0",
@@ -896,6 +937,21 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         return 9;
     }
 
+    if (!WaitForCaptureReady(pipe, launch.process, session_name, 20000, &error)) {
+        pipe.SendLine(L"STOP", nullptr);
+        DWORD ignored = 0;
+        if (!WaitForProcessExit(launch.process, 10000, ignored)) TerminateProcess(launch.process, 9);
+        CloseHandle(launch.process);
+        state.phase = L"START_FAILED";
+        state.error_code = 4;
+        state_store.Write(state, nullptr);
+        PrintError(error);
+        return 4;
+    }
+    state.phase = L"CAPTURING";
+    state_store.Write(state, nullptr);
+    std::wcout << L"capturing: " << session_name << L"\n";
+
     ProcessLaunchResult target_launch;
     HANDLE observed_process = nullptr;
     uint32_t observed_pid = 0;
@@ -921,6 +977,7 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
             return 8;
         }
     }
+    if (captured_pid != nullptr) *captured_pid = observed_pid;
     if (observed_pid != 0) {
         state.target_pid = observed_pid;
         state_store.Write(state, nullptr);
@@ -1001,6 +1058,18 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         CloseHandle(observed_process);
     }
 
+    if (finished && worker_result == 0 && (options.pmc_source_set || options.profile == L"pmu" || options.lbr)) {
+        TraceData captured;
+        if (!ReadEtwFile(output, captured, &error)) { PrintError(error); worker_result = 6; }
+        else if (options.lbr && captured.quality.lbr_events == 0) {
+            PrintError(L"LBR configuration produced no LBR events; unavailable"); worker_result = 5;
+        } else if ((options.pmc_source_set || options.profile == L"pmu") &&
+                   std::none_of(captured.samples.begin(), captured.samples.end(), [&](const auto& sample) {
+                       return sample.kind == SampleKind::Pmc && sample.profile_source == options.pmc_source;
+                   })) {
+            PrintError(L"requested PMC source produced no PMC interrupts; unavailable"); worker_result = 5;
+        }
+    }
     state.phase = finished ? L"FINISHED" : L"WORKER_LOST";
     state.error_code = static_cast<uint32_t>(worker_result);
     state_store.Write(state, nullptr);
@@ -1157,6 +1226,7 @@ int RunStat(const std::vector<std::wstring>& arguments) {
                 return 2;
             }
             pmu_event = arguments[++index];
+            pmu = true;
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
             PrintCommandHelp(L"stat");
             return 0;
@@ -1214,7 +1284,7 @@ int RunStat(const std::vector<std::wstring>& arguments) {
             GetWperfRootDirectory() / (L"pmu-" + NewId() + L".etl");
         std::vector<std::wstring> record_args{
             L"--profile", L"pmu", L"--pmc-source", std::to_wstring(source),
-            L"-F", L"999", L"--duration", std::to_wstring(duration_ms),
+            L"--duration", std::to_wstring(duration_ms),
             L"--output", trace_path.wstring(),
         };
         if (pid.has_value()) {
@@ -1224,7 +1294,8 @@ int RunStat(const std::vector<std::wstring>& arguments) {
             record_args.push_back(L"--");
             record_args.insert(record_args.end(), target.begin(), target.end());
         }
-        const int record_result = RunRecord(record_args);
+        uint32_t pmu_target_pid = 0;
+        const int record_result = RunRecord(record_args, &pmu_target_pid);
         if (record_result != 0) {
             std::error_code ignored;
             std::filesystem::remove(trace_path, ignored);
@@ -1250,78 +1321,25 @@ int RunStat(const std::vector<std::wstring>& arguments) {
                 break;
             }
         }
-        struct PmcPoint {
-            uint64_t timestamp_ns = 0;
-            uint64_t value = 0;
-            size_t count = 0;
-        };
-        std::vector<PmcPoint> points;
-        for (const auto& sample : trace.samples) {
-            if (!sample.pmc_counters.empty()) {
-                points.push_back(PmcPoint{sample.timestamp_ns,
-                                          sample.pmc_counters.front(),
-                                          sample.pmc_counters.size()});
-            }
-        }
-        for (const auto& event : trace.events) {
-            if (!event.pmc_counters.empty()) {
-                points.push_back(PmcPoint{event.timestamp_ns,
-                                          event.pmc_counters.front(),
-                                          event.pmc_counters.size()});
-            }
-        }
-        std::sort(points.begin(), points.end(),
-                  [](const PmcPoint& left, const PmcPoint& right) {
-                      return left.timestamp_ns < right.timestamp_ns;
-                  });
-        uint64_t pmc_samples = 0;
-        uint64_t counters_per_sample = 0;
-        uint64_t first_counter = 0;
-        uint64_t last_counter = 0;
-        uint64_t previous_counter = 0;
-        uint64_t counter_delta_estimate = 0;
-        uint64_t counter_resets = 0;
-        for (const PmcPoint& point : points) {
-            const uint64_t value = point.value;
-            if (pmc_samples == 0) {
-                first_counter = value;
-                previous_counter = value;
-            } else if (value >= previous_counter) {
-                counter_delta_estimate += value - previous_counter;
-            } else {
-                counter_delta_estimate += value;
-                ++counter_resets;
-            }
-            previous_counter = value;
-            last_counter = value;
-            counters_per_sample =
-                std::max<uint64_t>(counters_per_sample, point.count);
-            ++pmc_samples;
-        }
-
-        std::wcout << L"PMU profile (experimental, sample-derived semantics)\n";
-        std::wcout << L"  source: " << source;
-        if (!source_name.empty()) {
-            std::wcout << L" (" << source_name << L")";
-        }
-        std::wcout << L"  samples: " << trace.samples.size()
-                   << L"  samples_with_pmc: " << pmc_samples << L"\n";
-        std::wcout << L"  semantics: sample-derived; not an exact perf-stat total\n";
+        const uint64_t pmc_samples = static_cast<uint64_t>(std::count_if(
+            trace.samples.begin(), trace.samples.end(), [&](const SampleRecord& sample) {
+                return sample.kind == SampleKind::Pmc && sample.profile_source == source &&
+                       (pmu_target_pid == 0 || sample.pid == pmu_target_pid);
+            }));
+        std::wcout << L"PMU profile (sample-derived semantics)\n  source: " << source
+                   << L" (" << source_name << L")  target_pid: " << pmu_target_pid
+                   << L"  samples: " << pmc_samples << L"\n";
         if (pmc_samples == 0) {
-            std::wcout << L"  extended PMC counters: unavailable\n";
-        } else {
-            std::wcout << L"  counters/sample: " << counters_per_sample
-                       << L"  first: " << first_counter
-                       << L"  last: " << last_counter
-                       << L"  resets: " << counter_resets << L"\n";
-            std::wcout << L"  sample-delta estimate: " << counter_delta_estimate
-                       << L" (diagnostic only)\n";
+            PrintError(L"requested PMC source produced no target samples; unavailable");
+            std::error_code ignored;
+            std::filesystem::remove(trace_path, ignored);
+            return 5;
         }
+        std::wcout << L"  semantics: event sampling; no exact counter total or cross-CPU delta\n";
         CpuReportOptions report_options;
         report_options.percent_limit = 1.0;
-        if (pid.has_value()) {
-            report_options.pid = pid;
-        }
+        if (pmu_target_pid != 0) report_options.pid = pmu_target_pid;
+        report_options.profile_source = source;
         WriteCpuReport(trace, symbolizer, report_options, std::wcout);
         std::error_code ignored;
         std::filesystem::remove(trace_path, ignored);
