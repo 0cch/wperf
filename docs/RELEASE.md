@@ -28,5 +28,5 @@ Pushing a tag matching `vMAJOR.MINOR.PATCH` builds and publishes
 release version `v1.2.3.42` when the workflow run number is 42. A full
 four-part tag such as `v1.2.3.42` is also accepted as an explicit override.
 
-The release workflow publishes the EXE, PDB, manifest, zip archive and SHA256
-checksums to GitHub Releases.
+The release workflow publishes the EXE, PDB, manifest and SHA256 checksums to
+GitHub Releases.

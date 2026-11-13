@@ -55,14 +55,20 @@ jobs:
           -VersionPatch ${{ steps.version.outputs.patch }}
           -BuildNumber ${{ steps.version.outputs.build }}
 
-      - name: Create release archive
+      - name: Create checksums
         shell: pwsh
         run: |
-          $tag = "${{ steps.version.outputs.release_tag }}"
-          $archive = "artifacts/wperf-$tag.zip"
-          Compress-Archive -Path "artifacts/release/*" -DestinationPath $archive -Force
-          Get-FileHash -Algorithm SHA256 -LiteralPath $archive |
-              ForEach-Object { "$($_.Hash)  $(Split-Path -Leaf $_.Path)" } |
+          $files = @(
+            "artifacts/release/wperf.exe",
+            "artifacts/release/wperf.pdb",
+            "artifacts/release/manifest.json"
+          )
+          $files |
+              ForEach-Object {
+                  $item = Get-Item -LiteralPath $_
+                  $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName
+                  "$($hash.Hash)  $($item.Name)"
+              } |
               Set-Content -LiteralPath "artifacts/SHA256SUMS.txt" -Encoding utf8
 
       - name: Upload workflow artifact
@@ -70,7 +76,6 @@ jobs:
         with:
           name: wperf-${{ steps.version.outputs.release_tag }}
           path: |
-            artifacts/wperf-${{ steps.version.outputs.release_tag }}.zip
             artifacts/SHA256SUMS.txt
             artifacts/release/wperf.exe
             artifacts/release/wperf.pdb
@@ -87,7 +92,6 @@ jobs:
           prerelease: false
           fail_on_unmatched_files: true
           files: |
-            artifacts/wperf-${{ steps.version.outputs.release_tag }}.zip
             artifacts/SHA256SUMS.txt
             artifacts/release/wperf.exe
             artifacts/release/wperf.pdb
