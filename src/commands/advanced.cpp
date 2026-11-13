@@ -2,6 +2,7 @@
 
 #include "commands/util.h"
 #include "common.h"
+#include "disassembler.h"
 #include "etl_reader.h"
 #include "symbolizer.h"
 #include "trace_model.h"
@@ -311,6 +312,7 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
     uint64_t limit = 50;
     bool json = false;
     bool csv = false;
+    bool disasm = false;
     for (size_t index = 0; index < arguments.size(); ++index) {
         if (arguments[index] == L"-i" || arguments[index] == L"--input") {
             if (index + 1 >= arguments.size()) {
@@ -329,6 +331,8 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
                 return 2;
             }
             pid = value;
+        } else if (arguments[index] == L"--disasm") {
+            disasm = true;
         } else if (arguments[index] == L"--json") {
             json = true;
         } else if (arguments[index] == L"--csv") {
@@ -340,7 +344,7 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
             }
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
             std::wcout << L"Usage: wperf annotate -i FILE [--symbol-path DIR] "
-                          L"[--pid PID] [--limit N] [--json|--csv]\n";
+                          L"[--pid PID] [--limit N] [--disasm] [--json|--csv]\n";
             return 0;
         }
     }
@@ -363,6 +367,9 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         std::wstring module;
         std::wstring symbol;
         std::wstring source_file;
+        std::wstring disassembly;
+        const ImageRecord* image = nullptr;
+        uint64_t address = 0;
         uint64_t displacement = 0;
         uint32_t line = 0;
         uint64_t samples = 0;
@@ -380,6 +387,9 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         value.module = symbol.module;
         value.symbol = symbol.symbol;
         value.source_file = symbol.source_file;
+        value.image = FindImage(trace, sample.pid, sample.instruction_pointer,
+                                sample.timestamp_ns);
+        value.address = sample.instruction_pointer;
         value.displacement = symbol.displacement;
         value.line = symbol.line;
         ++value.samples;
@@ -392,6 +402,39 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
     std::sort(rows.begin(), rows.end(), [](const Heat& a, const Heat& b) {
         return a.samples > b.samples;
     });
+    bool disassembly_failed = false;
+    if (disasm) {
+        for (size_t index = 0; index < rows.size() && index < limit; ++index) {
+            Heat& row = rows[index];
+            if (row.image == nullptr) {
+                continue;
+            }
+            std::vector<DisassembledInstruction> decoded;
+            std::wstring decode_error;
+            if (!DisassembleImageAddress(*row.image, row.address,
+                                         trace.pointer_size, 8, decoded,
+                                         &decode_error)) {
+                disassembly_failed = true;
+                continue;
+            }
+            for (const auto& instruction : decoded) {
+                if (!row.disassembly.empty()) {
+                    row.disassembly += L" | ";
+                }
+                wchar_t address_text[32]{};
+                swprintf_s(address_text, L"%llx",
+                           static_cast<unsigned long long>(instruction.address));
+                row.disassembly += address_text;
+                row.disassembly += L"  ";
+                row.disassembly += ToUtf16(instruction.bytes);
+                row.disassembly += L"  ";
+                row.disassembly += ToUtf16(instruction.text);
+            }
+        }
+        if (disassembly_failed && !DisassemblyAvailable()) {
+            std::wcerr << L"wperf: disassembly support is not enabled\n";
+        }
+    }
     if (json) {
         std::wcout << L"[\n";
         bool first = true;
@@ -406,19 +449,21 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
                        << L"\",\"displacement\":" << rows[index].displacement
                        << L",\"source_file\":\""
                        << JsonEscape(rows[index].source_file)
-                       << L"\",\"line\":" << rows[index].line << L"}";
+                       << L"\",\"line\":" << rows[index].line
+                       << L",\"disassembly\":\""
+                       << JsonEscape(rows[index].disassembly) << L"\"}";
         }
         std::wcout << L"\n]\n";
         return 0;
     }
     if (csv) {
-        std::wcout << L"samples,module,symbol,displacement,source_file,line\n";
+        std::wcout << L"samples,module,symbol,displacement,source_file,line,disassembly\n";
         for (size_t index = 0; index < rows.size() && index < limit; ++index) {
             std::wcout << rows[index].samples << L",\"" << rows[index].module
                        << L"\",\"" << rows[index].symbol << L"\","
                        << rows[index].displacement << L",\""
                        << rows[index].source_file << L"\"," << rows[index].line
-                       << L"\n";
+                       << L",\"" << rows[index].disassembly << L"\"\n";
         }
         return 0;
     }
@@ -431,6 +476,9 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
             std::wcout << L"  " << rows[index].source_file << L":" << rows[index].line;
         }
         std::wcout << L"\n";
+        if (!rows[index].disassembly.empty()) {
+            std::wcout << L"  " << rows[index].disassembly << L"\n";
+        }
     }
     return 0;
 }

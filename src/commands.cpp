@@ -115,6 +115,11 @@ int RunList(const std::vector<std::wstring>& arguments) {
 }
 
 int RunDoctor(const std::vector<std::wstring>& arguments) {
+    if (HasFlag(arguments, L"--help") || HasFlag(arguments, L"-h")) {
+        std::wcout << L"Usage: wperf doctor [--bundle DIR] [--include-dumps]\n";
+        return 0;
+    }
+    const bool include_dumps = HasFlag(arguments, L"--include-dumps");
     bool elevated = false;
     std::wstring error;
     const bool elevation_ok = IsProcessElevated(elevated, &error);
@@ -168,6 +173,11 @@ int RunDoctor(const std::vector<std::wstring>& arguments) {
         std::ofstream doctor_file(destination / L"doctor.txt", std::ios::binary);
         doctor_file << ToUtf8(text);
         doctor_file.close();
+        std::ofstream redaction(destination / L"REDACTION.txt", std::ios::binary);
+        redaction << "Diagnostic bundles may contain paths, PIDs, user names and command lines.\n"
+                  << "Crash dumps are excluded unless --include-dumps is specified.\n"
+                  << "Review bundle contents before sharing.\n";
+        redaction.close();
 
         std::error_code ec;
         const std::filesystem::path directories[] = {
@@ -177,11 +187,15 @@ int RunDoctor(const std::vector<std::wstring>& arguments) {
                 continue;
             }
             for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
-                if (!ec && entry.is_regular_file()) {
-                    std::filesystem::copy_file(
-                        entry.path(), destination / entry.path().filename(),
-                        std::filesystem::copy_options::overwrite_existing, ec);
+                if (ec || !entry.is_regular_file()) {
+                    continue;
                 }
+                if (!include_dumps && entry.path().extension() == L".dmp") {
+                    continue;
+                }
+                std::filesystem::copy_file(
+                    entry.path(), destination / entry.path().filename(),
+                    std::filesystem::copy_options::overwrite_existing, ec);
             }
         }
         std::wcout << L"Diagnostic bundle: " << destination.wstring() << L"\n";
@@ -288,6 +302,8 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     const std::wstring context_registers_text =
         OptionValue(arguments, L"--context-registers", L"0");
     const std::wstring provider_text = OptionValue(arguments, L"--provider");
+    const std::wstring controller_pid_text =
+        OptionValue(arguments, L"--controller-pid");
     uint64_t duration_ms = 5000;
     uint32_t profile_interval = 10000;
     uint32_t pmc_source = 0;
@@ -309,6 +325,14 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     if (!pipe.Connect(pipe_path, 15000, &error)) {
         logger.Log(LogLevel::Error, L"ELEVATING", error);
         return 3;
+    }
+    uint32_t expected_controller_pid = 0;
+    uint32_t actual_controller_pid = 0;
+    if (!ParseUint32(controller_pid_text, expected_controller_pid) ||
+        !pipe.ServerProcessId(actual_controller_pid) ||
+        actual_controller_pid != expected_controller_pid) {
+        pipe.SendLine(L"FINISHED 4", nullptr);
+        return 4;
     }
     if (!pipe.SendLine(L"HELLO " + nonce + L" " +
                            std::to_wstring(GetCurrentProcessId()), &error)) {
@@ -728,6 +752,7 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         L"--pmc-source", std::to_wstring(options.pmc_source),
         L"--pmc-source-set", options.pmc_source_set ? L"1" : L"0",
         L"--lbr", options.lbr ? L"1" : L"0",
+        L"--controller-pid", std::to_wstring(GetCurrentProcessId()),
         L"--context-registers", options.context_registers ? L"1" : L"0",
         L"--duration-ms", std::to_wstring(options.duration_ms),
     };

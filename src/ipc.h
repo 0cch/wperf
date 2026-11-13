@@ -48,6 +48,7 @@ public:
                      std::wstring* error = nullptr);
     bool HasData() const;
     bool IsConnected() const;
+    bool ServerProcessId(uint32_t& process_id) const;
     void Close();
 
 private:

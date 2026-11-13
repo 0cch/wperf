@@ -300,6 +300,19 @@ bool PipeClient::HasData() const {
            available != 0;
 }
 
+bool PipeClient::ServerProcessId(uint32_t& process_id) const {
+    process_id = 0;
+    if (pipe_ == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    ULONG server_pid = 0;
+    if (GetNamedPipeServerProcessId(pipe_, &server_pid) == FALSE) {
+        return false;
+    }
+    process_id = server_pid;
+    return true;
+}
+
 bool PipeClient::IsConnected() const {
     return pipe_ != INVALID_HANDLE_VALUE;
 }
