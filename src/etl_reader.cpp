@@ -1,5 +1,6 @@
 #include "etl_reader.h"
 
+#include "analysis.h"
 #include "common.h"
 #include "etw_decode.h"
 #include "lbr.h"
@@ -664,6 +665,21 @@ void FinishReplay(ReplayContext& context, TraceData& trace) {
         }
     }
 
+    std::unordered_map<uint64_t, std::vector<std::pair<uint64_t, const ResolvedStack*>>>
+        scheduler_stack_index;
+    for (const auto& [key, stack] : resolved_stacks) {
+        const uint64_t thread_cpu =
+            (static_cast<uint64_t>(key.tid) << 32) | key.cpu;
+        scheduler_stack_index[thread_cpu].push_back({key.tag, &stack});
+    }
+    for (auto& [thread_cpu, candidates] : scheduler_stack_index) {
+        (void)thread_cpu;
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.first < right.first;
+                  });
+    }
+
     std::map<std::vector<uint64_t>,std::shared_ptr<std::vector<uint64_t>>> interned;
     const auto attach=[&](SampleRecord& sample,const std::vector<uint64_t>& frames) {
         auto& shared=interned[frames];
@@ -751,7 +767,65 @@ void FinishReplay(ReplayContext& context, TraceData& trace) {
         }
     }
 
+    for (TraceEvent& event : trace.events) {
+        if (event.kind != TraceEventKind::ContextSwitch &&
+            event.kind != TraceEventKind::ReadyThread) {
+            continue;
+        }
+        const StackKey key{event.timestamp_ns, event.tid, event.cpu};
+        const auto found = resolved_stacks.find(key);
+        const ResolvedStack* selected = nullptr;
+        if (found != resolved_stacks.end() && !found->second.ambiguous &&
+            found->second.candidates.size() == 1) {
+            selected = &found->second;
+            event.stack_quality = StackQuality::Exact;
+            ++trace.quality.event_stack_exact;
+        } else if (found != resolved_stacks.end() && found->second.ambiguous) {
+            event.stack_missing = true;
+            ++trace.quality.event_stack_ambiguous;
+            continue;
+        } else {
+            const uint64_t thread_cpu =
+                (static_cast<uint64_t>(event.tid) << 32) | event.cpu;
+            const auto index = scheduler_stack_index.find(thread_cpu);
+            const ResolvedStack* nearest = nullptr;
+            uint64_t nearest_delta = UINT64_MAX;
+            if (index != scheduler_stack_index.end()) {
+                for (const auto& [timestamp, candidate] : index->second) {
+                    if (candidate->ambiguous || candidate->candidates.size() != 1) {
+                        continue;
+                    }
+                    const uint64_t delta = timestamp >= event.timestamp_ns
+                                               ? timestamp - event.timestamp_ns
+                                               : event.timestamp_ns - timestamp;
+                    if (delta <= 1000000 && delta < nearest_delta) {
+                        nearest = candidate;
+                        nearest_delta = delta;
+                    }
+                }
+            }
+            if (nearest != nullptr) {
+                selected = nearest;
+                event.stack_quality = StackQuality::Approximate;
+                ++trace.quality.event_stack_approximate;
+            }
+        }
+        if (selected == nullptr) {
+            event.stack_missing = true;
+            ++trace.quality.event_stack_missing;
+            continue;
+        }
+        const auto& frames = selected->candidates.front();
+        auto& shared = interned[frames];
+        if (!shared) {
+            shared = std::make_shared<std::vector<uint64_t>>(frames);
+        }
+        event.stack.Share(shared);
+        event.stack_missing = false;
+    }
+
     EnrichTraceEvents(trace);
+    BuildOffCpuIntervals(trace);
 }
 
 }  // namespace

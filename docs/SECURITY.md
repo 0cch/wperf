@@ -8,11 +8,15 @@
   - a one-time nonce,
   - an ACL restricted to owner/administrators/System,
   - controller PID validation using the named-pipe server PID.
+- versioned structured live windows with bounded message and receive buffers.
 - The controller can terminate only the worker process it created.
 - ETL payload readers validate lengths before every field read.
 - DbgHelp does not execute source-server commands; wperf only consumes local or
   symbol-server-resolved symbol data.
 - Trace modules and PDBs are parsed as data, not loaded into the process.
+- Live DbgHelp, PDB resolution, archive lookup, and formatting run in the
+  ordinary-permission controller, not in the elevated worker.
+- The elevated worker does not accept arbitrary file-read or download requests.
 - Diagnostic bundles skip `.dmp` files unless explicitly requested with
   `--include-dumps`; dumps may contain process memory and must be handled as
   sensitive.

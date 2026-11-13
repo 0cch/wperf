@@ -15,5 +15,6 @@ struct SchedulerRow {
     std::vector<uint64_t> wakeup_ns;
 };
 std::map<uint32_t,SchedulerRow> AnalyzeScheduler(const TraceData& trace);
+void BuildOffCpuIntervals(TraceData& trace);
 uint64_t Percentile(std::vector<uint64_t> values,double percentile);
 }

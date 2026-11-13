@@ -9,7 +9,7 @@
 namespace wperf {
 namespace {
 
-constexpr DWORD kPipeBufferSize = 16 * 1024;
+constexpr DWORD kPipeBufferSize = 256 * 1024;
 
 bool WaitOverlapped(HANDLE handle, OVERLAPPED& overlapped, DWORD timeout_ms,
                     DWORD* bytes_transferred, std::wstring* error) {
@@ -76,7 +76,7 @@ bool WriteMessage(HANDLE pipe, std::wstring_view line, std::wstring* error) {
 
 bool ReadMessage(HANDLE pipe, std::wstring& line, DWORD timeout_ms,
                  std::wstring* error) {
-    std::array<wchar_t, 4096> buffer{};
+    std::vector<wchar_t> buffer(64 * 1024);
     OVERLAPPED overlapped{};
     overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (overlapped.hEvent == nullptr) {

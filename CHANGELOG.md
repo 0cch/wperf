@@ -1,6 +1,9 @@
 # wperf Changelog
 
 ## 0.8.0.0
+- Moved live-top DbgHelp, PDB, archive, symbol cache and formatting into the ordinary-permission controller using bounded structured IPC.
+- Added scheduler-event stack capture and offline off-CPU blocked/ready interval analysis with text, JSON, CSV and folded output.
+- Added controller-side live archive resolution through `top --archive`.
 - Added native `report -o FILE` output with UTF-8/LF folded stacks and removed the FlameGraph wrapper script.
 - Added tag-driven GitHub release builds with four-part `vMAJOR.MINOR.PATCH.BUILD` versions.
 - Removed duplicated M1-M7 smoke steps and scripts; focused CTest coverage is now authoritative.

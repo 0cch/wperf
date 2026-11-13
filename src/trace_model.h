@@ -113,6 +113,28 @@ struct TraceEvent {
     uint64_t file_object = 0;
     std::wstring file_path;
     uint32_t operation_id = 0;
+    SharedStack stack;
+    StackQuality stack_quality = StackQuality::Missing;
+    bool stack_missing = true;
+};
+
+enum class OffCpuKind { Blocked, Ready };
+
+struct OffCpuInterval {
+    uint64_t start_ns = 0;
+    uint64_t end_ns = 0;
+    uint64_t duration_ns = 0;
+    uint32_t cpu = 0;
+    uint32_t pid = 0;
+    uint32_t tid = 0;
+    uint32_t wakeup_tid = 0;
+    uint32_t wait_reason = 0;
+    OffCpuKind kind = OffCpuKind::Blocked;
+    SharedStack stack;
+    SharedStack wakeup_stack;
+    StackQuality stack_quality = StackQuality::Missing;
+    bool stack_missing = true;
+    bool boundary_inferred = false;
 };
 
 struct TraceQuality {
@@ -143,6 +165,20 @@ struct TraceQuality {
     uint64_t syscall_orphaned = 0;
     uint64_t pmc_samples = 0;
     uint64_t pmc_counter_resets = 0;
+    uint64_t event_stack_exact = 0;
+    uint64_t event_stack_approximate = 0;
+    uint64_t event_stack_ambiguous = 0;
+    uint64_t event_stack_missing = 0;
+    uint64_t off_cpu_blocked_intervals = 0;
+    uint64_t off_cpu_ready_intervals = 0;
+    uint64_t off_cpu_stack_exact = 0;
+    uint64_t off_cpu_stack_approximate = 0;
+    uint64_t off_cpu_stack_ambiguous = 0;
+    uint64_t off_cpu_stack_missing = 0;
+    uint64_t off_cpu_preemptions = 0;
+    uint64_t off_cpu_unclosed = 0;
+    uint64_t off_cpu_duplicate_ready = 0;
+    uint64_t off_cpu_evicted = 0;
     bool incomplete = false;
 };
 
@@ -152,6 +188,7 @@ struct TraceData {
     std::vector<ImageRecord> images;
     std::vector<SampleRecord> samples;
     std::vector<TraceEvent> events;
+    std::vector<OffCpuInterval> off_cpu_intervals;
     TraceQuality quality;
     uint32_t pointer_size = sizeof(void*);
     uint64_t qpc_frequency = 10000000;

@@ -469,7 +469,6 @@ void TestLiveWorkerControlPlane() {
     options.mode = L"top";
     options.session_name = L"wperf-test-live-" + wperf::NewId();
     options.interval_ms = 100;
-    options.symbol_path = worker_executable.parent_path().wstring();
     options.duration_text = L"250";
     wperf::LiveWorkerClient worker;
     std::wstring error;

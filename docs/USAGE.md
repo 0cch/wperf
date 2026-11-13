@@ -24,7 +24,7 @@ produces no corresponding events returns unavailable (exit 5).
 wperf report -i FILE [-o FILE] [--kind cpu|io] [-p PID] [-t TID]
              [--comm TEXT] [--dso TEXT] [--symbol TEXT]
              [--percent-limit N] [-s FIELD]
-             [-g [caller|callee]] [--folded|--collapsed]
+             [-g [caller|callee]] [--folded|--collapsed] [--off-cpu]
              [--stdio|--csv|--json] [--quiet|--verbose]
              [--exact-stacks] [--metadata] [--strict-quality]
 ```
@@ -74,6 +74,29 @@ stacks as well as table, CSV and JSON reports. Use `--pid` to isolate a process
 before rendering a multi-process trace. Native SVG/HTML output is intentionally
 not part of this stage.
 
+## Off-CPU analysis
+
+Schedule-stack capture is requested automatically for `record --profile sched`,
+`cpu-sched` and `all`. `report --off-cpu` consumes the correlated blocked/ready
+intervals:
+
+```powershell
+wperf report -i sched.etl --off-cpu --symbol-path .\build\Release
+wperf report -i sched.etl --off-cpu --json
+wperf report -i sched.etl --off-cpu --folded --quiet -o offcpu.folded
+```
+
+Folded counts are wait duration in nanoseconds. Render with:
+
+```powershell
+flamegraph.pl --countname ns offcpu.folded > offcpu.svg
+```
+
+Blocked intervals require a context switch from `Wait`. Normal preemption and
+ready-but-not-running time are reported separately. A missing ReadyThread event
+produces an inferred blocked boundary. Wakeup stacks are retained separately and
+are not assigned as the blocked thread's stack.
+
 ## Command help
 
 ```powershell
@@ -90,7 +113,8 @@ accepted by `report` for scripts that pass perf-style text output options.
 
 ```powershell
 wperf top [-p PID] [-e cpu|SOURCE] [--interval MS] [--iterations N]
-          [--sort FIELD] [--symbol-path DIR] [--percent-limit N] [--elevate]
+          [--sort FIELD] [--symbol-path DIR] [--archive DIR]
+          [--percent-limit N] [--elevate]
 
 wperf trace --live [-e sched|syscall|pagefault|io|lbr] [-p PID]
              [--duration MS] [--max N] [--json] [--elevate]

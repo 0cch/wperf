@@ -55,6 +55,185 @@ std::map<uint32_t,SchedulerRow> AnalyzeScheduler(const TraceData& trace) {
     }
     return rows;
 }
+void BuildOffCpuIntervals(TraceData& trace) {
+    trace.off_cpu_intervals.clear();
+    struct Pending {
+        uint32_t pid = UINT32_MAX;
+        uint32_t tid = 0;
+        uint32_t cpu = 0;
+        uint64_t thread_start_ns = 0;
+        uint64_t blocked_start_ns = 0;
+        uint64_t ready_start_ns = 0;
+        uint32_t wait_reason = 0;
+        SharedStack stack;
+        StackQuality stack_quality = StackQuality::Missing;
+        bool stack_missing = true;
+        uint32_t wakeup_tid = 0;
+        SharedStack wakeup_stack;
+    };
+    std::unordered_map<uint32_t, Pending> pending;
+    const auto valid_tid = [](uint32_t tid) {
+        return tid != 0 && tid != UINT32_MAX;
+    };
+    const auto pid_for = [&](uint32_t tid, uint64_t timestamp_ns) {
+        const auto* thread = FindThread(trace, tid, timestamp_ns);
+        return thread == nullptr ? UINT32_MAX : thread->pid;
+    };
+    const auto add_interval = [&](const Pending& item, uint64_t start,
+                                  uint64_t end, OffCpuKind kind,
+                                  bool inferred) {
+        if (start == 0 || end <= start) {
+            return;
+        }
+        OffCpuInterval interval;
+        interval.start_ns = start;
+        interval.end_ns = end;
+        interval.duration_ns = end - start;
+        interval.cpu = item.cpu;
+        interval.pid = item.pid;
+        interval.tid = item.tid;
+        interval.wakeup_tid = item.wakeup_tid;
+        interval.wait_reason = item.wait_reason;
+        interval.kind = kind;
+        interval.stack = item.stack.View();
+        interval.wakeup_stack = item.wakeup_stack.View();
+        interval.stack_quality = item.stack_quality;
+        interval.stack_missing = item.stack_missing;
+        interval.boundary_inferred = inferred;
+        if (kind == OffCpuKind::Blocked) {
+            ++trace.quality.off_cpu_blocked_intervals;
+        } else {
+            ++trace.quality.off_cpu_ready_intervals;
+        }
+        if (item.stack_missing) {
+            ++trace.quality.off_cpu_stack_missing;
+        } else if (item.stack_quality == StackQuality::Exact) {
+            ++trace.quality.off_cpu_stack_exact;
+        } else if (item.stack_quality == StackQuality::Approximate) {
+            ++trace.quality.off_cpu_stack_approximate;
+        }
+        trace.off_cpu_intervals.push_back(std::move(interval));
+    };
+    const auto close_pending = [&](const Pending& item, uint64_t end) {
+        if (item.blocked_start_ns != 0) {
+            const bool inferred = item.ready_start_ns == 0;
+            add_interval(item, item.blocked_start_ns,
+                         inferred ? end : item.ready_start_ns,
+                         OffCpuKind::Blocked, inferred);
+        }
+        if (item.ready_start_ns != 0) {
+            add_interval(item, item.ready_start_ns, end, OffCpuKind::Ready, false);
+        }
+    };
+    std::vector<const TraceEvent*> ordered;
+    ordered.reserve(trace.events.size());
+    for (const TraceEvent& event : trace.events) {
+        if (event.kind == TraceEventKind::ContextSwitch ||
+            event.kind == TraceEventKind::ReadyThread) {
+            ordered.push_back(&event);
+        }
+    }
+    std::stable_sort(ordered.begin(), ordered.end(),
+                     [](const TraceEvent* left, const TraceEvent* right) {
+                         return left->timestamp_ns < right->timestamp_ns;
+                     });
+    for (const TraceEvent* event : ordered) {
+        if (event->kind == TraceEventKind::ContextSwitch) {
+            const uint32_t old_tid = event->tid;
+            const uint32_t new_tid = event->related_tid;
+            if (valid_tid(old_tid)) {
+                auto found = pending.find(old_tid);
+                if (found != pending.end()) {
+                    close_pending(found->second, event->timestamp_ns);
+                    ++trace.quality.off_cpu_unclosed;
+                    pending.erase(found);
+                }
+                Pending item;
+                item.pid = event->pid != 0 ? event->pid : pid_for(old_tid, event->timestamp_ns);
+                item.tid = old_tid;
+                item.cpu = event->cpu;
+                const auto* thread = FindThread(trace, old_tid, event->timestamp_ns);
+                item.thread_start_ns = thread == nullptr ? 0 : thread->start_ns;
+                if (event->previous_state == 5) {
+                    item.blocked_start_ns = event->timestamp_ns;
+                    item.wait_reason = event->wait_reason;
+                } else if (event->previous_state == 1 || event->previous_state == 2 ||
+                           event->previous_state == 3) {
+                    item.ready_start_ns = event->timestamp_ns;
+                    if (event->previous_state == 2) {
+                        ++trace.quality.off_cpu_preemptions;
+                    }
+                }
+                if (item.blocked_start_ns != 0 || item.ready_start_ns != 0) {
+                    item.stack = event->stack.View();
+                    item.stack_quality = event->stack_quality;
+                    item.stack_missing = event->stack_missing;
+                    if (pending.size() >= 200000) {
+                        ++trace.quality.off_cpu_evicted;
+                    } else {
+                        pending[old_tid] = std::move(item);
+                    }
+                }
+            }
+            if (valid_tid(new_tid)) {
+                auto found = pending.find(new_tid);
+                if (found != pending.end()) {
+                    const auto* thread = FindThread(trace, new_tid, event->timestamp_ns);
+                    const bool same_lifetime =
+                        thread == nullptr || found->second.thread_start_ns == 0 ||
+                        thread->start_ns == found->second.thread_start_ns;
+                    if (same_lifetime) {
+                        close_pending(found->second, event->timestamp_ns);
+                    } else {
+                        ++trace.quality.off_cpu_evicted;
+                    }
+                    pending.erase(found);
+                }
+            }
+        } else if (event->kind == TraceEventKind::ReadyThread) {
+            const uint32_t tid = event->related_tid;
+            if (!valid_tid(tid)) {
+                continue;
+            }
+            auto found = pending.find(tid);
+            if (found == pending.end()) {
+                Pending item;
+                item.pid = event->related_pid != 0
+                               ? event->related_pid
+                               : pid_for(tid, event->timestamp_ns);
+                item.tid = tid;
+                item.cpu = event->cpu;
+                const auto* thread = FindThread(trace, tid, event->timestamp_ns);
+                item.thread_start_ns = thread == nullptr ? 0 : thread->start_ns;
+                item.ready_start_ns = event->timestamp_ns;
+                item.wakeup_tid = event->tid;
+                item.wakeup_stack = event->stack.View();
+                pending[tid] = std::move(item);
+            } else if (found->second.ready_start_ns == 0) {
+                found->second.ready_start_ns = event->timestamp_ns;
+                found->second.wakeup_tid = event->tid;
+                found->second.wakeup_stack = event->stack.View();
+            } else {
+                ++trace.quality.off_cpu_duplicate_ready;
+            }
+        }
+    }
+    const uint64_t end_time =
+        trace.end_ns != 0 ? trace.end_ns : (ordered.empty() ? 0 : ordered.back()->timestamp_ns);
+    for (const auto& [tid, item] : pending) {
+        (void)tid;
+        close_pending(item, end_time);
+        ++trace.quality.off_cpu_unclosed;
+    }
+    std::stable_sort(trace.off_cpu_intervals.begin(), trace.off_cpu_intervals.end(),
+                     [](const OffCpuInterval& left, const OffCpuInterval& right) {
+                         if (left.start_ns != right.start_ns) {
+                             return left.start_ns < right.start_ns;
+                         }
+                         return left.tid < right.tid;
+                     });
+}
+
 uint64_t Percentile(std::vector<uint64_t> values,double percentile) {
     if(values.empty())return 0;
     std::sort(values.begin(),values.end());

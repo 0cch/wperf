@@ -5,8 +5,8 @@
 #include "output.h"
 #include "cpu_report.h"
 #include "ipc.h"
+#include "live_data.h"
 #include "live_top.h"
-#include "symbolizer.h"
 #include "session_guard.h"
 #include "trace_events.h"
 #include "trace_model.h"
@@ -110,10 +110,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     const std::wstring event_filter = OptionValue(arguments, L"--event", L"all");
     const std::wstring profile_source =
         OptionValue(arguments, L"--profile-source", L"cpu");
-    const std::wstring sort_field = OptionValue(arguments, L"--sort");
-    const std::wstring symbol_path = OptionValue(arguments, L"--symbol-path");
-    const std::wstring percent_limit_text =
-        OptionValue(arguments, L"--percent-limit", L"0");
+
     const std::wstring pid_text = OptionValue(arguments, L"--pid");
     const bool json = HasFlag(arguments, L"--json");
     if (pipe_path.empty() || nonce.empty() || session_name.empty() ||
@@ -129,12 +126,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
         !ParseUnsigned(max_text, max_events)) {
         return 2;
     }
-    wchar_t* percent_end = nullptr;
-    const double percent_limit = wcstod(percent_limit_text.c_str(), &percent_end);
-    if (percent_end == nullptr || *percent_end != L'\0' || !std::isfinite(percent_limit) ||
-        percent_limit < 0 || percent_limit > 100) {
-        return 2;
-    }
+
     std::optional<uint32_t> pid;
     if (!pid_text.empty()) {
         uint32_t value = 0;
@@ -189,68 +181,32 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     int result = 0;
     const ULONGLONG started = GetTickCount64();
     if (mode == L"top") {
-        Symbolizer symbolizer;
-        if (!symbolizer.Initialize(symbol_path, &error)) {
-            pipe.SendLine(L"ERROR " + error, nullptr);
-            result = 4;
-        } else {
-            while (!stop) {
-                if (!WaitInterruptibly(pipe,controller.get(),interval_ms,stop,error)) {
+        while (!stop) {
+            if (!WaitInterruptibly(pipe, controller.get(), interval_ms, stop, error)) {
+                result = 5;
+                break;
+            }
+            if (stop) {
+                break;
+            }
+            if (!capture.Running()) {
+                error = capture.LastError();
+                result = 5;
+                break;
+            }
+            TraceData trace = capture.Snapshot();
+            const auto window = EncodeLiveWindow(trace, interval_ms);
+            for (const std::wstring& line : window) {
+                if (!pipe.SendLine(line, &error)) {
                     result = 5;
                     break;
                 }
-                if (stop) {
-                    break;
-                }
-                if (!capture.Running()) { error = capture.LastError(); result = 5; break; }
-                TraceData trace = capture.Snapshot();
-                symbolizer.PrepareTrace(trace, true);
-                for (const auto& image : trace.images) {
-                    symbolizer.AddModule(image);
-                }
-                CpuReportOptions report_options;
-                report_options.percent_limit = percent_limit;
-                if (!sort_field.empty()) {
-                    report_options.sort_fields.push_back(sort_field);
-                }
-                if (pid.has_value()) {
-                    report_options.pid = pid;
-                }
-                if (profile_source != L"cpu") {
-                    report_options.profile_source = capture.ProfileSourceId();
-                }
-                const uint64_t unattributed = static_cast<uint64_t>(
-                    std::count_if(trace.samples.begin(), trace.samples.end(),
-                                  [](const SampleRecord& sample) {
-                                      return sample.pid == UINT32_MAX;
-                                  }));
-                std::wostringstream report;
-                report << L"wperf top  interval=" << interval_ms
-                       << L"ms  samples=" << trace.quality.samples_total
-                       << L"  events=" << trace.quality.events_total
-                       << L"  unattributed=" << unattributed
-                       << L"  unknown_events=" << trace.quality.unknown_events
-                       << L"  metadata_dropped=" << trace.quality.metadata_dropped
-                       << L"  pmc_samples=" << trace.quality.pmc_samples
-                       << L"  lost=" << trace.quality.lost_events
-                       << L"  lost_buffers=" << trace.quality.lost_buffers
-                       << L"  ring_dropped=" << trace.quality.ring_dropped << L"\n";
-                if (trace.samples.empty()) {
-                    report << L"No CPU samples in this interval.\n";
-                } else {
-                    WriteCpuReport(trace, symbolizer, report_options, report);
-                }
-                if (!pipe.SendLine(L"TOP_BEGIN " +
-                                       std::to_wstring(trace.quality.samples_total),
-                                   &error) ||
-                    !SendTextLines(pipe, L"TOP_LINE ", report.str(), error) ||
-                    !pipe.SendLine(L"TOP_END", &error)) {
-                    result = 5;
-                    break;
-                }
-                if (duration_ms != 0 && GetTickCount64() - started >= duration_ms) {
-                    break;
-                }
+            }
+            if (result != 0) {
+                break;
+            }
+            if (duration_ms != 0 && GetTickCount64() - started >= duration_ms) {
+                break;
             }
         }
     } else {

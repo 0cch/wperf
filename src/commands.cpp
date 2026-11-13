@@ -431,6 +431,10 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
         while(std::getline(values,token,L',')) { uint32_t source=0; if(!ParseUint32(token,source))return 2; trace_options.pmc_counter_sources.push_back(source); }
     }
     trace_options.enable_stack_tracing = call_graph_text == L"1";
+    trace_options.enable_scheduler_stack =
+        call_graph_text == L"1" &&
+        (profile_text == L"sched" || profile_text == L"cpu-sched" ||
+         profile_text == L"all");
     if (!provider_text.empty()) {
         if (FAILED(IIDFromString(provider_text.c_str(), &trace_options.provider_id))) {
             logger.Log(LogLevel::Error, L"WORKER_READY", L"invalid provider GUID");
@@ -511,6 +515,11 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     if (trace_options.enable_context_registers) {
         pipe.SendLine(L"STATUS context-registers=" +
                           session.ContextRegisterStatus(),
+                      nullptr);
+    }
+    if (trace_options.enable_scheduler_stack) {
+        pipe.SendLine(L"STATUS scheduler-stack=" +
+                          session.SchedulerStackStatus(),
                       nullptr);
     }
     logger.Log(LogLevel::Info, L"CAPTURING", L"ETW session started");

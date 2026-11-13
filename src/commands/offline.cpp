@@ -12,6 +12,7 @@
 #include "etl_reader.h"
 #include "symbolizer.h"
 #include "trace_events.h"
+#include "off_cpu_report.h"
 #include "trace_model.h"
 
 #include <algorithm>
@@ -747,6 +748,28 @@ void WriteIoSummary(const TraceData& trace, bool json) {
     }
 }
 
+bool WriteReportFile(const std::filesystem::path& path, const std::wstring& text,
+                     std::wstring* error) {
+    std::filesystem::path destination = path;
+    if (destination.is_relative()) {
+        destination = std::filesystem::absolute(destination);
+    }
+    if (!destination.parent_path().empty() &&
+        !EnsureDirectory(destination.parent_path(), error)) {
+        return false;
+    }
+    std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+    const std::string utf8 = ToUtf8(text);
+    output.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+    if (!output) {
+        if (error != nullptr) {
+            *error = L"cannot write report output: " + destination.wstring();
+        }
+        return false;
+    }
+    return true;
+}
+
 int RunReport(const std::vector<std::wstring>& arguments) {
     std::filesystem::path input;
     std::filesystem::path output_path;
@@ -759,6 +782,7 @@ int RunReport(const std::vector<std::wstring>& arguments) {
     bool verbose = false;
     bool metadata = false;
     bool stream = false;
+    bool off_cpu = false;
     bool strict_quality = false;
     std::optional<uint64_t> maximum_lost,maximum_missing;
     for (size_t index = 0; index < arguments.size(); ++index) {
@@ -791,6 +815,8 @@ int RunReport(const std::vector<std::wstring>& arguments) {
             else if(value==L"kernel")report_options.scope=CpuReportOptions::Scope::Kernel;
             else if(value==L"all")report_options.scope=CpuReportOptions::Scope::All;
             else return 2;
+        } else if (argument == L"--off-cpu") {
+            off_cpu = true;
         } else if (argument == L"--kind") {
             if (index + 1 >= arguments.size()) {
                 PrintError(L"--kind requires cpu or io");
@@ -942,6 +968,10 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         PrintError(L"--quiet and --verbose are mutually exclusive");
         return 2;
     }
+    if (off_cpu && (!kind.empty() || report_options.call_tree || stream || metadata)) {
+        PrintError(L"--off-cpu cannot be combined with --kind, --call-graph, --stream, or --metadata");
+        return 2;
+    }
     if ((report_options.folded || report_options.call_tree) &&
         (report_options.json || report_options.csv)) {
         PrintError(L"graph output cannot be combined with --json or --csv");
@@ -1028,6 +1058,19 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         symbolizer.AddModule(image);
     }
 
+    if (off_cpu) {
+        std::wostringstream result;
+        WriteOffCpuReport(trace, symbolizer, report_options, result);
+        if (!output_path.empty()) {
+            if (!WriteReportFile(output_path, result.str(), &error)) {
+                PrintError(error);
+                return 9;
+            }
+        } else {
+            std::wcout << result.str();
+        }
+        return 0;
+    }
 
     const uint64_t unattributed_samples = static_cast<uint64_t>(
         std::count_if(trace.samples.begin(), trace.samples.end(),

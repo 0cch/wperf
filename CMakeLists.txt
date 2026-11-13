@@ -73,9 +73,11 @@ add_library(wperf_core STATIC
     src/disassembler.cpp
     src/etl_reader.cpp
     src/live_top.cpp
+    src/live_data.cpp
     src/commands/live_control.cpp
     src/symbolizer.cpp
     src/cpu_report.cpp
+    src/off_cpu_report.cpp
 )
 target_include_directories(wperf_core PUBLIC src)
 target_compile_definitions(wperf_core PUBLIC
@@ -149,6 +151,8 @@ add_test(NAME cli_report_io COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/
 add_test(NAME cli_report_io_json COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io --json)
 add_test(NAME cli_folded_fixture COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --folded --percent-limit 5)
 add_test(NAME cli_folded_output COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/folded_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
+add_test(NAME cli_off_cpu_fixture COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --folded --percent-limit 1)
+add_test(NAME cli_off_cpu_json COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --json --percent-limit 1)
 add_test(NAME cli_report_conflicting_formats COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
 add_test(NAME cli_annotate_conflicting_formats COMMAND wperf annotate -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
 add_test(NAME cli_sched_fixture COMMAND wperf sched -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)

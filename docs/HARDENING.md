@@ -83,9 +83,10 @@ hardware checks from passed checks and fails advertised PMC sources that
 produce no usable events. The soak script records both controller and live
 worker memory, handles and CPU time.
 
-New analysis features such as off-CPU flame graphs, scheduler runtime totals,
-I/O pathname correlation, JIT maps and full-function annotate are outside this
-correctness pass.
+Off-CPU blocked/ready analysis and duration-weighted folded output are now
+implemented for offline traces. Scheduler runtime totals, I/O pathname
+correlation, JIT maps, live off-CPU and full-function annotate remain separate
+analysis work.
 
 ## Local report benchmark
 

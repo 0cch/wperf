@@ -65,16 +65,7 @@ bool LiveWorkerClient::StartWithExecutable(const LiveWorkerOptions& options,
         L"--max", options.max_text,
         L"--event", options.event_filter,
         L"--profile-source", options.profile_source,
-        L"--percent-limit", std::to_wstring(options.percent_limit),
     };
-    if (!options.sort_field.empty()) {
-        arguments.push_back(L"--sort");
-        arguments.push_back(options.sort_field);
-    }
-    if (!options.symbol_path.empty()) {
-        arguments.push_back(L"--symbol-path");
-        arguments.push_back(options.symbol_path);
-    }
     if (!options.pid_text.empty()) {
         arguments.push_back(L"--pid");
         arguments.push_back(options.pid_text);

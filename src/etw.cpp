@@ -16,6 +16,8 @@ constexpr ULONG kPropertiesBufferSize = 64 * 1024;
 constexpr size_t kAlignment = 8;
 const GUID kPerfInfoGuid = {0xce1dbfb4, 0x137e, 0x4da6,
                             {0x87, 0xb0, 0x3f, 0x59, 0xaa, 0x10, 0x2c, 0xbc}};
+const GUID kThreadGuid = {0x3d6fa8d1, 0xfe05, 0x11d0,
+                          {0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c}};
 
 size_t AlignUp(size_t value, size_t alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
@@ -73,6 +75,7 @@ ULONG ConfigureLbrCompat(CONTROLTRACE_ID trace_id, TRACE_LBR_CONFIGURATION confi
 bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     context_register_status_.clear();
     lbr_status_.clear();
+    scheduler_stack_status_.clear();
     if (!IsActive() && original_interval_valid_ && !RestoreProfile(error)) return false;
     if (IsActive()) {
         if (error != nullptr) {
@@ -214,6 +217,22 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
             }
             return false;
         }
+    }
+
+    if (options.enable_scheduler_stack) {
+        CLASSIC_EVENT_ID scheduler_events[2]{};
+        scheduler_events[0].EventGuid = kThreadGuid;
+        scheduler_events[0].Type = 36;
+        scheduler_events[1].EventGuid = kThreadGuid;
+        scheduler_events[1].Type = 50;
+        const ULONG scheduler_result = TraceSetInformation(
+            handle_, TraceStackTracingInfo, scheduler_events,
+            sizeof(scheduler_events));
+        scheduler_stack_status_ =
+            scheduler_result == ERROR_SUCCESS
+                ? L"enabled"
+                : LastErrorWith(L"TraceSetInformation(scheduler stack tracing)",
+                                scheduler_result);
     }
 
     if (options.enable_context_registers) {
@@ -476,6 +495,10 @@ const std::wstring& EtwSession::ContextRegisterStatus() const {
 
 const std::wstring& EtwSession::LbrStatus() const {
     return lbr_status_;
+}
+
+const std::wstring& EtwSession::SchedulerStackStatus() const {
+    return scheduler_stack_status_;
 }
 
 bool EtwSession::IsActive() const {

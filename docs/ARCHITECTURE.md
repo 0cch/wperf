@@ -13,6 +13,8 @@
 - `symbolizer.*`: PE/RSDS identity validation, DbgHelp, synthetic module bases,
   source line and in-memory symbol cache.
 - `live_top.*`: real-time ETW consumer and bounded sample/event rings.
+- `live_data.*`: versioned structured IPC windows for low-privilege controller-side analysis.
+- `off_cpu_report.*`: blocked/ready interval aggregation and folded report output.
 - `commands/`: CLI controllers, live worker protocol, reports and analysis.
 - `zydis`: optional static disassembly engine.
 
@@ -36,13 +38,21 @@
 - The worker validates the named-pipe server PID against the expected controller.
 - DbgHelp and formatting run outside the ETW callback.
 - Ctrl-C sends STOP, waits for worker exit and cleans stale sessions if needed.
+- The elevated worker sends raw trace windows and metadata; the normal-integrity
+  controller owns DbgHelp, PDB lookup, archive resolution, symbol caches,
+  aggregation, and formatting.
+- Live IPC uses a bounded, versioned line protocol with control messages kept
+  outside data formatting.
 - Live and record workers have a session guard for abnormal exit and conditional
   sampling-configuration recovery.
 
 ## Data integrity
 
 - Exact stack matches are separated from approximate matches.
-- Unknown, lost, ambiguous, key-mismatched and ring-dropped data is counted.
+- Unknown, lost, ambiguous, key-mismatched, metadata-dropped and ring-dropped data is counted.
+- Scheduler-event stacks are correlated separately from sample stacks.
+- Off-CPU blocked intervals require a switch from Wait; ready intervals and
+  preemption are represented separately, and unclosed intervals are marked.
 - PE timestamp/checksum and RSDS PDB GUID/age are validated before symbols are
   trusted.
 - PMC values are labeled sample-derived and are not presented as exact totals.

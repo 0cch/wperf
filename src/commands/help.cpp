@@ -39,7 +39,7 @@ Examples:
   wperf record --elevate -F 999 -g --duration 5000 -o cpu.etl
   wperf record --elevate -g -o child.etl -- .\app.exe --input data.txt
 
-System capture requires administrator rights. `--elevate` keeps the controller
+For sched, cpu-sched and all profiles, wperf also requests CSwitch/ReadyThread\nstack tracing and reports scheduler-stack=... status.\n\nSystem capture requires administrator rights. --elevate keeps the controller
 at normal integrity and launches one hidden elevated worker.
 )";
 
@@ -72,6 +72,7 @@ Options:
   --time-end MS             Select samples before capture-relative time.
   --scope all|user|kernel   Select sampled address space.
   --folded, --collapsed     Print collapsed stacks: comm;frame;... count.
+  --off-cpu                 Report blocked/ready intervals weighted by wait time.
   --stdio                   Text output (default; perf-compatible).
   --quiet                   Suppress quality diagnostics.
   --verbose                 Print complete quality counters to stderr.
@@ -94,6 +95,7 @@ Notes:
 Examples:
   wperf report -i cpu.etl --symbol-path .\build\Release --call-graph
   wperf report -i cpu.etl --pid 1234 --folded --percent-limit 0.5 --quiet -o stacks.folded
+  wperf report -i sched.etl --off-cpu --folded --quiet -o offcpu.folded
 )";
 
 constexpr std::wstring_view kScriptHelp = LR"(Usage: wperf script -i FILE [options]

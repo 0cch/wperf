@@ -19,9 +19,7 @@ bool WaitOutput(LiveWorkerClient& worker,bool top) {
         if(worker.HasData()) {
             std::wstring line;
             if(!worker.ReceiveLine(line,1000,nullptr))return false;
-            if(top&&line.rfind(L"TOP_BEGIN ",0)==0) {
-                if(std::stoull(line.substr(10))>0)return true;
-            }
+            if(top&&line.rfind(L"TOP2_SAMPLE ",0)==0)return true;
             if(!top&&line.rfind(L"OUT ",0)==0&&line.size()>4&&line[4]>=L'0'&&line[4]<=L'9')return true;
             if(line.rfind(L"FINISHED ",0)==0||line.rfind(L"ERROR ",0)==0) { std::wcerr<<line<<L"\n"; return false; }
         } else Sleep(10);
@@ -55,7 +53,7 @@ int wmain(int argc,wchar_t** argv) {
     ScopedHandle workload(burn.process);
     auto fail=[&](const wchar_t* message) { std::wcerr<<L"FAIL: "<<message<<L"\n"; TerminateProcess(workload.get(),1); return 1; };
     LiveWorkerOptions options; options.mode=L"top"; options.interval_ms=100;
-    options.symbol_path=bin.wstring(); options.session_name=L"wperf-integration-top-"+NewId();
+    options.session_name=L"wperf-integration-top-"+NewId();
     LiveWorkerClient worker; std::wstring error;
     if(!worker.StartWithExecutable(options,(bin/L"wperf.exe").wstring(),false,&error))return fail(error.c_str());
     if(!WaitOutput(worker,true))return fail(L"top produced no real CPU samples");

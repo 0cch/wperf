@@ -3,6 +3,7 @@
 #include "cpu_report.h"
 #include "disassembler.h"
 #include "etw_decode.h"
+#include "live_data.h"
 #include "live_top.h"
 #include "output.h"
 #include "symbolizer.h"
@@ -82,6 +83,55 @@ void TestProfileDecoder() {
           "CPU sample keeps its sampling period");
     sample.timestamp_ns = 1;
     Check(wperf::SampleWeightNs(trace, sample) == 2000000, "weight uses period, not distance to next sample");
+}
+
+void TestLiveWindowCodec() {
+    wperf::TraceData original;
+    original.profile_interval_ns = 1000000;
+    original.quality.events_total = 500;
+    original.quality.unknown_events = 2;
+    original.quality.samples_total = 1;
+    original.quality.stack_exact_total = 1;
+    wperf::ImageRecord image;
+    image.pid = 42; image.base = 0x1000; image.size = 0x1000; image.load_ns = 10;
+    image.path = L"C:\\path with spaces\\sample.dll";
+    original.images.push_back(image);
+    original.processes.push_back({42, 0, L"sample.exe", L"", 1, 0});
+    original.threads.push_back({42, 7, 1, 0});
+    wperf::SampleRecord sample;
+    sample.timestamp_ns = 123456; sample.cpu = 3; sample.pid = 42; sample.tid = 7;
+    sample.instruction_pointer = 0x1010; sample.period = 1000000;
+    sample.stack = [] {
+        std::vector<uint64_t> frames;
+        for (uint64_t index = 0; index < 300; ++index) frames.push_back(0x1000 + index * 8);
+        return frames;
+    }();
+    sample.pmc_counters = {11, 22};
+    sample.stack_quality = wperf::StackQuality::Exact;
+    original.samples.push_back(sample);
+
+    const auto lines = wperf::EncodeLiveWindow(original, 250);
+    wperf::LiveWindowDecoder decoder;
+    std::wstring error;
+    for (const std::wstring& line : lines) {
+        bool ok = false;
+        if (line.rfind(L"TOP2_BEGIN ", 0) == 0) ok = decoder.Begin(line, &error);
+        else if (line.rfind(L"TOP2_", 0) == 0) ok = decoder.Consume(line, &error);
+        Check(ok, "structured live IPC message decodes");
+        if (!ok) break;
+    }
+    wperf::TraceData decoded;
+    uint64_t interval = 0;
+    Check(decoder.Finish(decoded, interval, &error), "structured live IPC window finishes");
+    Check(interval == 250, "structured live IPC preserves interval");
+    Check(decoded.images.size() == 1 && decoded.images[0].path == image.path,
+          "structured live IPC preserves image identity");
+    Check(decoded.processes.size() == 1 && decoded.processes[0].image_name == L"sample.exe",
+          "structured live IPC preserves process metadata");
+    Check(decoded.samples.size() == 1 && decoded.samples[0].stack.size() == 300,
+          "structured live IPC preserves complete stacks");
+    Check(decoded.samples[0].pmc_counters == std::vector<uint64_t>({11, 22}),
+          "structured live IPC preserves PMC counters");
 }
 
 void TestLiveIdentityAndCorrelation() {
@@ -261,8 +311,8 @@ void TestPeriodsIdentityArchiveAndInline() {
     trace.profile_interval_ns=2000000;
     wperf::SampleRecord unknown;
     Check(wperf::SampleWeightNs(trace,unknown)==0,"late metadata does not backfill unknown period");
-    trace.processes.push_back({100,0,L"应用.exe",L"",10,200});
-    trace.processes.push_back({100,0,L"应用.exe",L"",300,0});
+    trace.processes.push_back({100,0,L"sample.exe",L"",10,200});
+    trace.processes.push_back({100,0,L"sample.exe",L"",300,0});
     trace.images.push_back({100,0x1000,0x1000,1,0,0,0,L"C:/v1/plugin.dll"});
     trace.images.push_back({100,0x3000,0x1000,2,0,0,0,L"C:/v2/plugin.dll"});
     wperf::SampleRecord first; first.pid=100; first.timestamp_ns=100; first.instruction_pointer=0x1100;
@@ -272,7 +322,7 @@ void TestPeriodsIdentityArchiveAndInline() {
     std::wostringstream output; wperf::WriteCpuReport(trace,empty,options,output);
     size_t rows=0,position=0; while((position=output.str().find(L"\"samples\":1",position))!=std::wstring::npos){++rows;position+=10;}
     Check(rows==3,"DLL versions and PID lifetimes stay separate");
-    Check(output.str().find(L"应用.exe")!=std::wstring::npos,"Unicode survives JSON report");
+    Check(output.str().find(L"sample.exe")!=std::wstring::npos,"Unicode survives JSON report");
 
     MODULEINFO information{}; auto module=GetModuleHandleW(nullptr);
     GetModuleInformation(GetCurrentProcess(),module,&information,sizeof(information));
@@ -414,6 +464,56 @@ void TestStreamingAndStopDeadline() {
     SetEnvironmentVariableW(L"WPERF_ENABLE_TEST_FAULTS",nullptr);
 }
 
+void TestOffCpuIntervals() {
+    wperf::TraceData trace;
+    trace.threads.push_back({100, 10, 1, 0});
+    trace.threads.push_back({200, 20, 1, 0});
+    trace.quality.events_total = 3;
+    trace.start_ns = 100;
+    trace.end_ns = 800;
+    wperf::TraceEvent leave;
+    leave.kind = wperf::TraceEventKind::ContextSwitch;
+    leave.timestamp_ns = 100; leave.cpu = 0; leave.pid = 100;
+    leave.tid = 10; leave.related_tid = 20;
+    leave.previous_state = 5; leave.wait_reason = 6;
+    leave.stack = {0x1000, 0x2000};
+    leave.stack_quality = wperf::StackQuality::Exact;
+    leave.stack_missing = false;
+    trace.events.push_back(leave);
+    wperf::TraceEvent ready;
+    ready.kind = wperf::TraceEventKind::ReadyThread;
+    ready.timestamp_ns = 300; ready.cpu = 0; ready.pid = 200;
+    ready.tid = 20; ready.related_tid = 10; ready.related_pid = 100;
+    ready.stack = {0x3000};
+    ready.stack_quality = wperf::StackQuality::Exact;
+    ready.stack_missing = false;
+    trace.events.push_back(ready);
+    wperf::TraceEvent resume;
+    resume.kind = wperf::TraceEventKind::ContextSwitch;
+    resume.timestamp_ns = 800; resume.cpu = 0; resume.pid = 200;
+    resume.tid = 20; resume.related_tid = 10; resume.previous_state = 1;
+    resume.stack = {0x4000};
+    resume.stack_quality = wperf::StackQuality::Exact;
+    resume.stack_missing = false;
+    trace.events.push_back(resume);
+    wperf::EnrichTraceEvents(trace);
+    wperf::BuildOffCpuIntervals(trace);
+    Check(trace.off_cpu_intervals.size() == 2, "off-CPU blocked and ready intervals are separated");
+    if (trace.off_cpu_intervals.size() == 2) {
+        Check(trace.off_cpu_intervals[0].kind == wperf::OffCpuKind::Blocked &&
+                  trace.off_cpu_intervals[0].duration_ns == 200,
+              "blocked interval ends when the thread becomes ready");
+        Check(trace.off_cpu_intervals[1].kind == wperf::OffCpuKind::Ready &&
+                  trace.off_cpu_intervals[1].duration_ns == 500,
+              "ready interval ends when the thread resumes");
+        Check(trace.off_cpu_intervals[0].wakeup_tid == 20,
+              "wakeup thread identity is preserved");
+        Check(trace.off_cpu_intervals[0].stack.size() == 2 &&
+                  trace.off_cpu_intervals[0].stack.front() == 0x1000,
+              "off-CPU interval retains the switching-out stack");
+    }
+}
+
 void TestSelectorsAndObservedIntervals() {
     wperf::TraceData trace; trace.start_ns=1000;
     trace.processes.push_back({100,0,L"parent.exe",L"",0,0});
@@ -440,6 +540,7 @@ void TestSelectorsAndObservedIntervals() {
 
 int main() {
     TestProfileDecoder();
+    TestLiveWindowCodec();
     TestLiveIdentityAndCorrelation();
     TestBoundedCorrelation();
     TestAddressSpacesAndNames();
@@ -450,6 +551,7 @@ int main() {
     TestModernStackKeyEpochs();
     TestRawPayloadsAndCounterDomains();
     TestStreamingAndStopDeadline();
+    TestOffCpuIntervals();
     TestSelectorsAndObservedIntervals();
     if (failures == 0) std::cout << "regression tests: PASS\n";
     return failures == 0 ? 0 : 1;

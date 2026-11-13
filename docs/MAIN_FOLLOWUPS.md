@@ -93,5 +93,6 @@ Windows has no supported query for the previous global PMC source list.
 Conditional interval rollback and ownership rejection cannot provide atomic
 coexistence with unrelated profilers. Complete cross-OS/CPU/VBS/WOW64 coverage,
 long soak and sampling perturbation measurements remain open. Context-register
-payload decoding remains disabled until its schema is validated. Off-CPU stack
-capture/flame graphs and JIT maps remain separate analysis work.
+payload decoding remains disabled until its schema is validated. Off-CPU
+blocked/ready stack analysis is now implemented for the offline record/report
+path; JIT maps and live off-CPU remain separate analysis work.

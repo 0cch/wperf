@@ -38,6 +38,7 @@ struct TraceOptions {
                          EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
     uint32_t profile_interval_100ns = 10000;
     bool enable_stack_tracing = true;
+    bool enable_scheduler_stack = false;
     bool enable_context_registers = false;
     bool realtime = false;
     bool system_logger = true;
@@ -76,6 +77,7 @@ public:
     const std::wstring& Name() const;
     const std::wstring& ContextRegisterStatus() const;
     const std::wstring& LbrStatus() const;
+    const std::wstring& SchedulerStackStatus() const;
     bool QueryQuality(TraceQuality& quality, std::wstring* error = nullptr) const;
     ProfileRestoreInfo RestoreInfo() const;
     void SetRecoveryWriter(std::function<bool(const ProfileRestoreInfo&)> writer) { recovery_writer_=std::move(writer); }
@@ -93,6 +95,7 @@ private:
     bool RestoreProfile(std::wstring* error);
     std::wstring context_register_status_;
     std::wstring lbr_status_;
+    std::wstring scheduler_stack_status_;
     REGHANDLE metadata_provider_ = 0;
     std::function<bool(const ProfileRestoreInfo&)> recovery_writer_;
 };

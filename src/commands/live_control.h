@@ -18,13 +18,10 @@ struct LiveWorkerOptions {
     std::wstring session_name;
     std::wstring event_filter = L"all";
     std::wstring profile_source = L"cpu";
-    std::wstring sort_field;
-    std::wstring symbol_path;
     std::wstring pid_text;
     std::wstring duration_text = L"0";
     std::wstring max_text = L"500";
     uint64_t interval_ms = 1000;
-    double percent_limit = 0.0;
     bool json = false;
 };
 
