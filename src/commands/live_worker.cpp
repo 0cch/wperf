@@ -104,6 +104,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     const std::wstring profile_source =
         OptionValue(arguments, L"--profile-source", L"cpu");
     const std::wstring sort_field = OptionValue(arguments, L"--sort");
+    const std::wstring symbol_path = OptionValue(arguments, L"--symbol-path");
     const std::wstring percent_limit_text =
         OptionValue(arguments, L"--percent-limit", L"0");
     const std::wstring pid_text = OptionValue(arguments, L"--pid");
@@ -173,7 +174,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     const ULONGLONG started = GetTickCount64();
     if (mode == L"top") {
         Symbolizer symbolizer;
-        if (!symbolizer.Initialize({}, &error)) {
+        if (!symbolizer.Initialize(symbol_path, &error)) {
             pipe.SendLine(L"ERROR " + error, nullptr);
             result = 4;
         } else {
@@ -197,10 +198,17 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                 if (pid.has_value()) {
                     report_options.pid = pid;
                 }
+                const uint64_t unattributed = static_cast<uint64_t>(
+                    std::count_if(trace.samples.begin(), trace.samples.end(),
+                                  [](const SampleRecord& sample) {
+                                      return sample.pid == UINT32_MAX;
+                                  }));
                 std::wostringstream report;
                 report << L"wperf top  interval=" << interval_ms
                        << L"ms  samples=" << trace.quality.samples_total
                        << L"  events=" << trace.quality.events_total
+                       << L"  unattributed=" << unattributed
+                       << L"  unknown_events=" << trace.quality.unknown_events
                        << L"  ring_dropped=" << trace.quality.ring_dropped << L"\n";
                 if (trace.samples.empty()) {
                     report << L"No CPU samples in this interval.\n";

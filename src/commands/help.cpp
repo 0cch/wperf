@@ -164,6 +164,7 @@ Options:
   --interval MS             Refresh interval (default: 1000).
   --iterations N            Number of snapshots; 0 means until Ctrl-C.
   --sort FIELD              Sort by samples, comm, dso, or symbol.
+  --symbol-path DIR         Add a local PDB search directory.
   --percent-limit N         Hide rows below N percent (default: 1).
   --elevate                 Start the hidden elevated worker.
   -h, --help                Show this help.

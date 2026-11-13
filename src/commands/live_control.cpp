@@ -47,6 +47,10 @@ bool LiveWorkerClient::StartWithExecutable(const LiveWorkerOptions& options,
         arguments.push_back(L"--sort");
         arguments.push_back(options.sort_field);
     }
+    if (!options.symbol_path.empty()) {
+        arguments.push_back(L"--symbol-path");
+        arguments.push_back(options.symbol_path);
+    }
     if (!options.pid_text.empty()) {
         arguments.push_back(L"--pid");
         arguments.push_back(options.pid_text);

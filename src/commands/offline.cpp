@@ -896,6 +896,11 @@ int RunReport(const std::vector<std::wstring>& arguments) {
     }
 
 
+    const uint64_t unattributed_samples = static_cast<uint64_t>(
+        std::count_if(trace.samples.begin(), trace.samples.end(),
+                      [](const SampleRecord& sample) {
+                          return sample.pid == UINT32_MAX;
+                      }));
     if (!quiet) {
         if (verbose) {
             std::wcerr << L"events=" << trace.quality.events_total
@@ -915,12 +920,14 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                        << L" io_init=" << trace.quality.io_init_events
                        << L" io_complete=" << trace.quality.io_complete_events
                        << L" io_orphan=" << trace.quality.io_orphaned
+                       << L" unattributed=" << unattributed_samples
                        << L" samples_without_stack=" << trace.quality.samples_without_stack
                        << L" stack_ambiguous=" << trace.quality.stack_ambiguous
                        << L" lost=" << trace.quality.lost_events
                        << L"\n";
         } else {
             std::wcerr << L"wperf: samples=" << trace.quality.samples_total
+                       << L" unattributed=" << unattributed_samples
                        << L" exact=" << trace.quality.stack_exact_total
                        << L" approximate=" << trace.quality.stack_approximate_total
                        << L" missing=" << trace.quality.samples_without_stack

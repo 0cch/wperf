@@ -306,8 +306,6 @@ void TestDisassembler() {
 }
 
 void TestThreadAndProcessIntervals() {
-
-
     wperf::TraceData trace;
     trace.threads.push_back(wperf::ThreadRecord{100, 7, 100, 200});
     trace.threads.push_back(wperf::ThreadRecord{200, 7, 300, 0});
@@ -330,6 +328,10 @@ void TestThreadAndProcessIntervals() {
     const auto* second_process = wperf::FindProcess(trace, 42, 350);
     Check(second_process != nullptr && second_process->image_name == L"second.exe",
           L"find reused process id lifetime");
+    Check(wperf::ProcessDisplayName(trace, UINT32_MAX) == L"[unattributed]",
+          L"unknown process id has a stable display name");
+    Check(wperf::ProcessDisplayName(trace, 42) == L"second.exe",
+          L"process display name resolves the current lifetime");
 }
 
 void TestSymbolizerPdbIdentity() {
@@ -457,6 +459,7 @@ void TestLiveWorkerControlPlane() {
     options.mode = L"top";
     options.session_name = L"wperf-test-live-" + wperf::NewId();
     options.interval_ms = 100;
+    options.symbol_path = worker_executable.parent_path().wstring();
     options.duration_text = L"250";
     wperf::LiveWorkerClient worker;
     std::wstring error;

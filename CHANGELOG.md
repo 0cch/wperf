@@ -1,5 +1,12 @@
 # wperf Changelog
 
+## 0.7.1
+- Display ETW `UINT32_MAX` process IDs as `[unattributed]` in text, JSON, CSV and folded stacks.
+- Added `top --symbol-path` and propagated it to the elevated live worker.
+- Added `unattributed` and `unknown_events` to the `top` quality summary.
+- Aligned `report`, `top`, `diff` and `annotate` text tables with bounded columns.
+- Added regression coverage for unattributed samples and CLI output.
+
 ## 0.7.0
 - Added complete `wperf help <command>` and richer `--help` pages.
 - Added perf-style aliases including `-g`, `-s`, `-F`, `--stdio` and `--collapsed`.

@@ -58,6 +58,7 @@ int RunTop(const std::vector<std::wstring>& arguments) {
     uint64_t iterations = 0;
     std::wstring profile_source = L"cpu";
     std::wstring sort_field;
+    std::wstring symbol_path;
     double percent_limit = 1.0;
     bool elevate = false;
     for (size_t index = 0; index < arguments.size(); ++index) {
@@ -100,13 +101,22 @@ int RunTop(const std::vector<std::wstring>& arguments) {
             }
         } else if (arguments[index] == L"--percent-limit") {
             if (index + 1 >= arguments.size()) {
+                PrintError(L"--percent-limit requires a number");
                 return 2;
             }
             wchar_t* end = nullptr;
             percent_limit = wcstod(arguments[++index].c_str(), &end);
-            if (end == nullptr || *end != L'\0' || percent_limit < 0.0) {
+            if (end == nullptr || *end != L'\0' || percent_limit < 0.0 ||
+                percent_limit > 100.0) {
+                PrintError(L"--percent-limit requires a number from 0 to 100");
                 return 2;
             }
+        } else if (arguments[index] == L"--symbol-path") {
+            if (index + 1 >= arguments.size()) {
+                PrintError(L"--symbol-path requires a directory");
+                return 2;
+            }
+            symbol_path = arguments[++index];
         } else if (arguments[index] == L"--elevate") {
             elevate = true;
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
@@ -132,6 +142,13 @@ int RunTop(const std::vector<std::wstring>& arguments) {
     options.interval_ms = interval_ms;
     options.profile_source = profile_source;
     options.sort_field = sort_field;
+    if (!symbol_path.empty()) {
+        std::filesystem::path path(symbol_path);
+        if (path.is_relative()) {
+            path = std::filesystem::absolute(path);
+        }
+        options.symbol_path = path.wstring();
+    }
     options.percent_limit = percent_limit;
     options.duration_text =
         iterations == 0 ? L"0" : std::to_wstring(interval_ms * iterations);

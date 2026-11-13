@@ -16,6 +16,7 @@ struct LiveWorkerOptions {
     std::wstring event_filter = L"all";
     std::wstring profile_source = L"cpu";
     std::wstring sort_field;
+    std::wstring symbol_path;
     std::wstring pid_text;
     std::wstring duration_text = L"0";
     std::wstring max_text = L"500";
