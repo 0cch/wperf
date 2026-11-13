@@ -1,0 +1,16 @@
+{
+  "fixture": "io.etl",
+  "sha256": "0D492B9C4B5C1C5B064C3A1A563130C199654380B2947EFBF838B14ED0183815",
+  "events_total": 322233,
+  "samples_total": 4962,
+  "file_io": 250028,
+  "disk_io": 1417,
+  "file_completions": 13968,
+  "disk_completions": 1417,
+  "file_durations": 13950,
+  "disk_durations": 1406,
+  "io_init": 13964,
+  "io_complete": 15374,
+  "io_orphaned": 1424,
+  "lost_events": 0
+}

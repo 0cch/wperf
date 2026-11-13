@@ -1,0 +1,11 @@
+{
+  "fixture": "sched.etl",
+  "sha256": "B3B856FAB8AEB74B9650B4F7E39CD0C4C8A8B36E017F487F16BCAFABC9C9C4B0",
+  "events_total": 291154,
+  "samples_total": 14790,
+  "context_switches": 127472,
+  "ready_threads": 71872,
+  "wakeup_latencies": 71872,
+  "sched_unknown_pid": 10623,
+  "lost_events": 0
+}

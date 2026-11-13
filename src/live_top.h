@@ -51,6 +51,9 @@ private:
     std::deque<SampleRecord> samples_;
     std::deque<TraceEvent> events_;
     std::unordered_map<uint32_t, uint32_t> thread_to_process_;
+    std::unordered_map<uint32_t, uint64_t> ready_time_;
+    std::unordered_map<uint32_t, uint64_t> syscall_pending_;
+    std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> io_pending_;
     uint32_t pointer_size_ = sizeof(void*);
     uint64_t qpc_frequency_ = 10000000;
     uint64_t events_total_ = 0;

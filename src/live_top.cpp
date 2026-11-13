@@ -1,6 +1,7 @@
 #include "live_top.h"
 
 #include "common.h"
+#include "trace_events.h"
 
 #include <algorithm>
 #include <cstring>
@@ -43,6 +44,13 @@ GUID GetClassGuid(const EVENT_RECORD& record) {
 bool IsZeroGuid(const GUID& guid) {
     static const GUID zero{};
     return IsEqualGUID(guid, zero) != FALSE;
+}
+
+uint8_t ReadU8(const BYTE* data, size_t size, size_t offset) {
+    if (data == nullptr || offset >= size) {
+        return 0;
+    }
+    return data[offset];
 }
 
 uint32_t ReadU32(const BYTE* data, size_t size, size_t offset) {
@@ -221,6 +229,7 @@ TraceData LiveTopCapture::Snapshot() {
     trace.quality.samples_total = samples_.size();
     trace.samples.assign(samples_.begin(), samples_.end());
     trace.events.assign(events_.begin(), events_.end());
+    EnrichTraceEvents(trace);
     for (SampleRecord& sample : trace.samples) {
         if (sample.pid == 0 || sample.pid == UINT32_MAX) {
             const auto found = thread_to_process_.find(sample.tid);
@@ -344,12 +353,9 @@ void LiveTopCapture::ParseThread(PEVENT_RECORD record) {
 
 void LiveTopCapture::ParseEvent(PEVENT_RECORD record, TraceEventKind kind,
                                 uint64_t value1, uint64_t value2) {
-    if (kind == TraceEventKind::ContextSwitch ||
-        kind == TraceEventKind::ReadyThread) {
-        const auto* data = static_cast<const BYTE*>(record->UserData);
-        value1 = ReadU32(data, record->UserDataLength, 0);
-        value2 = ReadU32(data, record->UserDataLength, 4);
-    }
+    const auto* data = static_cast<const BYTE*>(record->UserData);
+    const size_t size = record->UserDataLength;
+    const uint32_t code = record->EventHeader.EventDescriptor.Opcode;
     TraceEvent event;
     event.timestamp_ns = TimestampToNs(*record);
     event.cpu = record->BufferContext.ProcessorNumber;
@@ -358,8 +364,105 @@ void LiveTopCapture::ParseEvent(PEVENT_RECORD record, TraceEventKind kind,
     event.kind = kind;
     event.value1 = value1;
     event.value2 = value2;
-    event.event_id = record->EventHeader.EventDescriptor.Opcode;
-    events_.push_back(event);
+    event.event_id = code;
+
+    if (kind == TraceEventKind::ContextSwitch) {
+        const uint32_t old_tid = ReadU32(data, size, 4);
+        const uint32_t new_tid =
+            record->EventHeader.ThreadId != 0 &&
+                    record->EventHeader.ThreadId != UINT32_MAX
+                ? record->EventHeader.ThreadId
+                : ReadU32(data, size, 0);
+        event.tid = new_tid;
+        event.related_tid = old_tid;
+        event.value1 = old_tid;
+        event.value2 = new_tid;
+        event.wait_reason = ReadU8(data, size, 12);
+        event.previous_state = ReadU8(data, size, 14);
+        const auto ready = ready_time_.find(new_tid);
+        if (ready != ready_time_.end()) {
+            event.duration_ns = event.timestamp_ns >= ready->second
+                                    ? event.timestamp_ns - ready->second
+                                    : 0;
+            event.has_duration = true;
+            ready_time_.erase(ready);
+        }
+    } else if (kind == TraceEventKind::ReadyThread) {
+        event.related_tid = ReadU32(data, size, 0);
+        event.flags = ReadU8(data, size, 6);
+        event.value1 = event.related_tid;
+        event.value2 = event.flags;
+        ready_time_[event.related_tid] = event.timestamp_ns;
+    } else if (kind == TraceEventKind::SyscallEnter) {
+        syscall_pending_[event.tid] = event.timestamp_ns;
+    } else if (kind == TraceEventKind::SyscallExit) {
+        if (size >= sizeof(uint32_t)) {
+            event.status = static_cast<int32_t>(ReadU32(data, size, 0));
+            event.has_status = true;
+            event.value2 = static_cast<uint32_t>(event.status);
+        }
+        const auto pending = syscall_pending_.find(event.tid);
+        if (pending != syscall_pending_.end()) {
+            event.duration_ns = event.timestamp_ns >= pending->second
+                                    ? event.timestamp_ns - pending->second
+                                    : 0;
+            event.has_duration = true;
+            syscall_pending_.erase(pending);
+        }
+    } else if (kind == TraceEventKind::DiskIo) {
+        event.size = ReadU32(data, size, 8);
+        event.offset = ReadU64(data, size, 16);
+        const size_t irp_offset = pointer_size_ == 8 ? 32 : 28;
+        event.correlation_id =
+            ReadPointer(data, size, irp_offset, pointer_size_);
+        event.is_completion = code == 10 || code == 11 || code == 14;
+        if (event.is_completion) {
+            const size_t duration_offset = pointer_size_ == 8 ? 40 : 32;
+            const uint64_t ticks = ReadU64(data, size, duration_offset);
+            event.duration_ns = QpcToNs(ticks, qpc_frequency_);
+            event.has_duration = ticks != 0;
+        }
+    } else if (kind == TraceEventKind::FileIo) {
+        if (code == 67 || code == 68) {
+            event.offset = ReadU64(data, size, 0);
+            event.correlation_id =
+                ReadPointer(data, size, 8, pointer_size_);
+            const uint16_t version = record->EventHeader.EventDescriptor.Version;
+            const size_t size_offset =
+                version <= 2
+                    ? (pointer_size_ == 8 ? 40 : 24)
+                    : (pointer_size_ == 8 ? 36 : 24);
+            event.size = ReadU32(data, size, size_offset);
+            io_pending_[event.correlation_id] = {event.timestamp_ns, event.size};
+        } else if (code == 76) {
+            event.is_completion = true;
+            event.correlation_id =
+                ReadPointer(data, size, 0, pointer_size_);
+            const size_t status_offset = pointer_size_ == 8 ? 16 : 8;
+            if (size >= status_offset + sizeof(uint32_t)) {
+                event.status =
+                    static_cast<int32_t>(ReadU32(data, size, status_offset));
+                event.has_status = true;
+                event.value2 = static_cast<uint32_t>(event.status);
+            }
+            const auto pending = io_pending_.find(event.correlation_id);
+            if (pending != io_pending_.end()) {
+                event.duration_ns =
+                    event.timestamp_ns >= pending->second.first
+                        ? event.timestamp_ns - pending->second.first
+                        : 0;
+                event.has_duration = true;
+                event.size = pending->second.second;
+                io_pending_.erase(pending);
+            }
+        } else if (size >= pointer_size_) {
+            event.correlation_id =
+                ReadPointer(data, size, 0, pointer_size_);
+            io_pending_[event.correlation_id] = {event.timestamp_ns, 0};
+        }
+    }
+
+    events_.push_back(std::move(event));
     constexpr size_t kMaximumEvents = 200000;
     if (events_.size() > kMaximumEvents) {
         events_.pop_front();

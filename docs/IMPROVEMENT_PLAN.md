@@ -477,3 +477,12 @@ R2 的代码闭环已完成，详见 `docs/R2_STATUS.md`：
 - controller 断开时 worker/session 清理，以及 R2 soak 脚本。
 
 最终 1 小时管理员 soak 仍需在可交互提权环境执行。
+## 19. R3 当前状态
+
+R3 的事件 fidelity 已落地，详见 `docs/R3_STATUS.md`：
+
+- CSwitch/ReadyThread wait reason、state、PID/TID 归属和 wakeup latency。
+- Syscall address、NTSTATUS 和同 TID duration。
+- FileIo/DiskIo IRP init/complete、status、size、offset 和 duration。
+- live/offline/JSON 使用同一 TraceEvent 字段。
+- sched/syscall/io 三组普通权限 golden ETL 和自动计数断言。

@@ -7,6 +7,7 @@
 #include "elevation.h"
 #include "etl_reader.h"
 #include "symbolizer.h"
+#include "trace_events.h"
 #include "trace_model.h"
 
 #include <algorithm>
@@ -259,6 +260,53 @@ bool MatchesEventFilter(const TraceEvent& event, const std::wstring& filter) {
     return kind == filter;
 }
 
+std::wstring EventDetail(const TraceEvent& event) {
+    std::wostringstream detail;
+    if (event.event_id != 0) {
+        detail << L"id=" << event.event_id << L" ";
+    }
+    switch (event.kind) {
+        case TraceEventKind::ContextSwitch:
+            detail << L"old_tid=" << event.related_tid
+                   << L" wait=" << TraceWaitReasonName(event.wait_reason)
+                   << L" state=" << TraceThreadStateName(event.previous_state);
+            break;
+        case TraceEventKind::ReadyThread:
+            detail << L"awakened_tid=" << event.related_tid
+                   << L" flags=0x" << std::hex << event.flags << std::dec;
+            break;
+        case TraceEventKind::SyscallEnter:
+            detail << L"address=0x" << std::hex << event.value1 << std::dec;
+            break;
+        case TraceEventKind::SyscallExit:
+            if (event.has_status) {
+                detail << L"ntstatus=0x" << std::hex
+                       << static_cast<uint32_t>(event.status) << std::dec;
+            }
+            break;
+        case TraceEventKind::FileIo:
+            detail << L"irp=0x" << std::hex << event.correlation_id << std::dec
+                   << L" offset=" << event.offset << L" size=" << event.size
+                   << L" completion=" << (event.is_completion ? L"true" : L"false");
+            if (event.has_status) {
+                detail << L" ntstatus=0x" << std::hex
+                       << static_cast<uint32_t>(event.status) << std::dec;
+            }
+            break;
+        case TraceEventKind::DiskIo:
+            detail << L"irp=0x" << std::hex << event.correlation_id << std::dec
+                   << L" offset=" << event.offset << L" size=" << event.size
+                   << L" completion=" << (event.is_completion ? L"true" : L"false");
+            break;
+        default:
+            break;
+    }
+    if (event.has_duration) {
+        detail << L" duration_us=" << event.duration_ns / 1000;
+    }
+    return detail.str();
+}
+
 int RunTrace(const std::vector<std::wstring>& arguments) {
     std::filesystem::path input;
     std::wstring filter = L"all";
@@ -345,16 +393,18 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
     if (json) {
         std::wcout << L"[\n";
     } else {
-        std::wcout << L"timestamp_ns cpu pid tid event values comm\n";
+        std::wcout << L"timestamp_ns cpu pid tid event value1 value2 "
+                      L"related_tid related_pid detail comm\n";
     }
     bool first_json = true;
     for (const auto& event : trace.events) {
         uint32_t display_pid = event.pid;
         uint32_t display_tid = event.tid;
-        if ((display_pid == 0 || display_pid == UINT32_MAX) &&
-            (event.kind == TraceEventKind::ContextSwitch ||
-             event.kind == TraceEventKind::ReadyThread)) {
-            display_tid = static_cast<uint32_t>(event.value1);
+        if (event.kind == TraceEventKind::ReadyThread) {
+            display_tid = event.related_tid;
+            if (display_pid == 0 || display_pid == UINT32_MAX) {
+                display_pid = event.related_pid;
+            }
         }
         if (display_pid == 0 || display_pid == UINT32_MAX) {
             if (const auto* thread =
@@ -378,6 +428,7 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
             event.timestamp_ns >= first_timestamp ? event.timestamp_ns - first_timestamp
                                                   : 0;
         const std::wstring comm = ProcessDisplayName(trace, display_pid);
+        const std::wstring detail = EventDetail(event);
         if (json) {
             if (!first_json) {
                 std::wcout << L",\n";
@@ -388,11 +439,26 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
                        << L",\"event\":\"" << TraceEventKindName(event.kind)
                        << L"\",\"value1\":" << event.value1
                        << L",\"value2\":" << event.value2
-                       << L",\"comm\":\"" << comm << L"\"}";
+                       << L",\"related_tid\":" << event.related_tid
+                       << L",\"related_pid\":" << event.related_pid
+                       << L",\"status\":" << event.status
+                       << L",\"has_status\":" << (event.has_status ? L"true" : L"false")
+                       << L",\"duration_ns\":" << event.duration_ns
+                       << L",\"has_duration\":" << (event.has_duration ? L"true" : L"false")
+                       << L",\"size\":" << event.size
+                       << L",\"offset\":" << event.offset
+                       << L",\"correlation_id\":" << event.correlation_id
+                       << L",\"wait_reason\":" << event.wait_reason
+                       << L",\"previous_state\":" << event.previous_state
+                       << L",\"flags\":" << event.flags
+                       << L",\"detail\":\"" << detail
+                       << L"\",\"comm\":\"" << comm << L"\"}";
         } else {
             std::wcout << relative << L" " << event.cpu << L" " << display_pid << L" "
                        << display_tid << L" " << TraceEventKindName(event.kind) << L" "
-                       << event.value1 << L" " << event.value2 << L" " << comm << L"\n";
+                       << event.value1 << L" " << event.value2 << L" "
+                       << event.related_tid << L" " << event.related_pid << L" "
+                       << detail << L" " << comm << L"\n";
         }
     }
     if (json) {
@@ -426,37 +492,140 @@ int RunSched(const std::vector<std::wstring>& arguments) {
     }
 
     struct Counts {
-        uint64_t context_switches = 0;
-        uint64_t ready_threads = 0;
+        uint64_t running = 0;
+        uint64_t ready = 0;
+        uint64_t blocked = 0;
+        uint64_t wakeups = 0;
+        uint64_t wakeup_total_ns = 0;
+        uint64_t wakeup_max_ns = 0;
     };
     std::map<uint32_t, Counts> counts;
+    std::map<uint32_t, std::map<uint32_t, uint64_t>> wait_reasons;
     for (const auto& event : trace.events) {
-        uint32_t pid = event.pid;
-        if ((pid == 0 || pid == UINT32_MAX) &&
-            (event.kind == TraceEventKind::ContextSwitch ||
-             event.kind == TraceEventKind::ReadyThread)) {
-            if (const auto* thread = FindThread(
-                    trace, static_cast<uint32_t>(event.value1), event.timestamp_ns)) {
-                pid = thread->pid;
+        if (event.kind == TraceEventKind::ContextSwitch) {
+            uint32_t pid = event.pid;
+            if (pid == 0 || pid == UINT32_MAX) {
+                pid = event.related_pid;
+            }
+            ++counts[pid].running;
+            if (event.related_pid != 0 && event.related_pid != UINT32_MAX) {
+                if (event.previous_state == 5) {
+                    ++counts[event.related_pid].blocked;
+                    ++wait_reasons[event.related_pid][event.wait_reason];
+                } else if (event.previous_state == 1) {
+                    ++counts[event.related_pid].ready;
+                }
+            }
+            if (event.has_duration) {
+                Counts& target = counts[pid];
+                ++target.wakeups;
+                target.wakeup_total_ns += event.duration_ns;
+                target.wakeup_max_ns =
+                    std::max(target.wakeup_max_ns, event.duration_ns);
+            }
+        } else if (event.kind == TraceEventKind::ReadyThread) {
+            const uint32_t pid = event.related_pid;
+            if (pid != 0 && pid != UINT32_MAX) {
+                ++counts[pid].ready;
             }
         }
-        if (event.kind == TraceEventKind::ContextSwitch) {
-            ++counts[pid].context_switches;
-        } else if (event.kind == TraceEventKind::ReadyThread) {
-            ++counts[pid].ready_threads;
-        }
     }
-    std::wcout << L"Context switches / ready events by process\n";
-    std::wcout << L"PID  Command  ContextSwitches  ReadyThreads\n";
+    std::wcout << L"PID  Command  Running  Ready  Blocked  Wakeups  "
+                  L"WakeupAvgUs  WakeupMaxUs  TopWaitReason\n";
     for (const auto& [pid, value] : counts) {
+        uint32_t top_reason = 0;
+        uint64_t top_reason_count = 0;
+        const auto reasons = wait_reasons.find(pid);
+        if (reasons != wait_reasons.end()) {
+            for (const auto& [reason, count] : reasons->second) {
+                if (count > top_reason_count) {
+                    top_reason = reason;
+                    top_reason_count = count;
+                }
+            }
+        }
+        const uint64_t average_ns =
+            value.wakeups == 0 ? 0 : value.wakeup_total_ns / value.wakeups;
         std::wcout << pid << L"  " << ProcessDisplayName(trace, pid) << L"  "
-                   << value.context_switches << L"  " << value.ready_threads << L"\n";
+                   << value.running << L"  " << value.ready << L"  "
+                   << value.blocked << L"  " << value.wakeups << L"  "
+                   << average_ns / 1000 << L"  " << value.wakeup_max_ns / 1000
+                   << L"  "
+                   << (top_reason_count == 0 ? L"-"
+                                              : TraceWaitReasonName(top_reason))
+                   << L"\n";
     }
     return 0;
 }
+void WriteIoSummary(const TraceData& trace, bool json) {
+    uint64_t file_io = 0;
+    uint64_t disk_io = 0;
+    uint64_t file_duration_total_ns = 0;
+    uint64_t disk_duration_total_ns = 0;
+    uint64_t file_duration_max_ns = 0;
+    uint64_t disk_duration_max_ns = 0;
+    uint64_t file_duration_count = 0;
+    uint64_t disk_duration_count = 0;
+    std::map<uint32_t, uint64_t> file_operations;
+    for (const TraceEvent& event : trace.events) {
+        if (event.kind == TraceEventKind::FileIo) {
+            ++file_io;
+            ++file_operations[event.event_id];
+            if (event.has_duration) {
+                ++file_duration_count;
+                file_duration_total_ns += event.duration_ns;
+                file_duration_max_ns = std::max(file_duration_max_ns, event.duration_ns);
+            }
+        } else if (event.kind == TraceEventKind::DiskIo) {
+            ++disk_io;
+            if (event.has_duration) {
+                ++disk_duration_count;
+                disk_duration_total_ns += event.duration_ns;
+                disk_duration_max_ns = std::max(disk_duration_max_ns, event.duration_ns);
+            }
+        }
+    }
+
+    if (json) {
+        std::wcout << L"{\"file_io\":" << file_io
+                   << L",\"disk_io\":" << disk_io
+                   << L",\"init\":" << trace.quality.io_init_events
+                   << L",\"complete\":" << trace.quality.io_complete_events
+                   << L",\"orphan\":" << trace.quality.io_orphaned
+                   << L",\"file_duration_count\":" << file_duration_count
+                   << L",\"file_duration_total_ns\":" << file_duration_total_ns
+                   << L",\"file_duration_max_ns\":" << file_duration_max_ns
+                   << L",\"disk_duration_count\":" << disk_duration_count
+                   << L",\"disk_duration_total_ns\":" << disk_duration_total_ns
+                   << L",\"disk_duration_max_ns\":" << disk_duration_max_ns
+                   << L"}\n";
+        return;
+    }
+
+    std::wcout << L"IO quality  init=" << trace.quality.io_init_events
+               << L" complete=" << trace.quality.io_complete_events
+               << L" orphan=" << trace.quality.io_orphaned << L"\n";
+    std::wcout << L"Kind     Events  Timed  AvgUs  MaxUs\n";
+    const uint64_t file_average =
+        file_duration_count == 0 ? 0 : file_duration_total_ns / file_duration_count;
+    const uint64_t disk_average =
+        disk_duration_count == 0 ? 0 : disk_duration_total_ns / disk_duration_count;
+    std::wcout << L"FileIo  " << file_io << L"  " << file_duration_count << L"  "
+               << file_average / 1000 << L"  " << file_duration_max_ns / 1000
+               << L"\n";
+    std::wcout << L"DiskIo  " << disk_io << L"  " << disk_duration_count << L"  "
+               << disk_average / 1000 << L"  " << disk_duration_max_ns / 1000
+               << L"\n";
+    std::wcout << L"File operation event IDs\n";
+    for (const auto& [id, count] : file_operations) {
+        std::wcout << L"  " << id << L"  " << count << L"\n";
+    }
+}
+
 int RunReport(const std::vector<std::wstring>& arguments) {
     std::filesystem::path input;
     std::wstring symbol_path;
+    std::wstring kind;
     CpuReportOptions report_options;
     for (size_t index = 0; index < arguments.size(); ++index) {
         const std::wstring& argument = arguments[index];
@@ -466,6 +635,13 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                 return 2;
             }
             input = arguments[++index];
+        } else if (argument == L"--kind") {
+            if (index + 1 >= arguments.size()) {
+                return 2;
+            }
+            kind = arguments[++index];
+        } else if (argument.rfind(L"--kind=", 0) == 0) {
+            kind = argument.substr(7);
         } else if (argument == L"--pid") {
             uint32_t pid = 0;
             if (index + 1 >= arguments.size() ||
@@ -543,8 +719,8 @@ int RunReport(const std::vector<std::wstring>& arguments) {
             }
             ++index;
         } else if (argument == L"--help" || argument == L"-h") {
-            std::wcout << L"Usage: wperf report -i FILE [--pid PID] [--tid TID] "
-                          L"[--comm TEXT] [--dso TEXT] [--symbol TEXT] "
+            std::wcout << L"Usage: wperf report -i FILE [--kind cpu|io] [--pid PID] "
+                          L"[--tid TID] [--comm TEXT] [--dso TEXT] [--symbol TEXT] "
                           L"[--percent-limit N] [--folded|--call-graph] [--csv|--json]\n";
             return 0;
         } else {
@@ -567,6 +743,14 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         PrintError(error);
         return 6;
     }
+    if (!kind.empty() && kind != L"cpu" && kind != L"io") {
+        PrintError(L"unsupported report kind: " + kind);
+        return 2;
+    }
+    if (kind == L"io") {
+        WriteIoSummary(trace, report_options.json);
+        return 0;
+    }
 
     Symbolizer symbolizer;
     std::wstring symbol_error;
@@ -588,6 +772,11 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                << L" stack_exact=" << trace.quality.stack_exact_total
                << L" stack_approx=" << trace.quality.stack_approximate_total
                << L" stack_key_mismatch=" << trace.quality.stack_key_mismatch
+               << L" ring_dropped=" << trace.quality.ring_dropped
+               << L" sched_unknown_pid=" << trace.quality.sched_unknown_pid
+               << L" io_init=" << trace.quality.io_init_events
+               << L" io_complete=" << trace.quality.io_complete_events
+               << L" io_orphan=" << trace.quality.io_orphaned
                << L" samples_without_stack=" << trace.quality.samples_without_stack
                << L" stack_ambiguous=" << trace.quality.stack_ambiguous
                << L" lost=" << trace.quality.lost_events

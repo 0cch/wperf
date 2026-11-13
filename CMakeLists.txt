@@ -18,6 +18,7 @@ add_library(wperf_core STATIC
     src/elevation.cpp
     src/crash.cpp
     src/trace_model.cpp
+    src/trace_events.cpp
     src/etl_reader.cpp
     src/live_top.cpp
     src/commands/live_control.cpp
@@ -72,3 +73,6 @@ add_test(NAME cli_annotate_help COMMAND wperf annotate --help)
 add_test(NAME cli_diff_help COMMAND wperf diff --help)
 add_test(NAME cli_archive_help COMMAND wperf archive --help)
 add_test(NAME cli_record_help COMMAND wperf record --help)
+add_test(NAME cli_report_io COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io)
+add_test(NAME cli_sched_fixture COMMAND wperf sched -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)
+add_test(NAME cli_syscall_fixture COMMAND wperf trace -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/syscall.etl -e syscall --max 10)

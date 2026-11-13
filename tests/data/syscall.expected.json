@@ -1,0 +1,10 @@
+{
+  "fixture": "syscall.etl",
+  "sha256": "E4F178DD98DCA7EDC9D83CA2AC67485C76551B20E80EF0049C62EEB00E1181D3",
+  "events_total": 487384,
+  "samples_total": 5882,
+  "syscall_enter": 209018,
+  "syscall_exit": 205152,
+  "syscall_durations": 0,
+  "lost_events": 0
+}
