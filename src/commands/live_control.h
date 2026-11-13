@@ -48,6 +48,8 @@ public:
     bool HasData() const;
     bool WaitForExit(uint32_t timeout_ms, DWORD& exit_code,
                      std::wstring* error = nullptr);
+    bool StopAndDrain(uint32_t timeout_ms, DWORD& exit_code,
+                       std::wstring* error = nullptr);
     void Close();
     DWORD WorkerPid() const;
 

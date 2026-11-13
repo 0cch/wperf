@@ -60,14 +60,14 @@ int wmain(int argc,wchar_t** argv) {
     if(!worker.StartWithExecutable(options,(bin/L"wperf.exe").wstring(),false,&error))return fail(error.c_str());
     if(!WaitOutput(worker,true))return fail(L"top produced no real CPU samples");
     worker.SendStop(nullptr); DWORD exit=0;
-    if(!worker.WaitForExit(10000,exit,&error)||exit!=0||!WaitGone(options.session_name))return fail(L"graceful STOP failed");
+    if(!worker.StopAndDrain(10000,exit,&error)||exit!=0||!WaitGone(options.session_name))return fail(L"graceful STOP failed");
     worker.Close();
     options.mode=L"trace"; options.event_filter=L"sched"; options.max_text=L"1000";
     options.session_name=L"wperf-integration-trace-"+NewId();
     if(!worker.StartWithExecutable(options,(bin/L"wperf.exe").wstring(),false,&error)||!WaitOutput(worker,false))
         return fail(L"live scheduler trace produced no decoded events");
     worker.SendStop(nullptr);
-    if(!worker.WaitForExit(10000,exit,&error)||exit!=0||!WaitGone(options.session_name))return fail(L"trace STOP failed");
+    if(!worker.StopAndDrain(10000,exit,&error)||exit!=0||!WaitGone(options.session_name))return fail(L"trace STOP failed");
     worker.Close(); options.mode=L"top";
     options.session_name=L"wperf-integration-killed-"+NewId();
     if(!worker.StartWithExecutable(options,(bin/L"wperf.exe").wstring(),false,&error)||!WaitOutput(worker,true))return fail(L"second capture failed");

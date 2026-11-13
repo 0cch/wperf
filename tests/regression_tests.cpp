@@ -312,8 +312,11 @@ void TestPeriodsIdentityArchiveAndInline() {
         map<<"wperf-archive-map-v1\n"<<wperf::HexText(image.path)<<' '<<image.timestamp<<' '<<image.checksum<<' '
            <<image.size<<' '<<wperf::HexText(L"modules/fixture.exe")<<' '<<wperf::ToUtf8(wperf::FileSha256(archived))<<'\n';
     }
-    Check(wperf::LoadArchiveModules(directory,symbols_trace,&error)&&
-          symbols_trace.images[0].resolved_path==archived.wstring(),"archive maps missing original paths after hash/PE validation");
+    const bool mapped=wperf::LoadArchiveModules(directory,symbols_trace,&error);
+    std::error_code equivalent_error;
+    Check(mapped&&std::filesystem::equivalent(symbols_trace.images[0].resolved_path,archived,equivalent_error),
+          "archive maps missing original paths after hash/PE validation");
+    if(!mapped)std::wcerr<<L"archive map error: "<<error<<L"\n";
     {
         std::ofstream file(archived,std::ios::binary|std::ios::app); file<<'X';
     }

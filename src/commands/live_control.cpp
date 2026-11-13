@@ -137,12 +137,24 @@ bool LiveWorkerClient::WaitForExit(uint32_t timeout_ms, DWORD& exit_code,
     return true;
 }
 
+bool LiveWorkerClient::StopAndDrain(uint32_t timeout_ms,DWORD& exit_code,std::wstring* error) {
+    pipe_.SendLine(L"STOP",nullptr);
+    const auto end=GetTickCount64()+timeout_ms;
+    while(GetTickCount64()<end) {
+        if(WaitForProcessExit(worker_.process,0,exit_code))return true;
+        if(pipe_.HasData()) { std::wstring ignored; pipe_.ReceiveLine(ignored,1000,nullptr); }
+        else Sleep(10);
+    }
+    if(error)*error=L"live worker teardown did not finish within its deadline";
+    return false;
+}
+
 void LiveWorkerClient::Close() {
     if (worker_.process != nullptr) {
         std::wstring ignored;
         pipe_.SendLine(L"STOP", &ignored);
         DWORD exit_code = 0;
-        if (!WaitForProcessExit(worker_.process, 15000, exit_code)) {
+        if (!StopAndDrain(15000, exit_code, &ignored)) {
             StopSessionByName(session_name_, &ignored);
             TerminateProcess(worker_.process, 9);
             WaitForProcessExit(worker_.process, 5000, exit_code);
