@@ -1,6 +1,7 @@
 #include "live_top.h"
 
 #include "common.h"
+#include "lbr.h"
 #include "trace_events.h"
 
 #include <algorithm>
@@ -25,6 +26,8 @@ const GUID kDiskIoGuid = {0x3d6fa8d4, 0xfe05, 0x11d0,
                           {0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c}};
 const GUID kFileIoGuid = {0x90cbdc39, 0x4a3e, 0x11d1,
                           {0x84, 0xf4, 0x00, 0x00, 0xf8, 0x04, 0x64, 0xe3}};
+const GUID kLbrGuid = {0x99134383, 0x5248, 0x43fc,
+                       {0x83, 0x4b, 0x52, 0x94, 0x54, 0xe7, 0x5d, 0xf3}};
 
 GUID GetClassGuid(const EVENT_RECORD& record) {
     GUID result{};
@@ -106,7 +109,7 @@ LiveTopCapture::~LiveTopCapture() {
 
 bool LiveTopCapture::Start(std::wstring session_name,
                            std::wstring profile_source, ULONG enable_flags,
-                           std::wstring* error) {
+                           bool enable_lbr, std::wstring* error) {
     if (running_.load()) {
         if (error != nullptr) {
             *error = L"live top capture is already running";
@@ -129,6 +132,7 @@ bool LiveTopCapture::Start(std::wstring session_name,
                EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE);
     options.profile_interval_100ns = 10000;
     options.enable_stack_tracing = false;
+    options.enable_lbr = enable_lbr;
     options.buffer_size_kb = 64;
     options.minimum_buffers = 8;
     options.maximum_buffers = 128;
@@ -280,7 +284,11 @@ void LiveTopCapture::OnEvent(PEVENT_RECORD record) {
         IsEqualGUID(record->EventHeader.ProviderId, kPerfInfoGuid) ||
         IsEqualGUID(record->EventHeader.ProviderId, kSystemTraceGuid);
 
-    if (IsEqualGUID(class_guid, kImageGuid) ||
+    if ((IsEqualGUID(class_guid, kLbrGuid) ||
+         IsEqualGUID(record->EventHeader.ProviderId, kLbrGuid)) &&
+        event_code == 32) {
+        ParseLbr(record);
+    } else if (IsEqualGUID(class_guid, kImageGuid) ||
         IsEqualGUID(record->EventHeader.ProviderId, kImageGuid)) {
         ParseImage(record);
     } else if (thread_event) {
@@ -349,6 +357,34 @@ void LiveTopCapture::ParseThread(PEVENT_RECORD record) {
     }
     threads_.push_back(ThreadRecord{pid, tid, timestamp_ns, 0});
     thread_to_process_[tid] = pid;
+}
+
+void LiveTopCapture::ParseLbr(PEVENT_RECORD record) {
+    LbrSample decoded;
+    if (!DecodeLbrPayload(static_cast<const BYTE*>(record->UserData),
+                          record->UserDataLength, pointer_size_, decoded)) {
+        return;
+    }
+    ++lbr_events_;
+    lbr_branches_ += decoded.branches.size();
+    for (const LbrBranch& branch : decoded.branches) {
+        TraceEvent event;
+        event.timestamp_ns = QpcToNs(decoded.timestamp_qpc, qpc_frequency_);
+        event.cpu = record->BufferContext.ProcessorNumber;
+        event.pid = decoded.pid;
+        event.tid = decoded.tid;
+        event.kind = TraceEventKind::LastBranchRecord;
+        event.value1 = branch.from_address;
+        event.value2 = branch.to_address;
+        event.flags = decoded.filters;
+        event.event_id = record->EventHeader.EventDescriptor.Opcode;
+        events_.push_back(std::move(event));
+    }
+    constexpr size_t kMaximumEvents = 200000;
+    while (events_.size() > kMaximumEvents) {
+        events_.pop_front();
+        ++ring_dropped_;
+    }
 }
 
 void LiveTopCapture::ParseEvent(PEVENT_RECORD record, TraceEventKind kind,

@@ -19,6 +19,7 @@ add_library(wperf_core STATIC
     src/crash.cpp
     src/trace_model.cpp
     src/trace_events.cpp
+    src/lbr.cpp
     src/etl_reader.cpp
     src/live_top.cpp
     src/commands/live_control.cpp

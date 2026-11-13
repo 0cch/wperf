@@ -22,7 +22,8 @@ public:
     LiveTopCapture& operator=(const LiveTopCapture&) = delete;
 
     bool Start(std::wstring session_name, std::wstring profile_source,
-               ULONG enable_flags, std::wstring* error = nullptr);
+               ULONG enable_flags, bool enable_lbr,
+               std::wstring* error = nullptr);
     TraceData Snapshot();
     void Stop();
     bool Running() const;
@@ -36,6 +37,7 @@ private:
     void ParseSample(PEVENT_RECORD record);
     void ParseEvent(PEVENT_RECORD record, TraceEventKind kind,
                     uint64_t value1 = 0, uint64_t value2 = 0);
+    void ParseLbr(PEVENT_RECORD record);
     uint64_t TimestampToNs(const EVENT_RECORD& record) const;
 
     EtwSession session_;
@@ -59,6 +61,8 @@ private:
     uint64_t events_total_ = 0;
     uint64_t lost_events_ = 0;
     uint64_t ring_dropped_ = 0;
+    uint64_t lbr_events_ = 0;
+    uint64_t lbr_branches_ = 0;
     std::wstring last_error_;
 };
 

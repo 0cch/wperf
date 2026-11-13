@@ -38,6 +38,9 @@ bool MatchesEventFilter(const TraceEvent& event, const std::wstring& filter) {
         return event.kind == TraceEventKind::DiskIo ||
                event.kind == TraceEventKind::FileIo;
     }
+    if (filter == L"lbr") {
+        return event.kind == TraceEventKind::LastBranchRecord;
+    }
     return TraceEventKindName(event.kind) == filter;
 }
 
@@ -148,7 +151,9 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     const ULONG enable_flags = mode == L"top"
                                    ? TraceFlagsForProfile(L"cpu")
                                    : TraceFlagsForLiveFilter(event_filter);
-    if (!capture.Start(session_name, profile_source, enable_flags, &error)) {
+    const bool enable_lbr = mode == L"trace" && event_filter == L"lbr";
+    if (!capture.Start(session_name, profile_source, enable_flags, enable_lbr,
+                       &error)) {
         pipe.SendLine(L"ERROR " + error, nullptr);
         pipe.SendLine(L"FINISHED 4", nullptr);
         return 4;

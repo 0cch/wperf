@@ -2,7 +2,7 @@
 
 Lightweight Windows profiling and tracing CLI built on ETW.
 
-Current milestones: **M0-M7 implemented** (CPU/PMU profile, PDB report, stat, real-time top/live trace, scheduler/syscall/I/O fidelity, annotate/diff/archive).
+Current milestones: **M0-M7 implemented** (CPU/PMU profile, PDB report, stat, real-time top/live trace, scheduler/syscall/I/O fidelity, PMC/LBR/context-register capability, annotate/diff/archive).
 
 - M0 capability probe: [docs/M0.md](docs/M0.md), [docs/M0_RESULTS.md](docs/M0_RESULTS.md)
 - M1 foundation: [docs/M1.md](docs/M1.md)
@@ -32,6 +32,9 @@ pwsh -File .\scripts\build_release.ps1
 .\build\Release\wperf.exe doctor
 .\build\Release\wperf.exe test
 .\build\Release\wperf.exe record --duration 3000 -o .\trace.etl
+.\\build\\Release\\wperf.exe record --elevate --profile pmu --pmc-source 19 --duration 3000 -o .\\pmu.etl
+.\\build\\Release\\wperf.exe record --elevate --lbr --duration 1000 -o .\\lbr.etl
+.\\build\\Release\\wperf.exe trace -i .\\lbr.etl -e lbr --max 20
 .\build\Release\wperf.exe report -i .\trace.etl --symbol-path .\build\Release
 .\build\Release\wperf.exe stat -- .\build\Release\wperf_cpu_burn.exe 1000 2
 .\build\Release\wperf.exe top --elevate --interval 1000 --iterations 1
