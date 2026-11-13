@@ -90,6 +90,7 @@ Brendan Gregg `flamegraph.pl`.
 - [Assessment completion audit](docs/ASSESSMENT_STATUS.md)
 - [Main-branch follow-ups](docs/MAIN_FOLLOWUPS.md)
 - [Issue acceptance status](docs/ISSUE_STATUS.md)
+- [Remaining work and acceptance plan](docs/TODO.md)
 
 ## Boundaries
 

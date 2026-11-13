@@ -3,6 +3,9 @@
 This pass follows the assessment audit at `b050f07`. Work is committed directly
 to main; the merged profiling-hardening branches have been removed.
 
+The consolidated remaining-work checklist, dependencies and acceptance criteria
+are maintained in [TODO.md](TODO.md).
+
 ## Implemented and covered by regressions
 
 - Unknown per-sample periods stay zero even when later metadata provides an
