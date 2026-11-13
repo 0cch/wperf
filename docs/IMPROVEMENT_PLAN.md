@@ -486,3 +486,12 @@ R3 的事件 fidelity 已落地，详见 `docs/R3_STATUS.md`：
 - FileIo/DiskIo IRP init/complete、status、size、offset 和 duration。
 - live/offline/JSON 使用同一 TraceEvent 字段。
 - sched/syscall/io 三组普通权限 golden ETL 和自动计数断言。
+## 20. R4 当前状态
+
+R4 的硬件能力边界已进一步明确，详见 `docs/R4_STATUS.md`：
+
+- PMC owners/session 查询与 extended counter 采集字段。
+- `stat --pmu` 明确 sample-derived 语义和诊断 delta。
+- LBR payload 32/64-bit 解码及 `trace -e lbr`。
+- context register best-effort 开关和明确的 unsupported 状态。
+- 当前 AMD 平台的 LBR unsupported 保持合法结果，不伪造能力。

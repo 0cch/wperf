@@ -257,6 +257,9 @@ bool MatchesEventFilter(const TraceEvent& event, const std::wstring& filter) {
         return event.kind == TraceEventKind::DiskIo ||
                event.kind == TraceEventKind::FileIo;
     }
+    if (filter == L"lbr") {
+        return event.kind == TraceEventKind::LastBranchRecord;
+    }
     return kind == filter;
 }
 
@@ -297,6 +300,11 @@ std::wstring EventDetail(const TraceEvent& event) {
             detail << L"irp=0x" << std::hex << event.correlation_id << std::dec
                    << L" offset=" << event.offset << L" size=" << event.size
                    << L" completion=" << (event.is_completion ? L"true" : L"false");
+            break;
+        case TraceEventKind::LastBranchRecord:
+            detail << L"from=0x" << std::hex << event.value1
+                   << L" to=0x" << event.value2 << std::dec
+                   << L" filters=0x" << std::hex << event.flags << std::dec;
             break;
         default:
             break;
@@ -349,9 +357,9 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
         } else if (arguments[index] == L"--elevate") {
             elevate = true;
         } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            std::wcout << L"Usage: wperf trace -i FILE [-e sched|syscall|pagefault|io] "
+            std::wcout << L"Usage: wperf trace -i FILE [-e sched|syscall|pagefault|io|lbr] "
                           L"[-p PID] [--max N] [--json]\n"
-                          L"       wperf trace --live [-e sched|syscall|pagefault|io] "
+                          L"       wperf trace --live [-e sched|syscall|pagefault|io|lbr] "
                           L"[-p PID] [--duration MS] [--max N] [--json] [--elevate]\n";
             return 0;
         } else {
@@ -773,6 +781,9 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                << L" stack_approx=" << trace.quality.stack_approximate_total
                << L" stack_key_mismatch=" << trace.quality.stack_key_mismatch
                << L" ring_dropped=" << trace.quality.ring_dropped
+               << L" pmc_counter_events=" << trace.quality.pmc_counter_events
+               << L" lbr_events=" << trace.quality.lbr_events
+               << L" lbr_branches=" << trace.quality.lbr_branches
                << L" sched_unknown_pid=" << trace.quality.sched_unknown_pid
                << L" io_init=" << trace.quality.io_init_events
                << L" io_complete=" << trace.quality.io_complete_events

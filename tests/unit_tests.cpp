@@ -5,6 +5,7 @@
 #include "etl_reader.h"
 #include "etw.h"
 #include "ipc.h"
+#include "lbr.h"
 #include "state.h"
 #include "trace_events.h"
 
@@ -160,7 +161,50 @@ void TestTruncatedEtwFiles() {
     }
 }
 
+void TestLbrDecode() {
+    std::vector<BYTE> payload(24 + 2 * 24, 0);
+    const uint64_t qpc = 0x12345678;
+    const uint32_t pid = 42;
+    const uint32_t tid = 77;
+    const uint32_t filters = 0x20;
+    std::memcpy(payload.data(), &qpc, sizeof(qpc));
+    std::memcpy(payload.data() + 8, &pid, sizeof(pid));
+    std::memcpy(payload.data() + 12, &tid, sizeof(tid));
+    std::memcpy(payload.data() + 16, &filters, sizeof(filters));
+    const uint64_t branches[2][3] = {
+        {0x1000, 0x2000, 0},
+        {0x2000, 0x3000, 0},
+    };
+    std::memcpy(payload.data() + 24, branches, sizeof(branches));
+
+    wperf::LbrSample sample;
+    Check(wperf::DecodeLbrPayload(payload.data(), payload.size(), 8, sample),
+          L"decode LBR payload");
+    Check(sample.pid == pid && sample.tid == tid, L"decode LBR identity");
+    Check(sample.filters == filters, L"decode LBR filters");
+    Check(sample.branches.size() == 2, L"decode LBR branch count");
+    Check(sample.branches[0].from_address == 0x1000 &&
+              sample.branches[0].to_address == 0x2000,
+          L"decode first LBR branch");
+    Check(!wperf::DecodeLbrPayload(payload.data(), 16, 8, sample),
+          L"reject truncated LBR payload");
+}
+
+void TestPmcQueries() {
+    std::wstring error;
+    const uint32_t maximum = wperf::QueryMaxPmcCounters(&error);
+    Check(maximum > 0, L"query maximum PMC counters");
+    error.clear();
+    const auto owners = wperf::QueryPmcCounterOwners(&error);
+    (void)owners;
+    Check(owners.empty() || !owners.empty(), L"query PMC owners does not crash");
+    error.clear();
+    const auto sessions = wperf::QueryPmcSessions(&error);
+    (void)sessions;
+}
+
 void TestTraceEventCorrelation() {
+
     wperf::TraceData trace;
     trace.threads.push_back(wperf::ThreadRecord{100, 10, 0, 0});
     trace.threads.push_back(wperf::ThreadRecord{200, 20, 0, 0});
@@ -609,6 +653,8 @@ int wmain() {
     TestInvalidEtwFile();
     TestTruncatedEtwFiles();
     TestThreadAndProcessIntervals();
+    TestLbrDecode();
+    TestPmcQueries();
     TestTraceEventCorrelation();
     TestSymbolizerPdbIdentity();
     TestLiveTraceFlags();

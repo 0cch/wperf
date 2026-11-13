@@ -29,6 +29,7 @@ struct TraceOptions {
                          EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
     uint32_t profile_interval_100ns = 10000;
     bool enable_stack_tracing = true;
+    bool enable_context_registers = false;
     bool realtime = false;
     bool pmc_profile = false;
     uint32_t pmc_source = 0;
@@ -47,6 +48,8 @@ public:
     bool Stop(std::wstring* error = nullptr);
     bool IsActive() const;
     const std::wstring& Name() const;
+    const std::wstring& ContextRegisterStatus() const;
+    const std::wstring& LbrStatus() const;
 
 private:
     TRACEHANDLE handle_ = 0;
@@ -54,6 +57,21 @@ private:
     TRACE_PROFILE_INTERVAL original_interval_{};
     bool original_interval_valid_ = false;
     bool pmc_config_changed_ = false;
+    std::wstring context_register_status_;
+    std::wstring lbr_status_;
+};
+
+struct PmcCounterOwnerInfo {
+    uint32_t processor = 0;
+    uint32_t owner_type = 0;
+    uint32_t source = 0;
+    uint32_t tag = 0;
+};
+
+struct PmcSessionInfo {
+    uint16_t logger_id = 0;
+    std::vector<uint32_t> sources;
+    std::vector<uint16_t> hook_ids;
 };
 
 ULONG TraceFlagsForProfile(std::wstring_view profile);
@@ -61,6 +79,9 @@ ULONG TraceFlagsForLiveFilter(std::wstring_view filter);
 std::vector<ProfileSource> QueryProfileSources(std::wstring* error = nullptr);
 uint32_t QueryMaxLoggers(std::wstring* error = nullptr);
 uint32_t QueryMaxPmcCounters(std::wstring* error = nullptr);
+std::vector<PmcCounterOwnerInfo> QueryPmcCounterOwners(
+    std::wstring* error = nullptr);
+std::vector<PmcSessionInfo> QueryPmcSessions(std::wstring* error = nullptr);
 std::vector<std::wstring> QueryActiveSessions(std::wstring* error = nullptr);
 bool SessionExists(const std::wstring& session_name);
 bool StopSessionByName(const std::wstring& session_name,

@@ -40,6 +40,7 @@ struct SampleRecord {
     uint32_t tid = 0;
     uint64_t instruction_pointer = 0;
     std::vector<uint64_t> stack;
+    std::vector<uint64_t> pmc_counters;
     bool stack_missing = false;
 };
 
@@ -51,6 +52,7 @@ enum class TraceEventKind {
     PageFault,
     DiskIo,
     FileIo,
+    LastBranchRecord,
     Unknown,
 };
 
@@ -64,6 +66,7 @@ struct TraceEvent {
     TraceEventKind kind = TraceEventKind::Unknown;
     uint64_t value1 = 0;
     uint64_t value2 = 0;
+    std::vector<uint64_t> pmc_counters;
     uint64_t correlation_id = 0;
     uint64_t offset = 0;
     uint64_t size = 0;
@@ -92,6 +95,9 @@ struct TraceQuality {
     uint64_t io_init_events = 0;
     uint64_t io_complete_events = 0;
     uint64_t io_orphaned = 0;
+    uint64_t pmc_counter_events = 0;
+    uint64_t lbr_events = 0;
+    uint64_t lbr_branches = 0;
     uint64_t samples_without_stack = 0;
     uint64_t stack_ambiguous = 0;
     uint64_t unknown_events = 0;

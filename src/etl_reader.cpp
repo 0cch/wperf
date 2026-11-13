@@ -1,6 +1,7 @@
 #include "etl_reader.h"
 
 #include "common.h"
+#include "lbr.h"
 #include "trace_events.h"
 
 #include <evntcons.h>
@@ -30,6 +31,8 @@ const GUID kFileIoGuid = {0x90cbdc39, 0x4a3e, 0x11d1,
                            {0x84, 0xf4, 0x00, 0x00, 0xf8, 0x04, 0x64, 0xe3}};
 const GUID kStackWalkGuid = {0xdef2fe46, 0x7bd6, 0x4b80,
                              {0xbd, 0x94, 0xf5, 0x7f, 0xe2, 0x0d, 0x0c, 0xe3}};
+const GUID kLbrGuid = {0x99134383, 0x5248, 0x43fc,
+                       {0x83, 0x4b, 0x52, 0x94, 0x54, 0xe7, 0x5d, 0xf3}};
 
 GUID GetClassGuid(const EVENT_RECORD& record) {
     GUID result{};
@@ -320,6 +323,25 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
     trace.images.push_back(std::move(image));
 }
 
+void CopyPmcCounters(const EVENT_RECORD& record,
+                     std::vector<uint64_t>& counters, TraceQuality& quality) {
+    for (USHORT index = 0; index < record.ExtendedDataCount; ++index) {
+        const auto& item = record.ExtendedData[index];
+        if (item.ExtType != EVENT_HEADER_EXT_TYPE_PMC_COUNTERS ||
+            item.DataPtr == 0 || item.DataSize < sizeof(uint64_t)) {
+            continue;
+        }
+        const size_t count = item.DataSize / sizeof(uint64_t);
+        counters.resize(count);
+        std::memcpy(counters.data(),
+                    reinterpret_cast<const void*>(
+                        static_cast<uintptr_t>(item.DataPtr)),
+                    count * sizeof(uint64_t));
+        ++quality.pmc_counter_events;
+        break;
+    }
+}
+
 TraceEvent& AddEvent(const EVENT_RECORD& record, TraceData& trace,
                      TraceEventKind kind, uint64_t value1 = 0,
                      uint64_t value2 = 0) {
@@ -332,6 +354,7 @@ TraceEvent& AddEvent(const EVENT_RECORD& record, TraceData& trace,
     event.value1 = value1;
     event.value2 = value2;
     event.event_id = record.EventHeader.EventDescriptor.Opcode;
+    CopyPmcCounters(record, event.pmc_counters, trace.quality);
     trace.events.push_back(event);
     return trace.events.back();
 }
@@ -436,6 +459,29 @@ void ParseFileIo(const EVENT_RECORD& record, TraceData& trace) {
     }
 }
 
+void ParseLbr(const EVENT_RECORD& record, TraceData& trace) {
+    LbrSample decoded;
+    if (!DecodeLbrPayload(static_cast<const BYTE*>(record.UserData),
+                          record.UserDataLength, trace.pointer_size, decoded)) {
+        return;
+    }
+    ++trace.quality.lbr_events;
+    for (const LbrBranch& branch : decoded.branches) {
+        TraceEvent event;
+        event.timestamp_ns = QpcToNs(decoded.timestamp_qpc, trace.qpc_frequency);
+        event.cpu = record.BufferContext.ProcessorNumber;
+        event.pid = decoded.pid;
+        event.tid = decoded.tid;
+        event.kind = TraceEventKind::LastBranchRecord;
+        event.value1 = branch.from_address;
+        event.value2 = branch.to_address;
+        event.flags = decoded.filters;
+        event.event_id = record.EventHeader.EventDescriptor.Opcode;
+        trace.events.push_back(std::move(event));
+    }
+    trace.quality.lbr_branches += decoded.branches.size();
+}
+
 void ParseSample(const EVENT_RECORD& record, TraceData& trace) {
     const BYTE* data = static_cast<const BYTE*>(record.UserData);
     const size_t size = record.UserDataLength;
@@ -450,6 +496,7 @@ void ParseSample(const EVENT_RECORD& record, TraceData& trace) {
     sample.pid = record.EventHeader.ProcessId;
     sample.instruction_pointer = ReadPointer(data, size, 0, p);
     sample.tid = ReadU32(data, size, p);
+    CopyPmcCounters(record, sample.pmc_counters, trace.quality);
 
     trace.samples.push_back(std::move(sample));
 }
@@ -644,6 +691,10 @@ void EventRecordCallback(PEVENT_RECORD record) {
                (opcode == 46 || id == 46)) {
         ++trace->quality.samples_total;
         ParseSample(*record, *trace);
+    } else if ((IsEqualGUID(class_guid, kLbrGuid) ||
+                IsEqualGUID(record->EventHeader.ProviderId, kLbrGuid)) &&
+               event_code == 32) {
+        ParseLbr(*record, *trace);
     } else if (is_stack_event && event_code == 32) {
         ++trace->quality.stack_events_total;
         ParseStack(*record, *trace, context->stacks);

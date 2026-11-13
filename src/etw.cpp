@@ -66,6 +66,8 @@ EtwSession::~EtwSession() {
 ULONG ConfigureLbrCompat(CONTROLTRACE_ID trace_id, TRACE_LBR_CONFIGURATION configuration,
                          const CLASSIC_EVENT_ID* events, ULONG event_count);
 bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
+    context_register_status_.clear();
+    lbr_status_.clear();
     if (IsActive()) {
         if (error != nullptr) {
             *error = L"ETW session is already active";
@@ -104,6 +106,11 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     properties->MaximumFileSize = options.maximum_file_size_mb;
     properties->FlushTimer = options.flush_timer_seconds;
     properties->EnableFlags = options.enable_flags;
+    if (options.pmc_profile) {
+        properties->EnableFlags |= EVENT_TRACE_FLAG_CSWITCH |
+                                   EVENT_TRACE_FLAG_DISPATCHER |
+                                   EVENT_TRACE_FLAG_SYSTEMCALL;
+    }
     properties->LogFileMode =
         (options.realtime ? EVENT_TRACE_REAL_TIME_MODE
                           : EVENT_TRACE_FILE_MODE_SEQUENTIAL) |
@@ -176,12 +183,34 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         }
     }
 
+    if (options.enable_context_registers) {
+        struct ContextRequest {
+            TRACE_CONTEXT_REGISTER_INFO Info;
+            CLASSIC_EVENT_ID Event;
+        } request{};
+        request.Info.RegisterTypes = static_cast<ETW_CONTEXT_REGISTER_TYPES>(
+            EtwContextRegisterTypeControl | EtwContextRegisterTypeInteger);
+        request.Event.EventGuid = kPerfInfoGuid;
+        request.Event.Type = 46;
+        const ULONG context_result = TraceSetInformation(
+            handle_, TraceContextRegisterInfo, &request, sizeof(request));
+        context_register_status_ =
+            context_result == ERROR_SUCCESS
+                ? L"enabled"
+                : LastErrorWith(L"TraceSetInformation(TraceContextRegisterInfo)",
+                                context_result);
+    }
+
     if (options.enable_lbr) {
         CLASSIC_EVENT_ID lbr_event{};
         lbr_event.EventGuid = kPerfInfoGuid;
         lbr_event.Type = 46;
         const ULONG lbr_result = ConfigureLbrCompat(
             handle_, TRACE_LBR_CONFIGURATION_CALLSTACK_ENABLE, &lbr_event, 1);
+        lbr_status_ = lbr_result == ERROR_SUCCESS
+                          ? L"enabled"
+                          : L"unsupported: " +
+                                FormatWindowsError(lbr_result);
         if (lbr_result != ERROR_SUCCESS) {
             std::wstring stop_error;
             Stop(&stop_error);
@@ -239,6 +268,14 @@ bool EtwSession::Stop(std::wstring* error) {
         return false;
     }
     return true;
+}
+
+const std::wstring& EtwSession::ContextRegisterStatus() const {
+    return context_register_status_;
+}
+
+const std::wstring& EtwSession::LbrStatus() const {
+    return lbr_status_;
 }
 
 bool EtwSession::IsActive() const {
@@ -372,6 +409,109 @@ uint32_t QueryMaxPmcCounters(std::wstring* error) {
         return 0;
     }
     return value;
+}
+
+std::vector<PmcCounterOwnerInfo> QueryPmcCounterOwners(
+    std::wstring* error) {
+    std::vector<PmcCounterOwnerInfo> result;
+    const uint32_t maximum = QueryMaxPmcCounters(nullptr);
+    const DWORD processors = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    if (maximum == 0 || processors == 0) {
+        return result;
+    }
+
+    const size_t header_size =
+        offsetof(ETW_PMC_COUNTER_OWNERSHIP_STATUS, CounterOwners);
+    std::vector<BYTE> buffer(
+        header_size + static_cast<size_t>(maximum) *
+                          sizeof(ETW_PMC_COUNTER_OWNER),
+        0);
+    bool queried = false;
+    for (DWORD processor = 0; processor < processors; ++processor) {
+        std::fill(buffer.begin(), buffer.end(), BYTE{0});
+        auto* status =
+            reinterpret_cast<ETW_PMC_COUNTER_OWNERSHIP_STATUS*>(buffer.data());
+        status->ProcessorNumber = processor;
+        ULONG returned = 0;
+        const ULONG query_result = TraceQueryInformation(
+            0, TracePmcCounterOwners, buffer.data(),
+            static_cast<ULONG>(buffer.size()), &returned);
+        if (query_result != ERROR_SUCCESS) {
+            if (!queried && error != nullptr) {
+                *error = LastErrorWith(L"TraceQueryInformation(PMC owners)",
+                                       query_result);
+            }
+            continue;
+        }
+        queried = true;
+        const uint32_t count =
+            std::min<uint32_t>(status->NumberOfCounters, maximum);
+        for (uint32_t index = 0; index < count; ++index) {
+            const auto& owner = status->CounterOwners[index];
+            if (owner.OwnerType == EtwPmcOwnerFree) {
+                continue;
+            }
+            result.push_back(PmcCounterOwnerInfo{
+                processor, static_cast<uint32_t>(owner.OwnerType),
+                owner.ProfileSource, owner.OwnerTag});
+        }
+    }
+    if (queried && error != nullptr) {
+        error->clear();
+    }
+    return result;
+}
+
+std::vector<PmcSessionInfo> QueryPmcSessions(std::wstring* error) {
+    std::vector<PmcSessionInfo> result;
+    ULONG required = 0;
+    ULONG query_result = TraceQueryInformation(
+        0, TracePmcSessionInformation, nullptr, 0, &required);
+    if (query_result != ERROR_INSUFFICIENT_BUFFER &&
+        query_result != ERROR_BAD_LENGTH && query_result != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"TraceQueryInformation(PMC sessions)",
+                                   query_result);
+        }
+        return result;
+    }
+    if (required == 0) {
+        return result;
+    }
+    std::vector<BYTE> buffer(required, 0);
+    query_result = TraceQueryInformation(
+        0, TracePmcSessionInformation, buffer.data(),
+        static_cast<ULONG>(buffer.size()), &required);
+    if (query_result != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = LastErrorWith(L"TraceQueryInformation(PMC sessions)",
+                                   query_result);
+        }
+        return result;
+    }
+
+    size_t offset = 0;
+    while (offset + sizeof(ETW_PMC_SESSION_INFO) <= buffer.size()) {
+        const auto* info =
+            reinterpret_cast<const ETW_PMC_SESSION_INFO*>(buffer.data() + offset);
+        PmcSessionInfo session;
+        session.logger_id = info->LoggerId;
+        const auto* sources = reinterpret_cast<const ULONG*>(info + 1);
+        for (ULONG index = 0; index < info->ProfileSourceCount; ++index) {
+            session.sources.push_back(sources[index]);
+        }
+        const auto* hooks = reinterpret_cast<const USHORT*>(
+            sources + info->ProfileSourceCount);
+        for (ULONG index = 0; index < info->HookIdCount; ++index) {
+            session.hook_ids.push_back(hooks[index]);
+        }
+        result.push_back(std::move(session));
+        if (info->NextEntryOffset == 0) {
+            break;
+        }
+        offset += info->NextEntryOffset;
+    }
+    return result;
 }
 
 std::vector<std::wstring> QueryActiveSessions(std::wstring* error) {

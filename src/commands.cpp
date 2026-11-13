@@ -102,6 +102,20 @@ int RunDoctor(const std::vector<std::wstring>& arguments) {
     report << L"State root: " << GetWperfRootDirectory().wstring() << L"\n";
     report << L"Profile sources: " << sources.size() << L"\n";
     report << L"Max PMC counters: " << max_pmc << L"\n";
+    std::wstring pmc_owner_error;
+    const auto pmc_owners = QueryPmcCounterOwners(&pmc_owner_error);
+    std::wstring pmc_session_error;
+    const auto pmc_sessions = QueryPmcSessions(&pmc_session_error);
+    report << L"PMC counter owners: " << pmc_owners.size();
+    if (!pmc_owner_error.empty()) {
+        report << L" (" << pmc_owner_error << L")";
+    }
+    report << L"\n";
+    report << L"PMC-enabled sessions: " << pmc_sessions.size();
+    if (!pmc_session_error.empty()) {
+        report << L" (" << pmc_session_error << L")";
+    }
+    report << L"\n";
     report << L"Active ETW sessions: " << sessions.size() << L"\n";
     for (const auto& session : sessions) {
         report << L"  " << session << L"\n";
@@ -242,6 +256,8 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     const std::wstring pmc_source_set_text =
         OptionValue(arguments, L"--pmc-source-set", L"0");
     const std::wstring lbr_text = OptionValue(arguments, L"--lbr", L"0");
+    const std::wstring context_registers_text =
+        OptionValue(arguments, L"--context-registers", L"0");
     uint64_t duration_ms = 5000;
     uint32_t profile_interval = 10000;
     uint32_t pmc_source = 0;
@@ -300,6 +316,7 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     trace_options.pmc_profile = profile_text == L"pmu" || pmc_source_set_text == L"1";
     trace_options.pmc_source = pmc_source;
     trace_options.enable_lbr = lbr_text == L"1";
+    trace_options.enable_context_registers = context_registers_text == L"1";
     if (!session.Start(trace_options, &error)) {
         logger.Log(LogLevel::Error, L"WORKER_READY", error);
         state.phase = L"INTERNAL_ERROR";
@@ -314,6 +331,14 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     state_store.Write(state, nullptr);
     pipe.SendLine(L"PHASE CAPTURING", nullptr);
     pipe.SendLine(L"READY " + session_name, nullptr);
+    if (trace_options.enable_lbr) {
+        pipe.SendLine(L"STATUS lbr=" + session.LbrStatus(), nullptr);
+    }
+    if (trace_options.enable_context_registers) {
+        pipe.SendLine(L"STATUS context-registers=" +
+                          session.ContextRegisterStatus(),
+                      nullptr);
+    }
     logger.Log(LogLevel::Info, L"CAPTURING", L"ETW session started");
 
     const std::wstring clean_event_name = L"Local\\wperf-clean-" + correlation_id;
@@ -468,6 +493,7 @@ struct RecordOptions {
     uint32_t pmc_source = 0;
     bool pmc_source_set = false;
     bool lbr = false;
+    bool context_registers = false;
     bool elevate = false;
 };
 
@@ -511,6 +537,8 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
             options.pmc_source_set = true;
         } else if (argument == L"--lbr" || argument == L"-b") {
             options.lbr = true;
+        } else if (argument == L"--context-registers") {
+            options.context_registers = true;
         } else if (argument == L"--profile") {
             if (index + 1 >= arguments.size()) {
                 error = L"--profile requires a profile name";
@@ -545,7 +573,8 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
             options.pid = pid;
         } else if (argument == L"--help" || argument == L"-h") {
             std::wcout << L"Usage: wperf record [--elevate] [-F HZ] [-p PID] "
-                          L"[--duration MS] [-o FILE] [--] command\n";
+                          L"[--duration MS] [-o FILE] [--lbr] "
+                          L"[--context-registers] [--] command\n";
             return false;
         } else {
             error = L"unknown record option: " + argument;
@@ -646,6 +675,7 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         L"--pmc-source", std::to_wstring(options.pmc_source),
         L"--pmc-source-set", options.pmc_source_set ? L"1" : L"0",
         L"--lbr", options.lbr ? L"1" : L"0",
+        L"--context-registers", options.context_registers ? L"1" : L"0",
         L"--duration-ms", std::to_wstring(options.duration_ms),
     };
 
@@ -758,6 +788,8 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
                 state_store.Write(state, nullptr);
             } else if (StartsWith(line, L"READY ")) {
                 std::wcout << L"capturing: " << session_name << L"\n";
+            } else if (StartsWith(line, L"STATUS ")) {
+                std::wcout << L"status: " << line.substr(7) << L"\n";
             } else if (StartsWith(line, L"ERROR ")) {
                 std::wcerr << line << L"\n";
             } else if (StartsWith(line, L"FINISHED ")) {
@@ -1037,9 +1069,80 @@ int RunStat(const std::vector<std::wstring>& arguments) {
         for (const auto& image : trace.images) {
             symbolizer.AddModule(image);
         }
-        std::wcout << L"PMU profile (experimental, not an exact counter total)\n";
-        std::wcout << L"  source: " << source << L"  samples: "
-                   << trace.samples.size() << L"\n";
+        std::wstring source_name;
+        for (const auto& candidate : sources) {
+            if (candidate.source == source) {
+                source_name = candidate.description;
+                break;
+            }
+        }
+        struct PmcPoint {
+            uint64_t timestamp_ns = 0;
+            uint64_t value = 0;
+            size_t count = 0;
+        };
+        std::vector<PmcPoint> points;
+        for (const auto& sample : trace.samples) {
+            if (!sample.pmc_counters.empty()) {
+                points.push_back(PmcPoint{sample.timestamp_ns,
+                                          sample.pmc_counters.front(),
+                                          sample.pmc_counters.size()});
+            }
+        }
+        for (const auto& event : trace.events) {
+            if (!event.pmc_counters.empty()) {
+                points.push_back(PmcPoint{event.timestamp_ns,
+                                          event.pmc_counters.front(),
+                                          event.pmc_counters.size()});
+            }
+        }
+        std::sort(points.begin(), points.end(),
+                  [](const PmcPoint& left, const PmcPoint& right) {
+                      return left.timestamp_ns < right.timestamp_ns;
+                  });
+        uint64_t pmc_samples = 0;
+        uint64_t counters_per_sample = 0;
+        uint64_t first_counter = 0;
+        uint64_t last_counter = 0;
+        uint64_t previous_counter = 0;
+        uint64_t counter_delta_estimate = 0;
+        uint64_t counter_resets = 0;
+        for (const PmcPoint& point : points) {
+            const uint64_t value = point.value;
+            if (pmc_samples == 0) {
+                first_counter = value;
+                previous_counter = value;
+            } else if (value >= previous_counter) {
+                counter_delta_estimate += value - previous_counter;
+            } else {
+                counter_delta_estimate += value;
+                ++counter_resets;
+            }
+            previous_counter = value;
+            last_counter = value;
+            counters_per_sample =
+                std::max<uint64_t>(counters_per_sample, point.count);
+            ++pmc_samples;
+        }
+
+        std::wcout << L"PMU profile (experimental, sample-derived semantics)\n";
+        std::wcout << L"  source: " << source;
+        if (!source_name.empty()) {
+            std::wcout << L" (" << source_name << L")";
+        }
+        std::wcout << L"  samples: " << trace.samples.size()
+                   << L"  samples_with_pmc: " << pmc_samples << L"\n";
+        std::wcout << L"  semantics: sample-derived; not an exact perf-stat total\n";
+        if (pmc_samples == 0) {
+            std::wcout << L"  extended PMC counters: unavailable\n";
+        } else {
+            std::wcout << L"  counters/sample: " << counters_per_sample
+                       << L"  first: " << first_counter
+                       << L"  last: " << last_counter
+                       << L"  resets: " << counter_resets << L"\n";
+            std::wcout << L"  sample-delta estimate: " << counter_delta_estimate
+                       << L" (diagnostic only)\n";
+        }
         CpuReportOptions report_options;
         report_options.percent_limit = 1.0;
         if (pid.has_value()) {
