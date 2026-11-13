@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(wperf VERSION 0.5.0 LANGUAGES CXX)
+project(wperf VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,6 +8,39 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase")
 add_compile_options(/Zi)
 add_link_options(/DEBUG)
+
+option(WPERF_ENABLE_DISASM "Build optional Zydis-based disassembly support" ON)
+
+if(WPERF_ENABLE_DISASM)
+    include(FetchContent)
+    set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(ZYDIS_BUILD_MAN OFF CACHE BOOL "" FORCE)
+    set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
+    set(ZYDIS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ZYDIS_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
+    set(ZYDIS_FEATURE_ENCODER OFF CACHE BOOL "" FORCE)
+    set(ZYDIS_FEATURE_FORMATTER ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        zycore
+        GIT_REPOSITORY https://github.com/zyantific/zycore-c.git
+        GIT_TAG 0b2432ced0884fd152b471d97ecf0258ff4d859f
+        GIT_SHALLOW FALSE
+    )
+    FetchContent_GetProperties(zycore)
+    if(NOT zycore_POPULATED)
+        FetchContent_Populate(zycore)
+    endif()
+    set(ZYAN_ZYCORE_PATH "${zycore_SOURCE_DIR}" CACHE PATH "" FORCE)
+    set(ZYAN_SYSTEM_ZYCORE OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        zydis
+        GIT_REPOSITORY https://github.com/zyantific/zydis.git
+        GIT_TAG v4.1.1
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(zydis)
+endif()
 
 add_library(wperf_core STATIC
     src/common.cpp
@@ -20,6 +53,7 @@ add_library(wperf_core STATIC
     src/trace_model.cpp
     src/trace_events.cpp
     src/lbr.cpp
+    src/disassembler.cpp
     src/etl_reader.cpp
     src/live_top.cpp
     src/commands/live_control.cpp
@@ -36,6 +70,10 @@ target_compile_definitions(wperf_core PUBLIC
 )
 target_compile_options(wperf_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi tdh ole32)
+if(WPERF_ENABLE_DISASM)
+    target_compile_definitions(wperf_core PUBLIC WPERF_HAVE_ZYDIS=1)
+    target_link_libraries(wperf_core PUBLIC Zydis)
+endif()
 
 add_executable(wperf
     src/main.cpp
@@ -47,7 +85,6 @@ add_executable(wperf
 )
 target_compile_options(wperf PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf PRIVATE wperf_core)
-
 add_executable(wperf_cpu_burn tests/workloads/cpu_burn.cpp)
 target_compile_definitions(wperf_cpu_burn PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(wperf_cpu_burn PRIVATE /W4 /permissive- /utf-8 /EHsc)
@@ -63,6 +100,7 @@ add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
 add_test(NAME cli_version COMMAND wperf --version)
 add_test(NAME cli_list COMMAND wperf list)
 add_test(NAME cli_doctor COMMAND wperf doctor)
+add_test(NAME cli_doctor_help COMMAND wperf doctor --help)
 add_test(NAME cli_report_help COMMAND wperf report --help)
 add_test(NAME cli_buildid_help COMMAND wperf buildid-list --help)
 add_test(NAME cli_trace_help COMMAND wperf trace --help)

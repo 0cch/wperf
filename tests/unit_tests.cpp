@@ -1,6 +1,7 @@
 #include "common.h"
 #include "commands/live_control.h"
 #include "cpu_report.h"
+#include "disassembler.h"
 #include "elevation.h"
 #include "etl_reader.h"
 #include "etw.h"
@@ -274,7 +275,28 @@ void TestTraceEventCorrelation() {
           L"thread state name mapping");
 }
 
+void TestDisassembler() {
+    if (!wperf::DisassemblyAvailable()) {
+        return;
+    }
+    const uint8_t code[] = {0x48, 0x8B, 0x05, 0x78, 0x56, 0x34, 0x12, 0xC3};
+    std::vector<wperf::DisassembledInstruction> instructions;
+    std::wstring error;
+    Check(wperf::DisassembleBuffer(code, sizeof(code), 0x1000, 8, 4,
+                                   instructions, &error),
+          L"disassemble fixed x64 bytes");
+    if (instructions.size() < 2) {
+        Check(false, L"disassemble expected instruction count");
+        return;
+    }
+    Check(instructions[0].length == 7 && instructions[0].text.find("mov") != std::string::npos,
+          L"disassemble first instruction");
+    Check(instructions[1].text.find("ret") != std::string::npos,
+          L"disassemble ret instruction");
+}
+
 void TestThreadAndProcessIntervals() {
+
 
     wperf::TraceData trace;
     trace.threads.push_back(wperf::ThreadRecord{100, 7, 100, 200});
@@ -593,6 +615,7 @@ void TestWorkerIpcFailurePath() {
         L"--internal-elevated-worker",
         L"--pipe", wperf::MakePipePath(correlation_id),
         L"--nonce", nonce,
+        L"--controller-pid", std::to_wstring(GetCurrentProcessId()),
         L"--session", session_name,
         L"--output", (directory / L"trace.etl").wstring(),
         L"--log", (directory / L"worker.jsonl").wstring(),
@@ -645,23 +668,35 @@ void TestWorkerIpcFailurePath() {
 }
 }  // namespace
 
+void RunTest(const wchar_t* name, void (*test)()) {
+    std::wcout << L"[ RUN      ] " << name << std::endl;
+    const int failures_before = g_failures;
+    test();
+    if (g_failures == failures_before) {
+        std::wcout << L"[       OK ] " << name << std::endl;
+    } else {
+        std::wcerr << L"[   FAILED ] " << name << std::endl;
+    }
+}
+
 int wmain() {
-    TestQuoteArgument();
-    TestStateRoundTrip();
-    TestEtwQuery();
-    TestCpuReportSynthetic();
-    TestInvalidEtwFile();
-    TestTruncatedEtwFiles();
-    TestThreadAndProcessIntervals();
-    TestLbrDecode();
-    TestPmcQueries();
-    TestTraceEventCorrelation();
-    TestSymbolizerPdbIdentity();
-    TestLiveTraceFlags();
-    TestLiveWorkerControlPlane();
-    TestGoldenR3Replay();
-    TestGoldenCpuStackReplay();
-    TestWorkerIpcFailurePath();
+    RunTest(L"QuoteArgument", TestQuoteArgument);
+    RunTest(L"StateRoundTrip", TestStateRoundTrip);
+    RunTest(L"EtwQuery", TestEtwQuery);
+    RunTest(L"CpuReportSynthetic", TestCpuReportSynthetic);
+    RunTest(L"InvalidEtwFile", TestInvalidEtwFile);
+    RunTest(L"TruncatedEtwFiles", TestTruncatedEtwFiles);
+    RunTest(L"ThreadAndProcessIntervals", TestThreadAndProcessIntervals);
+    RunTest(L"Disassembler", TestDisassembler);
+    RunTest(L"LbrDecode", TestLbrDecode);
+    RunTest(L"PmcQueries", TestPmcQueries);
+    RunTest(L"TraceEventCorrelation", TestTraceEventCorrelation);
+    RunTest(L"SymbolizerPdbIdentity", TestSymbolizerPdbIdentity);
+    RunTest(L"LiveTraceFlags", TestLiveTraceFlags);
+    RunTest(L"LiveWorkerControlPlane", TestLiveWorkerControlPlane);
+    RunTest(L"GoldenR3Replay", TestGoldenR3Replay);
+    RunTest(L"GoldenCpuStackReplay", TestGoldenCpuStackReplay);
+    RunTest(L"WorkerIpcFailurePath", TestWorkerIpcFailurePath);
     if (g_failures == 0) {
         std::wcout << L"wperf unit tests: PASS\n";
         return 0;

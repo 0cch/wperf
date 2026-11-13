@@ -1,23 +1,37 @@
 # wperf Changelog
 
-## 0.4.0-m6-m7
+## 0.6.0
+- Added optional Zydis v4.1.1 x86/x64 disassembly, enabled by default.
+- Added `annotate --disasm` with text, JSON and CSV output, plus an address-heat fallback.
+- Added controller PID validation to elevated record/live workers.
+- Restricted diagnostic bundles from including crash dumps by default and documented redaction limits.
+- Replaced quadratic ETL process/thread/image lookups with incremental indexes.
+- Added release documentation, third-party notices and a no-disassembly CI build.
+
+## 0.5.0
+- Added weighted and call-tree diffs with PID/DSO filters and CSV/JSON output.
+- Added source-aware annotation and richer archive manifests.
+- Added provider enumeration and private-provider capture.
+- Added reproducible release packaging with compatibility metadata.
+
+## 0.4.0
 
 - Added ETW PMC profile source selection and experimental `stat --pmu`.
 - Added LBR configuration probe via `TraceConfigureLastBranchRecord`.
 - Added `annotate`, `diff`, `archive`, and release build workflow.
 - Kept unsupported hardware capability results explicit.
 
-## 0.3.0-m4-m5
+## 0.3.0
 
 - Added `stat`, snapshot `top`, and `script`.
 - Added scheduler, syscall, page-fault, and I/O event model.
 - Added offline `trace` and `sched` reports.
 
-## 0.2.0-m2-m3
+## 0.2.0
 
 - Added ETL replay, classic ETW decoding, Sample/StackWalk pairing.
 - Added DbgHelp symbolization, folded/calltree reports, filters, and buildid-list.
 
-## 0.1.0-m1
+## 0.1.0
 
 - Added ETW session lifecycle, controller/worker/guard, state, logs, crash dumps.

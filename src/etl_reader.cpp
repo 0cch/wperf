@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <unordered_map>
 
 namespace wperf {
@@ -104,6 +105,34 @@ struct StackStore {
     std::vector<StackRecord> records;
     std::unordered_map<uint64_t, std::vector<uint64_t>> definitions;
 };
+
+struct IndexKey {
+    uint32_t pid = 0;
+    uint64_t value = 0;
+
+    bool operator==(const IndexKey& other) const {
+        return pid == other.pid && value == other.value;
+    }
+};
+
+struct IndexKeyHash {
+    size_t operator()(const IndexKey& key) const noexcept {
+        uint64_t hash = key.value;
+        hash ^= static_cast<uint64_t>(key.pid) << 32;
+        hash ^= hash >> 33;
+        hash *= 0xff51afd7ed558ccdULL;
+        hash ^= hash >> 33;
+        return static_cast<size_t>(hash);
+    }
+};
+
+struct ReplayIndexes {
+    std::unordered_map<uint32_t, std::vector<size_t>> processes_by_pid;
+    std::unordered_map<IndexKey, std::vector<size_t>, IndexKeyHash>
+        threads_by_pid_tid;
+    std::unordered_map<IndexKey, std::vector<size_t>, IndexKeyHash>
+        images_by_pid_base;
+};
 uint8_t ReadU8(const BYTE* data, size_t size, size_t offset) {
     if (data == nullptr || offset >= size) {
         return 0;
@@ -180,7 +209,8 @@ uint64_t TimestampToNs(const EVENT_RECORD& record, const TraceData& trace) {
                    trace.qpc_frequency);
 }
 
-void ParseProcess(const EVENT_RECORD& record, TraceData& trace) {
+void ParseProcess(const EVENT_RECORD& record, TraceData& trace,
+                  ReplayIndexes& indexes) {
     const BYTE* data = static_cast<const BYTE*>(record.UserData);
     const size_t size = record.UserDataLength;
     const uint32_t p = trace.pointer_size;
@@ -191,11 +221,14 @@ void ParseProcess(const EVENT_RECORD& record, TraceData& trace) {
     const uint8_t opcode = record.EventHeader.EventDescriptor.Opcode;
     const uint32_t pid = ReadU32(data, size, p);
     const uint64_t timestamp_ns = TimestampToNs(record, trace);
+    auto& active = indexes.processes_by_pid[pid];
     if (opcode == 2 || opcode == 4) {
-        for (auto iterator = trace.processes.rbegin(); iterator != trace.processes.rend();
+        for (auto iterator = active.rbegin(); iterator != active.rend();
              ++iterator) {
-            if (iterator->pid == pid && iterator->end_ns == 0) {
-                iterator->end_ns = timestamp_ns;
+            if (*iterator < trace.processes.size() &&
+                trace.processes[*iterator].end_ns == 0) {
+                trace.processes[*iterator].end_ns = timestamp_ns;
+                active.erase(std::next(iterator).base());
                 break;
             }
         }
@@ -216,16 +249,20 @@ void ParseProcess(const EVENT_RECORD& record, TraceData& trace) {
         process.image_name = ReadWideString(data, size, image_offset);
     }
 
-    for (const ProcessRecord& existing : trace.processes) {
-        if (existing.pid == process.pid && existing.end_ns == 0 &&
-            existing.image_name == process.image_name) {
+    for (const size_t index : active) {
+        if (index < trace.processes.size() &&
+            trace.processes[index].end_ns == 0 &&
+            trace.processes[index].image_name == process.image_name) {
             return;
         }
     }
+    const size_t index = trace.processes.size();
     trace.processes.push_back(std::move(process));
+    active.push_back(index);
 }
 
-void ParseThread(const EVENT_RECORD& record, TraceData& trace) {
+void ParseThread(const EVENT_RECORD& record, TraceData& trace,
+                 ReplayIndexes& indexes) {
     const BYTE* data = static_cast<const BYTE*>(record.UserData);
     const size_t size = record.UserDataLength;
     if (size < 8) {
@@ -235,20 +272,23 @@ void ParseThread(const EVENT_RECORD& record, TraceData& trace) {
     const uint32_t pid = ReadU32(data, size, 0);
     const uint32_t tid = ReadU32(data, size, 4);
     const uint64_t timestamp_ns = TimestampToNs(record, trace);
+    auto& active = indexes.threads_by_pid_tid[IndexKey{pid, tid}];
     if (opcode == 2 || opcode == 4) {
-        for (auto iterator = trace.threads.rbegin(); iterator != trace.threads.rend();
+        for (auto iterator = active.rbegin(); iterator != active.rend();
              ++iterator) {
-            if (iterator->pid == pid && iterator->tid == tid &&
-                iterator->end_ns == 0) {
-                iterator->end_ns = timestamp_ns;
+            if (*iterator < trace.threads.size() &&
+                trace.threads[*iterator].end_ns == 0) {
+                trace.threads[*iterator].end_ns = timestamp_ns;
+                active.erase(std::next(iterator).base());
                 break;
             }
         }
         return;
     }
 
-    for (const ThreadRecord& existing : trace.threads) {
-        if (existing.pid == pid && existing.tid == tid && existing.end_ns == 0) {
+    for (const size_t index : active) {
+        if (index < trace.threads.size() &&
+            trace.threads[index].end_ns == 0) {
             return;
         }
     }
@@ -256,10 +296,13 @@ void ParseThread(const EVENT_RECORD& record, TraceData& trace) {
     thread.pid = pid;
     thread.tid = tid;
     thread.start_ns = timestamp_ns;
+    const size_t index = trace.threads.size();
     trace.threads.push_back(std::move(thread));
+    active.push_back(index);
 }
 
-void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
+void ParseImage(const EVENT_RECORD& record, TraceData& trace,
+                ReplayIndexes& indexes) {
     const BYTE* data = static_cast<const BYTE*>(record.UserData);
     const size_t size = record.UserDataLength;
     const uint32_t p = trace.pointer_size;
@@ -300,27 +343,35 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace) {
     }
     image.path = ReadWideString(data, size, filename_offset);
 
+    auto& active =
+        indexes.images_by_pid_base[IndexKey{image.pid, image.base}];
     if (opcode == 2 || opcode == 4) {
-        for (auto iterator = trace.images.rbegin(); iterator != trace.images.rend();
+        for (auto iterator = active.rbegin(); iterator != active.rend();
              ++iterator) {
-            if (iterator->pid == image.pid && iterator->base == image.base &&
-                iterator->unload_ns == 0) {
-                iterator->unload_ns = image.load_ns;
+            if (*iterator < trace.images.size() &&
+                trace.images[*iterator].unload_ns == 0) {
+                trace.images[*iterator].unload_ns = image.load_ns;
+                active.erase(std::next(iterator).base());
                 break;
             }
         }
         return;
     }
 
-    for (const ImageRecord& existing : trace.images) {
-        if (existing.pid == image.pid && existing.base == image.base &&
-            existing.unload_ns == 0 && existing.path == image.path &&
+    for (const size_t index : active) {
+        if (index >= trace.images.size()) {
+            continue;
+        }
+        const ImageRecord& existing = trace.images[index];
+        if (existing.unload_ns == 0 && existing.path == image.path &&
             existing.timestamp == image.timestamp &&
             existing.checksum == image.checksum) {
             return;
         }
     }
+    const size_t index = trace.images.size();
     trace.images.push_back(std::move(image));
+    active.push_back(index);
 }
 
 void CopyPmcCounters(const EVENT_RECORD& record,
@@ -647,6 +698,7 @@ std::unordered_map<StackKey, ResolvedStack, StackKeyHash> ResolveStacks(
 
 struct ReplayContext {
     TraceData* trace = nullptr;
+    ReplayIndexes indexes;
     StackStore stacks;
 };
 
@@ -680,13 +732,13 @@ void EventRecordCallback(PEVENT_RECORD record) {
 
     if (IsEqualGUID(class_guid, kProcessGuid) &&
         (opcode == 1 || opcode == 2 || opcode == 3 || opcode == 4 || opcode == 39)) {
-        ParseProcess(*record, *trace);
+        ParseProcess(*record, *trace, context->indexes);
     } else if (IsEqualGUID(class_guid, kThreadGuid) &&
                (opcode == 1 || opcode == 2 || opcode == 3 || opcode == 4)) {
-        ParseThread(*record, *trace);
+        ParseThread(*record, *trace, context->indexes);
     } else if (IsEqualGUID(class_guid, kImageGuid) &&
                (opcode == 2 || opcode == 3 || opcode == 4 || opcode == 10)) {
-        ParseImage(*record, *trace);
+        ParseImage(*record, *trace, context->indexes);
     } else if (IsEqualGUID(class_guid, kPerfInfoGuid) &&
                (opcode == 46 || id == 46)) {
         ++trace->quality.samples_total;

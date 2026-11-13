@@ -1,79 +1,78 @@
 # wperf
 
-Lightweight Windows profiling and tracing CLI built on ETW.
+`wperf` is a lightweight Windows profiling and tracing CLI built on ETW. It is
+designed for workflows where WPA/WPR or vendor profilers are too heavy, while
+still keeping a clear boundary around capabilities Windows exposes without a
+custom driver.
 
-Current milestones: **M0-M7 implemented** (CPU/PMU profile, PDB report, stat, real-time top/live trace, scheduler/syscall/I/O fidelity, PMC/LBR/context-register capability, annotate/diff/archive).
+## Capabilities
 
-- M0 capability probe: [docs/M0.md](docs/M0.md), [docs/M0_RESULTS.md](docs/M0_RESULTS.md)
-- M1 foundation: [docs/M1.md](docs/M1.md)
-- M2/M3 implementation status: [docs/M2_M3.md](docs/M2_M3.md)
-- M4/M5 implementation status: [docs/M4_M5.md](docs/M4_M5.md)
-- M6/M7 implementation status: [docs/M6_M7.md](docs/M6_M7.md)
-- M2-M7 execution roadmap: [docs/ROADMAP.md](docs/ROADMAP.md)
-- Project review plan: [docs/REVIEW_PLAN.md](docs/REVIEW_PLAN.md)
-- Improvement plan: [docs/IMPROVEMENT_PLAN.md](docs/IMPROVEMENT_PLAN.md)
+- CPU sampling, stack correlation, PDB/SHA256-aware module identity.
+- Profile reports: table, folded, call tree, CSV and JSON.
+- Real-time top and live sched/syscall/pagefault/I/O/LBR tracing.
+- Scheduler, syscall, page fault, file/disk I/O correlation and quality metrics.
+- ETW PMC sampling, LBR payload decoding, context-register capability probing.
+- `annotate`, weighted/calltree `diff`, reproducible `archive`.
+- TDH provider enumeration and private-provider ETL capture.
+- Optional Zydis disassembly, enabled by default.
 
 ## Build
 
+Requirements: Windows 10 21H2+/Windows 11 x64, CMake 3.24+, Visual Studio 2022,
+Windows SDK.
+
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
+cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
-
-# Build a portable release directory
-pwsh -File .\scripts\build_release.ps1
 ```
 
-## Initial commands
+Disassembly defaults to ON and fetches pinned Zydis/Zycore revisions. To build
+without third-party disassembly:
 
 ```powershell
-.\build\Release\wperf.exe --version
-.\build\Release\wperf.exe list
-.\build\Release\wperf.exe doctor
-.\build\Release\wperf.exe test
-.\build\Release\wperf.exe record --duration 3000 -o .\trace.etl
-.\\build\\Release\\wperf.exe record --elevate --profile pmu --pmc-source 19 --duration 3000 -o .\\pmu.etl
-.\\build\\Release\\wperf.exe record --elevate --lbr --duration 1000 -o .\\lbr.etl
-.\\build\\Release\\wperf.exe trace -i .\\lbr.etl -e lbr --max 20
-.\build\Release\wperf.exe report -i .\trace.etl --symbol-path .\build\Release
-.\\build\\Release\\wperf.exe list providers --max 20
-.\\build\\Release\\wperf.exe record --elevate --provider {GUID} --duration 3000 -o .\\provider.etl
-.\\build\\Release\\wperf.exe diff -1 .\\before.etl -2 .\\after.etl --calltree --json
-.\build\Release\wperf.exe stat -- .\build\Release\wperf_cpu_burn.exe 1000 2
-.\build\Release\wperf.exe top --elevate --interval 1000 --iterations 1
-.\build\Release\wperf.exe record --profile cpu-sched -o .\sched.etl -- .\build\Release\wperf_cpu_burn.exe 2000 4
-.\build\Release\wperf.exe trace -i .\sched.etl -e sched --max 30
-.\build\Release\wperf.exe trace --live --elevate -e sched --duration 5000
-.\\build\\Release\\wperf.exe report -i .\\io.etl --kind io
-.\\build\\Release\\wperf.exe report -i .\\io.etl --kind io --json
-.\build\Release\wperf.exe sched -i .\sched.etl
-.\build\Release\wperf.exe script -i .\trace.etl --limit 10 --symbol-path .\build\Release
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DWPERF_ENABLE_DISASM=OFF
 ```
 
-`record` requires an elevated worker for system ETW capture. From a normal terminal use:
+Create a release directory:
 
 ```powershell
-.\build\Release\wperf.exe record --elevate --duration 3000 -o .\trace.etl
+pwsh -NoProfile -File .\scripts\build_release.ps1
 ```
 
-The elevated worker is headless. The normal-permission controller owns the console and talks to the worker over a private named pipe.
-
-## M0
+## Quick start
 
 ```powershell
-pwsh -File .\scripts\m0_probe.ps1
+wperf --version
+wperf doctor
+wperf record --elevate --duration 3000 -o trace.etl
+wperf report -i trace.etl --symbol-path .\build\Release --call-graph
+wperf top --elevate --interval 1000
+wperf trace --live --elevate -e sched --duration 5000
+wperf annotate -i trace.etl --limit 20 --disasm
+wperf diff -1 before.etl -2 after.etl --calltree --json
+wperf archive -i trace.etl -o archive --max-size-mb 512
+wperf list providers --max 20
 ```
 
-An elevated shell additionally generates an xperf CPU sample + stack baseline.
+System capture requires administrator rights. `--elevate` starts one hidden
+elevated worker; the normal-permission controller owns the terminal and sends
+START/STOP over an authenticated named pipe.
 
-## M1 scope
+## Documentation
 
-- C++20/CMake project and CLI skeleton.
-- `list`, `doctor`, `test`, `record`, `recover`.
-- ETW session start/stop and profile-source discovery.
-- Headless elevated worker and session guard.
-- Correlation IDs, JSONL logs and atomic state files.
-- Crash dumps and basic recovery.
-- Unit tests plus Windows CI build.
+- [Usage](docs/USAGE.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Security](docs/SECURITY.md)
+- [Compatibility](docs/COMPATIBILITY.md)
+- [Development](docs/DEVELOPMENT.md)
+- [Release](docs/RELEASE.md)
+- [Disassembly](docs/DISASSEMBLY.md)
 
-See [docs/PLAN.md](docs/PLAN.md) for the full design.
+## Boundaries
+
+- No custom driver, kernel modification or MSR access.
+- PMU results are ETW sample-derived unless explicitly marked exact.
+- LBR/context-register availability depends on OS and CPU support.
+- Syscall arguments and kernel-internal memory semantics are not synthesized.
+- Unsupported or approximate data is reported explicitly.

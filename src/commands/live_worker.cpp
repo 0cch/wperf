@@ -93,6 +93,8 @@ bool SendTextLines(PipeClient& pipe, const std::wstring& prefix,
 int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     const std::wstring pipe_path = OptionValue(arguments, L"--pipe");
     const std::wstring nonce = OptionValue(arguments, L"--nonce");
+    const std::wstring controller_pid_text =
+        OptionValue(arguments, L"--controller-pid");
     const std::wstring mode = OptionValue(arguments, L"--mode");
     const std::wstring session_name = OptionValue(arguments, L"--session");
     const std::wstring interval_text = OptionValue(arguments, L"--interval", L"1000");
@@ -136,6 +138,13 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     PipeClient pipe;
     std::wstring error;
     if (!pipe.Connect(pipe_path, 20000, &error)) {
+        return 4;
+    }
+    uint32_t expected_controller_pid = 0;
+    uint32_t actual_controller_pid = 0;
+    if (!ParseUint32(controller_pid_text, expected_controller_pid) ||
+        !pipe.ServerProcessId(actual_controller_pid) ||
+        actual_controller_pid != expected_controller_pid) {
         return 4;
     }
     if (!pipe.SendLine(L"HELLO " + nonce + L" " +
