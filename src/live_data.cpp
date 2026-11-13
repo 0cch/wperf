@@ -361,6 +361,7 @@ bool LiveWindowDecoder::Consume(const std::wstring& line, std::wstring* error) {
             return false;
         }
         trace_.quality.metadata_dropped += count;
+        if (count != 0) trace_.quality.incomplete = true;
     } else {
         SetError(error, L"unknown live window message");
         return false;

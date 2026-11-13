@@ -107,7 +107,16 @@ ready-but-not-running time are reported separately. ETW `CSwitch` uses
 outgoing thread. Wakeup stacks are retained separately and are not assigned as
 the blocked thread's stack.
 
+JSON/CSV rows separate wakeup sources by PID/TID, process/thread lifetime and
+stack identity. `wakeup_pid`, `wakeup_tid`, `wakeup_process_start_ns` and
+`wakeup_thread_start_ns` describe that source; JSON `wakeup_stack_frames` and
+CSV `wakeup_stack` resolve its frames in the waking process. Folded output
+remains weighted by the waiting thread's stack, so a FlameGraph can combine
+waiting paths across wakeup sources without mixing their call stacks.
+
 Intervals closed only by the end of capture are marked `boundary=truncated` and
+the confirmed blocked portion remains available when only the ready tail is
+unfinished. Truncated intervals
 are excluded from exact totals by default. Use `--off-cpu-include-inferred` to
 include them; folded output then appends `[truncated-boundary]`. JSON and CSV
 always expose `confirmed_duration_ns`, `inferred_duration_ns`, and boundary

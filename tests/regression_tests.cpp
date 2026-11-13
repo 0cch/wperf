@@ -6,6 +6,7 @@
 #include "live_data.h"
 #include "live_top.h"
 #include "off_cpu_report.h"
+#include "top_renderer.h"
 #include "output.h"
 #include "symbolizer.h"
 #include "archive.h"
@@ -15,9 +16,12 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 #include <psapi.h>
 #include <fstream>
@@ -185,6 +189,8 @@ void TestLiveWindowLongPayloadBound() {
           "stack truncation degrades exact stack quality to approximate");
     Check(decoded.quality.metadata_dropped >= 2,
           "live IPC truncation is reported in quality metadata");
+    Check(decoded.quality.incomplete,
+          "field truncation marks the live window incomplete even without window overflow");
 
     wperf::TraceData budgeted = original;
     budgeted.quality.samples_total = 700;
@@ -722,6 +728,211 @@ void TestOffCpuTruncatedInterval() {
           "truncated off-CPU intervals are counted in quality metadata");
 }
 
+wperf::TraceEvent OffCpuSwitch(uint64_t time, uint32_t incoming,
+                               uint32_t outgoing, uint8_t state) {
+    std::array<BYTE, 16> payload{};
+    std::memcpy(payload.data(), &incoming, 4);
+    std::memcpy(payload.data() + 4, &outgoing, 4);
+    payload[12] = 6;
+    payload[14] = state;
+    EVENT_RECORD record{};
+    record.EventHeader.TimeStamp.QuadPart = time;
+    record.EventHeader.EventDescriptor.Opcode = 36;
+    record.UserData = payload.data();
+    record.UserDataLength = static_cast<USHORT>(payload.size());
+    wperf::TraceEvent event;
+    Check(wperf::DecodeKernelEvent(record, 8, 1000000000,
+                                   wperf::TraceEventKind::ContextSwitch, event),
+          "off-CPU transition starts with the actual CSwitch decoder");
+    event.stack = {0x1100};
+    event.stack_quality = wperf::StackQuality::Exact;
+    event.stack_missing = false;
+    return event;
+}
+
+wperf::TraceEvent OffCpuReady(uint64_t time, uint32_t target,
+                              uint32_t waker, uint32_t waker_pid, uint64_t frame) {
+    std::array<BYTE, 8> payload{};
+    std::memcpy(payload.data(), &target, 4);
+    EVENT_RECORD record{};
+    record.EventHeader.TimeStamp.QuadPart = time;
+    record.EventHeader.ThreadId = waker;
+    record.EventHeader.ProcessId = waker_pid;
+    record.EventHeader.EventDescriptor.Opcode = 50;
+    record.UserData = payload.data();
+    record.UserDataLength = static_cast<USHORT>(payload.size());
+    wperf::TraceEvent event;
+    Check(wperf::DecodeKernelEvent(record, 8, 1000000000,
+                                   wperf::TraceEventKind::ReadyThread, event),
+          "off-CPU wakeup starts with the actual ReadyThread decoder");
+    event.stack = {frame};
+    event.stack_quality = wperf::StackQuality::Exact;
+    event.stack_missing = false;
+    return event;
+}
+
+size_t CountRows(const std::wstring& json, const std::wstring& needle = L"\"kind\":") {
+    size_t count = 0, offset = 0;
+    while ((offset = json.find(needle, offset)) != std::wstring::npos) {
+        ++count;
+        offset += needle.size();
+    }
+    return count;
+}
+
+void TestOffCpuConfirmedBlockAndReusedReady() {
+    wperf::TraceData trace;
+    trace.start_ns = 100; trace.end_ns = 800;
+    trace.threads = {{100, 10, 1, 0}, {200, 20, 1, 0}};
+    trace.events = {OffCpuSwitch(100, 20, 10, 5), OffCpuReady(300, 10, 20, 200, 0x2100)};
+    wperf::EnrichTraceEvents(trace);
+    wperf::BuildOffCpuIntervals(trace);
+    Check(trace.off_cpu_intervals.size() == 2, "capture end retains blocked and ready intervals");
+    if (trace.off_cpu_intervals.size() == 2) {
+        Check(trace.off_cpu_intervals[0].duration_ns == 200 &&
+                  !trace.off_cpu_intervals[0].boundary_inferred &&
+                  trace.off_cpu_intervals[1].duration_ns == 500 &&
+                  trace.off_cpu_intervals[1].boundary_inferred,
+              "confirmed blocked endpoint survives an unclosed ready tail");
+    }
+    wperf::Symbolizer symbols;
+    wperf::CpuReportOptions json; json.json = true;
+    std::wostringstream report;
+    wperf::WriteOffCpuReport(trace, symbols, json, report);
+    Check(CountRows(report.str()) == 1 &&
+              report.str().find(L"\"confirmed_duration_ns\":200") != std::wstring::npos,
+          "default off-CPU report preserves confirmed blocked time at capture end");
+
+    wperf::TraceData reused;
+    reused.start_ns = 1; reused.end_ns = 400;
+    reused.processes = {{100, 0, L"old.exe", L"", 1, 200},
+                        {200, 0, L"new.exe", L"", 300, 0}};
+    reused.threads = {{100, 10, 1, 200}, {200, 10, 300, 0}, {300, 20, 1, 0}};
+    reused.events = {OffCpuSwitch(100, 20, 10, 5), OffCpuReady(300, 10, 20, 300, 0x2100),
+                     OffCpuSwitch(400, 10, 20, 0)};
+    wperf::EnrichTraceEvents(reused);
+    wperf::BuildOffCpuIntervals(reused);
+    Check(reused.off_cpu_intervals.size() == 1 && reused.quality.off_cpu_evicted == 1,
+          "ReadyThread evicts only the stale TID lifetime and starts the new ready interval");
+    if (!reused.off_cpu_intervals.empty()) {
+        const auto& interval = reused.off_cpu_intervals.front();
+        Check(interval.pid == 200 && interval.thread_start_ns == 300 &&
+                  interval.process_start_ns == 300 && interval.duration_ns == 100 &&
+                  !interval.boundary_inferred && interval.kind == wperf::OffCpuKind::Ready,
+              "reused TID reports the new process's confirmed ready duration");
+    }
+}
+
+void TestOffCpuWakeupSourcesAndStackTimes() {
+    wperf::TraceData trace;
+    trace.start_ns = 1; trace.end_ns = 120;
+    trace.threads = {{100, 10, 1, 0}, {200, 20, 1, 0}, {300, 30, 1, 0}};
+    trace.processes = {{100, 0, L"waiter.exe", L"", 1, 0},
+                       {200, 0, L"first.exe", L"", 1, 0},
+                       {300, 0, L"second.exe", L"", 1, 0}};
+    trace.images = {{100, 0x1000, 0x1000, 1, 0, 1, 15, L"C:/waiting-old.dll"},
+                    {100, 0x1000, 0x1000, 2, 0, 15, 0, L"C:/waiting-new.dll"},
+                    {200, 0x2000, 0x1000, 3, 0, 1, 0, L"C:/first-waker.dll"},
+                    {300, 0x2000, 0x1000, 4, 0, 1, 0, L"C:/second-waker.dll"}};
+    trace.events = {OffCpuSwitch(10, 20, 10, 5), OffCpuReady(20, 10, 20, 200, 0x2100),
+                    OffCpuSwitch(30, 10, 20, 0), OffCpuSwitch(40, 30, 10, 5),
+                    OffCpuReady(50, 10, 30, 300, 0x2100), OffCpuSwitch(60, 10, 30, 0),
+                    OffCpuSwitch(70, 20, 10, 5), OffCpuReady(80, 10, 20, 200, 0x2200),
+                    OffCpuSwitch(90, 10, 20, 0), OffCpuSwitch(100, 20, 10, 5),
+                    OffCpuReady(110, 10, 20, 200, 0x2100), OffCpuSwitch(120, 10, 20, 0)};
+    wperf::EnrichTraceEvents(trace);
+    wperf::BuildOffCpuIntervals(trace);
+    Check(trace.off_cpu_intervals.size() == 8, "four waits retain their blocked and ready intervals");
+    if (trace.off_cpu_intervals.size() == 8) {
+        Check(trace.off_cpu_intervals[0].wakeup_pid == 200 &&
+                  trace.off_cpu_intervals[0].wakeup_tid == 20 &&
+                  trace.off_cpu_intervals[0].wakeup_process_start_ns == 1 &&
+                  trace.off_cpu_intervals[0].wakeup_thread_start_ns == 1,
+              "wakeup process and thread lifetimes are retained independently of the waiter");
+        Check(trace.off_cpu_intervals[1].stack_timestamp_ns == 10 &&
+                  trace.off_cpu_intervals[1].start_ns == 20,
+              "ready interval retains the original switch-out stack capture time");
+    }
+    wperf::Symbolizer symbols;
+    wperf::CpuReportOptions options; options.json = true;
+    std::wostringstream json;
+    wperf::WriteOffCpuReport(trace, symbols, options, json);
+    Check(CountRows(json.str()) == 8 && CountRows(json.str(), L"\"intervals\":1") == 8,
+          "different wakeup processes or stacks are not overwritten in a merged row");
+    Check(json.str().find(L"\"wakeup_pid\":200") != std::wstring::npos &&
+              json.str().find(L"\"wakeup_pid\":300") != std::wstring::npos &&
+              json.str().find(L"\"module\":\"first-waker.dll\"") != std::wstring::npos &&
+              json.str().find(L"\"module\":\"second-waker.dll\"") != std::wstring::npos,
+          "wakeup frames resolve in the waking process even at the same virtual address");
+    Check(CountRows(json.str(), L"\"module\":\"waiting-old.dll\"") == 2,
+          "both blocked and ready stacks resolve at capture time rather than ready time");
+    options.json = false; options.csv = true;
+    std::wostringstream csv;
+    wperf::WriteOffCpuReport(trace, symbols, options, csv);
+    Check(csv.str().find(L"wakeup_pid,wakeup_tid") != std::wstring::npos &&
+              csv.str().find(L"first-waker.dll") != std::wstring::npos &&
+              csv.str().find(L"second-waker.dll") != std::wstring::npos,
+          "CSV exposes the separate wakeup identities and symbolized stacks");
+}
+
+void TestRendererDrainDeadlineAndErrors() {
+    struct Latch {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool entered = false, release = false, returned = false;
+    };
+    auto latch = std::make_shared<Latch>();
+    wperf::AsyncTopRenderer blocked([latch](wperf::TraceData&, uint64_t, std::wstring*) {
+        std::unique_lock lock(latch->mutex);
+        latch->entered = true;
+        latch->changed.notify_all();
+        latch->changed.wait(lock, [&] { return latch->release; });
+        latch->returned = true;
+        latch->changed.notify_all();
+        return true;
+    });
+    blocked.Push({}, 100);
+    {
+        std::unique_lock lock(latch->mutex);
+        Check(latch->changed.wait_for(lock, std::chrono::seconds(2), [&] { return latch->entered; }),
+              "the production render queue starts the blocked sink");
+    }
+    blocked.Push({}, 100);
+    blocked.Push({}, 100);
+    const auto started = GetTickCount64();
+    Check(!blocked.Close(true, 20) && GetTickCount64() - started < 1000,
+          "renderer drain timeout returns failure without blocking capture cleanup");
+    std::wstring error;
+    Check(blocked.Failed(&error) && error.find(L"incomplete") != std::wstring::npos &&
+              blocked.DroppedWindows() == 3,
+          "drain timeout reports the active and queued unfinished windows");
+    {
+        std::unique_lock lock(latch->mutex);
+        latch->release = true;
+        latch->changed.notify_all();
+        Check(latch->changed.wait_for(lock, std::chrono::seconds(2), [&] { return latch->returned; }),
+              "timed-out renderer retains safe ownership until the sink returns");
+    }
+    Check(blocked.Failed(nullptr), "late render completion cannot turn a drain timeout into success");
+
+    std::atomic_uint rendered{0};
+    wperf::AsyncTopRenderer normal([&rendered](wperf::TraceData&, uint64_t, std::wstring*) {
+        ++rendered;
+        return true;
+    });
+    normal.Push({}, 100);
+    Check(normal.Close(true, 2000) && rendered == 1 && !normal.Failed(nullptr),
+          "normal renderer drain waits for output completion and returns success");
+
+    wperf::AsyncTopRenderer failing([](wperf::TraceData&, uint64_t, std::wstring*) -> bool {
+        throw std::runtime_error("render failure");
+    });
+    failing.Push({}, 100);
+    Check(!failing.Close(true, 2000) && failing.Failed(&error) &&
+              error.find(L"render failure") != std::wstring::npos,
+          "render exceptions propagate as errors instead of terminating the controller");
+}
+
 void TestOffCpuReportIdentityBoundariesAndFilters() {
     const auto count_text = [](const std::wstring& text, const std::wstring& needle) {
         size_t count = 0;
@@ -903,6 +1114,9 @@ int main() {
     TestRawSchedulerStackAssociation();
     TestOffCpuIntervals();
     TestOffCpuTruncatedInterval();
+    TestOffCpuConfirmedBlockAndReusedReady();
+    TestOffCpuWakeupSourcesAndStackTimes();
+    TestRendererDrainDeadlineAndErrors();
     TestOffCpuReportIdentityBoundariesAndFilters();
     TestSelectorsAndObservedIntervals();
     if (failures == 0) std::cout << "regression tests: PASS\n";

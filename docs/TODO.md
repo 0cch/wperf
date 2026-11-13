@@ -27,8 +27,8 @@ when implementation, scoped evidence, and known limitations are all recorded.
 | VAL-02 | Real modern cached-stack ETL | Validation expansion | P1 | ETW stack-cache capable capture environment |
 | RUN-01 | Long soak and fault stress | Script exists; manual run required | P1 | Elevated runner and sustained workloads |
 | RUN-02 | Sampling perturbation and capacity curves | Planned / manual run required | P1 | Repeatable workload on fixed hardware |
-| SEC-01 | Low-privilege live symbolization | Implemented; review re-validation pending | P1 | Structured IPC and controller-side symbols |
-| ANA-01 | Off-CPU blocked/ready analysis | Implemented; review re-validation pending | P2 | Scheduler stacks and interval correlation |
+| SEC-01 | Low-privilege live symbolization | Implementation/regressions complete; manual acceptance pending | P1 | Structured IPC and controller-side symbols |
+| ANA-01 | Off-CPU blocked/ready analysis | Implementation/regressions complete; hardware acceptance pending | P2 | Scheduler stacks and interval correlation |
 | ANA-02 | JIT method lifecycle mapping | Planned | P2 | Runtime-specific ETW events |
 | CO-01 | External profiler conflicts and recovery | Partial / manual validation required | P1 | Controlled competing capture tool |
 | REL-01 | Continuous validation and release evidence | Partial | P1 | Specialized runners and evidence retention |
@@ -98,7 +98,7 @@ target platform.
 
 ### SEC-01: Move DbgHelp, PDB handling, and formatting out of the elevated worker
 
-**Status: implemented; acceptance remains pending after review-4392026 re-validation.**
+**Status: implementation and focused regressions complete; real UAC/fault acceptance pending.**
 
 Implemented:
 
@@ -112,6 +112,9 @@ Implemented:
 - [x] Structured live-window round-trip tests cover long Unicode metadata, oversized stack truncation, PMC payloads, and control messages.
 - [x] Controller receive/control is separated from symbolization and rendering; stale render windows are bounded and reported.
 - [x] Worker pipe handles are overlapped, window transmission checks the control pipe between messages, and each write has a bounded deadline.
+- [x] Normal renderer drain deadlines report incomplete output, count active/queued unfinished windows, and make `top` fail rather than silently succeed.
+- [x] The production renderer queue has regression coverage for stalled output, normal completion, and exception propagation; detached work retains ownership until it returns.
+- [x] Field truncation updates `incomplete` together with `metadata_dropped`.
 
 Remaining manual hardening: slow symbol-server behavior, controller symbolizer
 crash injection, and real multi-token UAC boundaries still require a
@@ -123,7 +126,7 @@ counters.
 
 ### ANA-01: Correlate wait intervals with stacks
 
-**Status: implemented; acceptance remains pending after review-4392026 re-validation.**
+**Status: implementation and focused regressions complete; real scheduler-stack workload acceptance pending.**
 
 Implemented:
 
@@ -132,10 +135,14 @@ Implemented:
 - [x] Replay attaches scheduler-event stacks from exact StackWalk keys and records exact/missing/ambiguous quality.
 - [x] A cross-CPU blocked/ready state machine uses CSwitch contract `tid=incoming` and `related_tid=outgoing`, and handles wakeups, duplicate ready events, TID lifetimes, migration, eviction, and truncated boundaries.
 - [x] Wakeup stacks are retained separately and are never assigned as the blocked thread's stack.
+- [x] Wakeup PID/TID, process/thread lifetime, and stack identity participate in grouping; JSON/CSV retain separate wakeup sources and resolve frames in the waking process.
 - [x] `report --off-cpu` supports text, JSON, CSV, and duration-weighted folded output; folded counts are nanoseconds and inferred boundaries are excluded by default.
 - [x] Aggregation keys include process instance, thread instance, module identity, and module-relative address; symbols resolve at the interval/wakeup timestamp.
 - [x] Relative `--time-start`/`--time-end` crop crossing intervals; `--include-children` and `--scope user|kernel` are honored.
 - [x] Off-CPU JSON/CSV expose confirmed versus truncated duration and boundary status; `--off-cpu-include-inferred` is opt-in.
+- [x] A confirmed switch-out-to-ReadyThread blocked interval stays confirmed even if the following ready tail is truncated at capture end.
+- [x] ReadyThread validates the target lifetime before reusing pending state, preserving a new ready interval after TID reuse.
+- [x] Both blocked and ready stacks resolve at the original stack capture time, preserving module identity across reloads.
 - [x] Off-CPU reports run the same lost-event and missing-stack quality gates as CPU reports; strict quality also rejects truncated or evicted intervals.
 - [x] Synthetic regression coverage verifies blocked/ready separation, wakeup identity, interval weights, stack retention, instance/module-aware aggregation, boundary status, relative-time cropping, and selectors.
 - [x] `report --stream` remains explicitly unsupported for off-CPU because streaming does not retain stacks.
@@ -143,6 +150,13 @@ Implemented:
 Remaining manual validation: real scheduler-stack ETLs from supported Windows
 builds, controlled Sleep/lock/event/I/O workloads, interrupted captures, and
 hardware acceptance evidence.
+
+The five findings from the `6e6831d` re-validation are now represented by
+production regressions in `tests/regression_tests.cpp`: confirmed blocked
+endpoints, reused-TID ready state, distinct wakeup sources, renderer drain
+failure, and truncated-window quality. This records code-level completion;
+manual/hardware tasks above remain open. The two local review reports are
+removed after validation; this TODO retains their actionable conclusions.
 
 ## 7. JIT symbol support
 

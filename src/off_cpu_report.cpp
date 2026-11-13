@@ -27,6 +27,10 @@ struct OffCpuRow {
     uint32_t tid = 0;
     uint64_t process_start_ns = 0;
     uint64_t thread_start_ns = 0;
+    uint32_t wakeup_pid = UINT32_MAX;
+    uint32_t wakeup_tid = 0;
+    uint64_t wakeup_process_start_ns = 0;
+    uint64_t wakeup_thread_start_ns = 0;
     uint32_t wait_reason = 0;
     uint64_t duration_ns = 0;
     uint32_t intervals = 0;
@@ -51,7 +55,11 @@ bool IsKernelAddress(uint64_t address, uint32_t pointer_size) {
 }
 
 StackQuality WorseQuality(StackQuality left, StackQuality right) {
-    return static_cast<uint32_t>(left) >= static_cast<uint32_t>(right) ? left : right;
+    if (left == StackQuality::Missing || right == StackQuality::Missing)
+        return StackQuality::Missing;
+    if (left == StackQuality::Approximate || right == StackQuality::Approximate)
+        return StackQuality::Approximate;
+    return StackQuality::Exact;
 }
 
 std::wstring JsonEscape(const std::wstring& value) {
@@ -237,13 +245,23 @@ void AppendKeyPart(std::wostringstream& key, const std::wstring& value) {
 }
 
 std::wstring RowKey(const OffCpuInterval& interval,
-                    const std::vector<ResolvedFrame>& stack) {
+                    const std::vector<ResolvedFrame>& stack,
+                    const std::vector<ResolvedFrame>& wakeup_stack) {
     std::wostringstream key;
     key << static_cast<uint32_t>(interval.kind) << L'|' << interval.pid << L'|'
         << interval.process_start_ns << L'|' << interval.tid << L'|'
         << interval.thread_start_ns << L'|' << interval.wait_reason << L'|'
-        << (interval.boundary_inferred ? 1 : 0) << L'|';
+        << (interval.boundary_inferred ? 1 : 0) << L'|' << stack.size() << L'|';
     for (const ResolvedFrame& frame : stack) {
+        AppendKeyPart(key, frame.module_identity.empty()
+                               ? HexAddress(frame.address)
+                               : frame.module_identity);
+        key << std::hex << frame.rva << std::dec << L'|';
+    }
+    key << interval.wakeup_pid << L'|' << interval.wakeup_process_start_ns << L'|'
+        << interval.wakeup_tid << L'|' << interval.wakeup_thread_start_ns << L'|'
+        << wakeup_stack.size() << L'|';
+    for (const ResolvedFrame& frame : wakeup_stack) {
         AppendKeyPart(key, frame.module_identity.empty()
                                ? HexAddress(frame.address)
                                : frame.module_identity);
@@ -259,6 +277,18 @@ std::wstring StackText(const std::vector<ResolvedFrame>& frames) {
         text += FrameDisplay(frames[index]);
     }
     return text;
+}
+
+void WriteFramesJson(const std::vector<ResolvedFrame>& frames, std::wostream& output) {
+    for (size_t index = 0; index < frames.size(); ++index) {
+        if (index != 0) output << L',';
+        const ResolvedFrame& frame = frames[index];
+        output << L"{\"address\":" << frame.address
+               << L",\"module\":\"" << JsonEscape(frame.module)
+               << L"\",\"module_identity\":\"" << JsonEscape(frame.module_identity)
+               << L"\",\"rva\":" << frame.rva
+               << L",\"symbol\":\"" << JsonEscape(frame.symbol) << L"\"}";
+    }
 }
 
 }  // namespace
@@ -292,9 +322,11 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
         const std::vector<uint64_t> raw_stack = interval.stack.View();
         std::vector<ResolvedFrame> stack;
         stack.reserve(raw_stack.size());
+        const uint64_t stack_time = interval.stack_timestamp_ns == 0
+                                        ? interval.start_ns : interval.stack_timestamp_ns;
         for (uint64_t address : raw_stack) {
             stack.push_back(DescribeFrame(trace, symbolizer, interval.pid, address,
-                                          interval.start_ns));
+                                          stack_time));
         }
         const ResolvedFrame leaf =
             stack.empty()
@@ -312,16 +344,20 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                                          : interval.wakeup_timestamp_ns;
         for (uint64_t address : raw_wakeup) {
             wakeup_stack.push_back(
-                DescribeFrame(trace, symbolizer, interval.pid, address, wakeup_time));
+                DescribeFrame(trace, symbolizer, interval.wakeup_pid, address, wakeup_time));
         }
 
-        const std::wstring key = RowKey(interval, stack);
+        const std::wstring key = RowKey(interval, stack, wakeup_stack);
         auto& row = grouped[key];
         row.kind = interval.kind;
         row.pid = interval.pid;
         row.tid = interval.tid;
         row.process_start_ns = interval.process_start_ns;
         row.thread_start_ns = interval.thread_start_ns;
+        row.wakeup_pid = interval.wakeup_pid;
+        row.wakeup_tid = interval.wakeup_tid;
+        row.wakeup_process_start_ns = interval.wakeup_process_start_ns;
+        row.wakeup_thread_start_ns = interval.wakeup_thread_start_ns;
         row.wait_reason = interval.wait_reason;
         row.duration_ns += duration_ns;
         ++row.intervals;
@@ -409,21 +445,18 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                 output << row.stack[index].address;
             }
             output << L"],\"stack_frames\":[";
-            for (size_t index = 0; index < row.stack.size(); ++index) {
-                if (index != 0) output << L',';
-                const ResolvedFrame& frame = row.stack[index];
-                output << L"{\"address\":" << frame.address
-                       << L",\"module\":\"" << JsonEscape(frame.module)
-                       << L"\",\"module_identity\":\""
-                       << JsonEscape(frame.module_identity)
-                       << L"\",\"rva\":" << frame.rva
-                       << L",\"symbol\":\"" << JsonEscape(frame.symbol) << L"\"}";
-            }
-            output << L"],\"wakeup_stack\":[";
+            WriteFramesJson(row.stack, output);
+            output << L"],\"wakeup_pid\":" << row.wakeup_pid
+                   << L",\"wakeup_tid\":" << row.wakeup_tid
+                   << L",\"wakeup_process_start_ns\":" << row.wakeup_process_start_ns
+                   << L",\"wakeup_thread_start_ns\":" << row.wakeup_thread_start_ns
+                   << L",\"wakeup_stack\":[";
             for (size_t index = 0; index < row.wakeup_stack.size(); ++index) {
                 if (index != 0) output << L',';
                 output << row.wakeup_stack[index].address;
             }
+            output << L"],\"wakeup_stack_frames\":[";
+            WriteFramesJson(row.wakeup_stack, output);
             output << L"]}";
         }
         output << L"\n]\n";
@@ -434,7 +467,8 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
         output << L"kind,pid,process_start_ns,tid,thread_start_ns,comm,duration_ns,"
                   L"confirmed_duration_ns,inferred_duration_ns,intervals,"
                   L"inferred_intervals,boundary,overhead,wait_reason,stack_quality,"
-                  L"stack_missing,stack_ambiguous,stack\n";
+                  L"stack_missing,stack_ambiguous,stack,wakeup_pid,wakeup_tid,"
+                  L"wakeup_process_start_ns,wakeup_thread_start_ns,wakeup_stack\n";
         for (const OffCpuRow& row : rows) {
             const double percent = total_ns == 0 ? 0.0 : 100.0 * row.duration_ns / total_ns;
             if (percent < options.percent_limit) continue;
@@ -450,7 +484,10 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                    << row.wait_reason << L',' << StackQualityName(row.quality) << L','
                    << (row.stack_missing ? L"true" : L"false") << L','
                    << (row.stack_ambiguous ? L"true" : L"false") << L','
-                   << CsvEscape(StackText(row.stack)) << L'\n';
+                   << CsvEscape(StackText(row.stack)) << L',' << row.wakeup_pid
+                   << L',' << row.wakeup_tid << L',' << row.wakeup_process_start_ns
+                   << L',' << row.wakeup_thread_start_ns << L','
+                   << CsvEscape(StackText(row.wakeup_stack)) << L'\n';
         }
         return;
     }
@@ -472,7 +509,7 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
            << std::setw(8) << L"TID" << std::setw(22) << L"Command"
            << std::right << std::setw(13) << L"WaitMs" << std::setw(10)
            << L"Percent" << std::setw(9) << L"Reason" << std::setw(12)
-           << L"Boundary" << L"  Stack\n";
+           << L"Boundary" << std::setw(18) << L"Waker PID/TID" << L"  Stack\n";
     for (const OffCpuRow& row : rows) {
         const double percent = total_ns == 0 ? 0.0 : 100.0 * row.duration_ns / total_ns;
         if (percent < options.percent_limit) continue;
@@ -490,7 +527,10 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                << static_cast<double>(row.duration_ns) / 1000000.0
                << std::setw(9) << std::setprecision(2) << percent << L"%  "
                << std::left << std::setw(12) << ReasonName(row)
-               << std::setw(12) << BoundaryName(row.boundary_inferred) << L"  "
+               << std::setw(12) << BoundaryName(row.boundary_inferred)
+               << std::setw(18) << (row.wakeup_tid == 0 ? L"-"
+                     : std::to_wstring(row.wakeup_pid) + L"/" + std::to_wstring(row.wakeup_tid))
+               << L"  "
                << StackText(row.stack) << L"\n";
     }
 }

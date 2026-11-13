@@ -132,6 +132,10 @@ struct OffCpuInterval {
     uint32_t wait_reason = 0;
     uint64_t process_start_ns = 0;
     uint64_t thread_start_ns = 0;
+    uint64_t stack_timestamp_ns = 0;
+    uint32_t wakeup_pid = UINT32_MAX;
+    uint64_t wakeup_process_start_ns = 0;
+    uint64_t wakeup_thread_start_ns = 0;
     uint64_t wakeup_timestamp_ns = 0;
     OffCpuKind kind = OffCpuKind::Blocked;
     SharedStack stack;

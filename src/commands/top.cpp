@@ -3,26 +3,18 @@
 #include "commands/help.h"
 #include "commands/live_control.h"
 #include "commands/util.h"
-#include "archive.h"
+#include "top_renderer.h"
 #include "common.h"
-#include "cpu_report.h"
 #include "live_data.h"
 #include "symbolizer.h"
 #include "elevation.h"
 
-#include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cmath>
-#include <condition_variable>
-#include <deque>
 #include <memory>
-#include <mutex>
-#include <thread>
 #include <iostream>
 #include <filesystem>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -42,200 +34,6 @@ BOOL WINAPI LiveTopControlHandler(DWORD control_type) {
     }
     return FALSE;
 }
-
-void BeginTopRender() {
-    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD mode = 0;
-    if (output != INVALID_HANDLE_VALUE && GetConsoleMode(output, &mode)) {
-        if ((mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0 ||
-            SetConsoleMode(output, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-            std::wcout << L"\x1b[2J\x1b[H";
-            return;
-        }
-    }
-    std::wcout << L"\n===== wperf top =====\n";
-}
-
-bool RenderTopWindow(TraceData& trace, Symbolizer& symbolizer,
-                     const std::filesystem::path& archive_directory,
-                     const std::optional<uint32_t>& pid,
-                     const std::wstring& sort_field, double percent_limit,
-                     const std::wstring& profile_source, uint64_t interval_ms,
-                     std::wstring* error) {
-    if (!archive_directory.empty() &&
-        !LoadArchiveModules(archive_directory, trace, error)) {
-        return false;
-    }
-    symbolizer.PrepareTrace(trace, true);
-    for (const auto& image : trace.images) {
-        symbolizer.AddModule(image);
-    }
-    CpuReportOptions report_options;
-    report_options.percent_limit = percent_limit;
-    if (!sort_field.empty()) {
-        report_options.sort_fields.push_back(sort_field);
-    }
-    if (pid.has_value()) {
-        report_options.pid = pid;
-    }
-    if (profile_source != L"cpu" && !trace.samples.empty()) {
-        report_options.profile_source = trace.samples.front().profile_source;
-    }
-    const uint64_t unattributed = static_cast<uint64_t>(
-        std::count_if(trace.samples.begin(), trace.samples.end(),
-                      [](const SampleRecord& sample) {
-                          return sample.pid == UINT32_MAX;
-                      }));
-    BeginTopRender();
-    std::wcout << L"wperf top  interval=" << interval_ms
-               << L"ms  samples=" << trace.quality.samples_total
-               << L"  events=" << trace.quality.events_total
-               << L"  unattributed=" << unattributed
-               << L"  unknown_events=" << trace.quality.unknown_events
-               << L"  metadata_dropped=" << trace.quality.metadata_dropped
-               << L"  pmc_samples=" << trace.quality.pmc_samples
-               << L"  lost=" << trace.quality.lost_events
-               << L"  lost_buffers=" << trace.quality.lost_buffers
-               << L"  ring_dropped=" << trace.quality.ring_dropped
-               << L"  incomplete=" << (trace.quality.incomplete ? 1 : 0) << L"\n";
-    if (trace.samples.empty()) {
-        std::wcout << L"No CPU samples in this interval.\n";
-    } else {
-        WriteCpuReport(trace, symbolizer, report_options, std::wcout);
-    }
-    std::wcout.flush();
-    return true;
-}
-
-struct TopRenderJob {
-    TraceData trace;
-    uint64_t interval_ms = 0;
-};
-
-class AsyncTopRenderer {
-public:
-    AsyncTopRenderer(std::shared_ptr<Symbolizer> symbolizer,
-                     std::filesystem::path archive_directory,
-                     std::optional<uint32_t> pid, std::wstring sort_field,
-                     double percent_limit, std::wstring profile_source)
-        : state_(std::make_shared<State>()) {
-        state_->symbolizer = std::move(symbolizer);
-        state_->archive_directory = std::move(archive_directory);
-        state_->pid = pid;
-        state_->sort_field = std::move(sort_field);
-        state_->percent_limit = percent_limit;
-        state_->profile_source = std::move(profile_source);
-        std::shared_ptr<State> state = state_;
-        thread_ = std::thread([state] { Run(std::move(state)); });
-    }
-
-    ~AsyncTopRenderer() { Close(false, 0); }
-
-    AsyncTopRenderer(const AsyncTopRenderer&) = delete;
-    AsyncTopRenderer& operator=(const AsyncTopRenderer&) = delete;
-
-    void Push(TraceData trace, uint64_t interval_ms) {
-        {
-            std::lock_guard<std::mutex> lock(state_->mutex);
-            if (state_->stopping) return;
-            if (state_->jobs.size() >= 2) {
-                state_->jobs.pop_front();
-                ++state_->dropped_windows;
-            }
-            state_->jobs.push_back({std::move(trace), interval_ms});
-        }
-        state_->wake.notify_one();
-    }
-
-    bool Failed(std::wstring* error) const {
-        std::lock_guard<std::mutex> lock(state_->mutex);
-        if (!state_->failed) return false;
-        if (error != nullptr) *error = state_->error;
-        return true;
-    }
-
-    uint64_t DroppedWindows() const {
-        std::lock_guard<std::mutex> lock(state_->mutex);
-        return state_->dropped_windows;
-    }
-
-    void Close(bool drain, uint32_t timeout_ms) {
-        {
-            std::lock_guard<std::mutex> lock(state_->mutex);
-            state_->stopping = true;
-            state_->drain = drain;
-            if (!drain) state_->jobs.clear();
-        }
-        state_->wake.notify_all();
-        if (!thread_.joinable()) return;
-
-        std::unique_lock<std::mutex> lock(state_->mutex);
-        const auto deadline = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds(timeout_ms);
-        if (state_->finished_cv.wait_until(
-                lock, deadline, [state = state_] { return state->finished; })) {
-            lock.unlock();
-            thread_.join();
-        } else {
-            lock.unlock();
-            thread_.detach();
-        }
-    }
-
-private:
-    struct State {
-        std::shared_ptr<Symbolizer> symbolizer;
-        std::filesystem::path archive_directory;
-        std::optional<uint32_t> pid;
-        std::wstring sort_field;
-        double percent_limit = 1.0;
-        std::wstring profile_source;
-        mutable std::mutex mutex;
-        std::condition_variable wake;
-        std::condition_variable finished_cv;
-        std::deque<TopRenderJob> jobs;
-        uint64_t dropped_windows = 0;
-        bool stopping = false;
-        bool drain = false;
-        bool failed = false;
-        bool finished = false;
-        std::wstring error;
-    };
-
-    static void Run(std::shared_ptr<State> state) {
-        while (true) {
-            TopRenderJob job;
-            {
-                std::unique_lock<std::mutex> lock(state->mutex);
-                state->wake.wait(lock, [&state] {
-                    return state->stopping || !state->jobs.empty();
-                });
-                if (state->stopping && (!state->drain || state->jobs.empty())) break;
-                job = std::move(state->jobs.front());
-                state->jobs.pop_front();
-            }
-            std::wstring error;
-            if (!RenderTopWindow(job.trace, *state->symbolizer,
-                                 state->archive_directory, state->pid,
-                                 state->sort_field, state->percent_limit,
-                                 state->profile_source, job.interval_ms, &error)) {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                state->failed = true;
-                state->error = std::move(error);
-                state->jobs.clear();
-                break;
-            }
-        }
-        {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            state->finished = true;
-        }
-        state->finished_cv.notify_all();
-    }
-
-    std::shared_ptr<State> state_;
-    std::thread thread_;
-};
 
 bool ParseExitCode(const std::wstring& line, int& code) {
     if (line.rfind(L"FINISHED ", 0) != 0) {
@@ -452,11 +250,19 @@ int RunTop(const std::vector<std::wstring>& arguments) {
     SetConsoleCtrlHandler(LiveTopControlHandler, FALSE);
     worker.Close();
     const bool interrupted = g_live_top_interrupted.load();
-    renderer.Close(exit_code == 0 && !interrupted, exit_code == 0 && !interrupted ? 30000 : 0);
-    if (renderer_failed() && exit_code == 0) exit_code = 5;
+    const bool drain = exit_code == 0 && !interrupted;
+    const bool rendered = renderer.Close(drain, drain ? 30000 : 0);
+    if (!rendered && drain) {
+        if (!renderer_failed()) {
+            PrintError(L"live top output is incomplete");
+            exit_code = 5;
+        }
+    } else if (exit_code == 0) {
+        renderer_failed();
+    }
     if (const uint64_t dropped = renderer.DroppedWindows(); dropped != 0) {
         std::wcerr << L"wperf: dropped " << dropped
-                   << L" stale top windows because rendering kept up poorly\n";
+                   << L" top windows that could not be rendered\n";
     }
     return exit_code;
 }

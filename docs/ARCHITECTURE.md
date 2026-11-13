@@ -14,6 +14,7 @@
   source line and in-memory symbol cache.
 - `live_top.*`: real-time ETW consumer and bounded sample/event rings.
 - `live_data.*`: versioned, size-bounded structured IPC windows for low-privilege controller-side analysis.
+- `top_renderer.*`: bounded asynchronous rendering, drain deadlines, and error propagation.
 - `off_cpu_report.*`: blocked/ready interval aggregation and folded report output.
 - `commands/`: CLI controllers, live worker protocol, reports and analysis.
 - `zydis`: optional static disassembly engine.
@@ -38,6 +39,10 @@
 - The worker validates the named-pipe server PID against the expected controller.
 - DbgHelp and formatting run outside the ETW callback and outside the controller receive loop.
 - A bounded asynchronous renderer consumes completed windows, so symbol lookup and output cannot block STOP processing.
+- A normal renderer drain timeout marks output incomplete and fails the command;
+  active and queued unfinished windows are counted. Rendering exceptions are
+  returned as errors. Shared render resources remain alive if cancellation or
+  the drain deadline lets capture cleanup finish before rendering returns.
 - Ctrl-C sends STOP, keeps draining control messages, waits for worker exit and cleans stale sessions if needed.
 - The elevated worker sends raw trace windows and metadata; the normal-integrity
   controller owns DbgHelp, PDB lookup, archive resolution, symbol caches,
@@ -60,7 +65,11 @@
   preemption are represented separately. End-of-capture closures retain a
   truncated boundary flag and are excluded from exact totals by default.
 - Off-CPU grouping uses process/thread instance starts plus module identity and
-  RVA, and resolves stacks at the original interval or wakeup timestamp.
+  RVA, and resolves waiter stacks at their actual capture timestamp. Wakeup
+  process/thread lifetimes and wakeup-frame identity split distinct sources;
+  wakeup frames resolve in the waking process at the wakeup timestamp.
+- ReadyThread checks pending lifetimes before updating state. A confirmed
+  blocked endpoint is independent of an unfinished ready tail.
 - PE timestamp/checksum and RSDS PDB GUID/age are validated before symbols are
   trusted.
 - PMC values are labeled sample-derived and are not presented as exact totals.

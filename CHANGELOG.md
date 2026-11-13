@@ -1,6 +1,8 @@
 # wperf Changelog
 
 ## 0.8.0.0
+- Preserved confirmed blocked time and reused-TID ready intervals; retained separate wakeup identities/stacks and original stack capture times in off-CPU reports.
+- Made live renderer drain deadlines and exceptions fail with incomplete-output diagnostics; field truncation now marks live windows incomplete.
 - Fixed CSwitch incoming/outgoing attribution, off-CPU instance/module-aware aggregation, truncated-boundary accounting, capture-relative interval cropping, and off-CPU quality gates found in review-4392026.
 - Bounded live IPC metadata and stack payloads, kept STOP reachable while symbols render, and added full controller decode/render live smoke coverage.
 - Moved live-top DbgHelp, PDB, archive, symbol cache and formatting into the ordinary-permission controller using bounded structured IPC.

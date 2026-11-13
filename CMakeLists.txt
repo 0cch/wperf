@@ -74,6 +74,7 @@ add_library(wperf_core STATIC
     src/etl_reader.cpp
     src/live_top.cpp
     src/live_data.cpp
+    src/top_renderer.cpp
     src/commands/live_control.cpp
     src/symbolizer.cpp
     src/cpu_report.cpp
