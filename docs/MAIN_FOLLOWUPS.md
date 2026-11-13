@@ -79,8 +79,9 @@ CI sets `WPERF_REQUIRE_LIVE_TESTS=1`, so access denial or empty capture fails.
 The portable regression also tests the teardown watchdog, raw payload mutation,
 streaming a real checked-in ETL, inline/cache and verified archive replay.
 
-Issue #3's decoder/cache/inline implementation can be assessed from these
-regressions. Issue #4 also requires the elevated CI integration to pass.
+Issue #3's decoder/cache/inline regressions and Issue #4's mandatory elevated
+integration passed in both CI configurations at `10825e8` (37/37 each):
+https://github.com/0cch/wperf/actions/runs/43410931662 . Both issues are closed.
 Issue #5 still requires supported Intel LBR, PMC calibration and context-register
 integration on target hardware; implementing configuration and decoders does
 not satisfy those acceptance conditions by itself.
