@@ -1,6 +1,9 @@
 # wperf Changelog
 
-## Unreleased
+## 0.8.0.0
+- Added native `report -o FILE` output with UTF-8/LF folded stacks and removed the FlameGraph wrapper script.
+- Added tag-driven GitHub release builds with four-part `vMAJOR.MINOR.PATCH.BUILD` versions.
+- Removed duplicated M1-M7 smoke steps and scripts; focused CTest coverage is now authoritative.
 - Added unknown-period and full-identity aggregation fixes, inline expansion, dedicated symcache and epoch-aware stack references.
 - Added verified archive loading, sample streaming, PMC event snapshots, report selectors, scheduler/I/O quantiles and function heat.
 - Moved lifecycle work out of the ETW callback lock, added managed budgets, early recovery checkpoints and owned-worker teardown deadlines.
@@ -28,7 +31,7 @@
 - Added process-rooted, percent-filtered FlameGraph folded stacks.
 - Fixed `script` text/CSV headers, CSV quoting and `--symbol-path` handling.
 - Added concise quality diagnostics with `--quiet` and `--verbose`.
-- Added a Windows-safe FlameGraph wrapper that writes UTF-8/LF folded stacks.
+- Added a Windows-safe UTF-8/LF folded-stack workflow.
 - Added CLI and folded-stack regression tests.
 
 ## 0.6.0

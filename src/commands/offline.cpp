@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -748,6 +749,7 @@ void WriteIoSummary(const TraceData& trace, bool json) {
 
 int RunReport(const std::vector<std::wstring>& arguments) {
     std::filesystem::path input;
+    std::filesystem::path output_path;
     std::wstring symbol_path;
     std::filesystem::path archive_directory;
     std::wstring kind;
@@ -767,6 +769,12 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                 return 2;
             }
             input = arguments[++index];
+        } else if (argument == L"-o" || argument == L"--output") {
+            if (index + 1 >= arguments.size()) {
+                PrintError(L"--output requires a path");
+                return 2;
+            }
+            output_path = arguments[++index];
         } else if(argument==L"--include-children") {
             report_options.include_children=true;
         } else if(argument==L"--cpu") {
@@ -951,6 +959,11 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         PrintError(L"report requires -i FILE");
         return 2;
     }
+    if (!output_path.empty() &&
+        ((!kind.empty() && kind != L"cpu") || stream || metadata)) {
+        PrintError(L"--output currently supports CPU report output without --stream or --metadata");
+        return 2;
+    }
     if (!kind.empty() && kind != L"cpu" && kind != L"io" && kind != L"pmc") {
         PrintError(L"unsupported report kind: " + kind);
         return 2;
@@ -1070,7 +1083,28 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         });
         if(metadata) { std::wcout<<L"{\"quality\":"; WriteQualityJson(trace,std::wcout); std::wcout<<L",\"rows\":"; }
         std::wcout<<result.str();
-    } else WriteCpuReport(trace, symbolizer, report_options, std::wcout);
+    } else if (!output_path.empty()) {
+        std::wostringstream result;
+        WriteCpuReport(trace, symbolizer, report_options, result);
+        std::filesystem::path destination = output_path;
+        if (destination.is_relative()) {
+            destination = std::filesystem::absolute(destination);
+        }
+        if (!destination.parent_path().empty() &&
+            !EnsureDirectory(destination.parent_path(), &error)) {
+            PrintError(error);
+            return 9;
+        }
+        std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+        const std::string utf8 = ToUtf8(result.str());
+        output.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+        if (!output) {
+            PrintError(L"cannot write report output: " + destination.wstring());
+            return 9;
+        }
+    } else {
+        WriteCpuReport(trace, symbolizer, report_options, std::wcout);
+    }
     if (metadata) std::wcout << L"}\n";
     const bool exceeds_loss=maximum_lost&&trace.quality.lost_events>*maximum_lost;
     const bool exceeds_missing=maximum_missing&&trace.quality.samples_without_stack>*maximum_missing;

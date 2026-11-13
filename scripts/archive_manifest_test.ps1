@@ -18,4 +18,4 @@ $manifest = Get-Content (Join-Path $output 'manifest.json') -Raw | ConvertFrom-J
 if ($manifest.entries.Count -eq 0) {
     throw 'archive manifest has no entries'
 }
-Write-Output "archive smoke: PASS ($($manifest.entries.Count) modules)"
+Write-Output "archive manifest test: PASS ($($manifest.entries.Count) modules)"

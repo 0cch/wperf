@@ -21,7 +21,7 @@ produces no corresponding events returns unavailable (exit 5).
 ## Reports
 
 ```powershell
-wperf report -i FILE [--kind cpu|io] [-p PID] [-t TID]
+wperf report -i FILE [-o FILE] [--kind cpu|io] [-p PID] [-t TID]
              [--comm TEXT] [--dso TEXT] [--symbol TEXT]
              [--percent-limit N] [-s FIELD]
              [-g [caller|callee]] [--folded|--collapsed]
@@ -56,18 +56,18 @@ git clone --depth 1 https://github.com/brendangregg/FlameGraph.git artifacts\Fla
 Generate collapsed stacks and render them with an external FlameGraph tool:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\flamegraph.ps1 `
-  -InputFile cpu.etl `
-  -SymbolPath .\build\Release `
-  -ProcessId 1234 `
-  -PercentLimit 0.5 `
-  -OutputFile flamegraph.svg
+wperf report -i cpu.etl `
+  --symbol-path .\build\Release `
+  --pid 1234 `
+  --folded --percent-limit 0.5 --quiet `
+  -o stacks.folded
+
+perl flamegraph.pl stacks.folded > flamegraph.svg
 ```
 
-The helper writes UTF-8 without BOM and LF line endings, then invokes the
-official `flamegraph.pl`. This avoids CRLF being included in the sample-count
-field by Perl implementations on Windows. Set `FLAMEGRAPH_PL` or pass
-`-FlameGraphScript` when the script is stored elsewhere.
+`report -o` writes UTF-8 without BOM and LF line endings directly. This avoids
+CRLF being included in the sample-count field by Perl implementations on
+Windows, without a wrapper script.
 
 `--collapsed` is an alias for `--folded`. `--percent-limit` applies to folded
 stacks as well as table, CSV and JSON reports. Use `--pid` to isolate a process

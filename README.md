@@ -47,7 +47,7 @@ wperf --version
 wperf doctor
 wperf record --elevate --duration 3000 -o trace.etl
 wperf report -i trace.etl --symbol-path .\build\Release --call-graph
-wperf report -i trace.etl --symbol-path .\build\Release --folded --quiet > stacks.folded
+wperf report -i trace.etl --symbol-path .\build\Release --folded --quiet -o stacks.folded
 wperf top --elevate --interval 1000
 wperf trace --live --elevate -e sched --duration 5000
 wperf annotate -i trace.etl --limit 20 --disasm
@@ -68,15 +68,14 @@ examples. FlameGraph-compatible collapsed stacks are produced by
 release.
 
 ```powershell
-pwsh -NoProfile -File .\scripts\flamegraph.ps1 `
-  -InputFile trace.etl `
-  -SymbolPath .\build\Release `
-  -OutputFile flamegraph.svg
+wperf report -i trace.etl --symbol-path .\build\Release `
+  --folded --quiet -o stacks.folded
+flamegraph.pl stacks.folded > flamegraph.svg
 ```
 
-The helper writes UTF-8/LF folded stacks before invoking the official
-Brendan Gregg `flamegraph.pl`. Set `FLAMEGRAPH_PL` or pass
-`-FlameGraphScript` if the script is not in `artifacts\FlameGraph`.
+`report -o` writes UTF-8 without BOM and LF line endings directly, so the
+folding step requires no wrapper script. SVG rendering still uses the external
+Brendan Gregg `flamegraph.pl`.
 
 ## Documentation
 

@@ -49,6 +49,7 @@ Produce a perf-style CPU profile report from an ETL trace.
 
 Options:
   -i, --input FILE          Read FILE.
+  -o, --output FILE         Write the selected report format to FILE.
   -p, --pid PID             Include only PID.
   -t, --tid TID             Include only TID.
   --comm TEXT               Filter by process name substring.
@@ -65,7 +66,6 @@ Options:
   --max-missing-stacks N    Maximum acceptable missing-stack count.
   --exact-stacks            Include only exact stack correlations.
   --stream                  Two-pass CPU table; omits stacks and retains no samples.
-  --archive DIR             Load verified binaries/PDBs from an archive.
   --include-children        Include descendants of --pid.
   --cpu N                   Select processor index.
   --time-start MS           Select samples after capture-relative time.
@@ -81,10 +81,10 @@ Options:
   -h, --help                Show this help.
 
 Flame graph workflow (SVG rendering is external for now):
-  pwsh -File scripts\flamegraph.ps1 -InputFile cpu.etl `
-    -SymbolPath .\symbols -OutputFile flamegraph.svg
+  wperf report -i cpu.etl --symbol-path .\symbols --folded --quiet -o stacks.folded
+  flamegraph.pl stacks.folded > flamegraph.svg
 
-The helper writes UTF-8/LF folded stacks before invoking flamegraph.pl.
+`-o` writes UTF-8 without BOM and LF line endings directly from wperf.
 
 Notes:
   - Quality diagnostics are written to stderr.
@@ -93,7 +93,7 @@ Notes:
 
 Examples:
   wperf report -i cpu.etl --symbol-path .\build\Release --call-graph
-  wperf report -i cpu.etl --pid 1234 --folded --percent-limit 0.5 --quiet
+  wperf report -i cpu.etl --pid 1234 --folded --percent-limit 0.5 --quiet -o stacks.folded
 )";
 
 constexpr std::wstring_view kScriptHelp = LR"(Usage: wperf script -i FILE [options]
@@ -104,6 +104,7 @@ direct FlameGraph input; no stackcollapse-perf conversion is required.
 
 Options:
   -i, --input FILE          Read FILE.
+  -o, --output FILE         Write the selected report format to FILE.
   -p, --pid PID             Include only PID.
   -F, --fields LIST         Comma-separated fields (default:
                             timestamp,cpu,pid,tid,ip,comm,dso,symbol).
@@ -340,7 +341,7 @@ void PrintGeneralHelp() {
         << L"  --folded      Emit collapsed stacks for FlameGraph tools (alias: --collapsed)\n"
         << L"  --csv|--json  Machine-readable output (mutually exclusive)\n\n"
         << L"Flame graph:\n"
-        << L"  wperf report -i trace.etl --symbol-path DIR --folded > stacks.folded\n"
+        << L"  wperf report -i trace.etl --symbol-path DIR --folded --quiet -o stacks.folded\n"
         << L"  flamegraph.pl stacks.folded > flamegraph.svg\n\n"
         << L"Run \"wperf help <command>\" for complete options and examples.\n";
 }

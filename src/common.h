@@ -33,7 +33,10 @@ private:
     std::thread thread_;
 };
 
-inline constexpr wchar_t kVersion[] = L"0.7.1";
+#ifndef WPERF_VERSION_STRING
+#define WPERF_VERSION_STRING "0.0.0.0"
+#endif
+inline constexpr wchar_t kVersion[] = L"" WPERF_VERSION_STRING;
 inline constexpr wchar_t kToolName[] = L"wperf";
 
 std::string ToUtf8(std::wstring_view value);

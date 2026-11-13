@@ -1,7 +1,11 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = "Release",
-    [string]$OutputDirectory = ""
+    [string]$OutputDirectory = "",
+    [string]$VersionMajor = "0",
+    [string]$VersionMinor = "8",
+    [string]$VersionPatch = "0",
+    [string]$BuildNumber = "0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,10 +14,28 @@ $build = Join-Path $repo "build"
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $repo "dist"
 }
-$cmake = "C:\Program Files\CMake\bin\cmake.exe"
-$ctest = "C:\Program Files\CMake\bin\ctest.exe"
+$cmake = (Get-Command cmake.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+$ctest = (Get-Command ctest.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+if ([string]::IsNullOrWhiteSpace($cmake)) {
+    $cmake = "C:\Program Files\CMake\bin\cmake.exe"
+}
+if ([string]::IsNullOrWhiteSpace($ctest)) {
+    $ctest = "C:\Program Files\CMake\bin\ctest.exe"
+}
+$fullVersion = "$VersionMajor.$VersionMinor.$VersionPatch.$BuildNumber"
+Write-Host "Building wperf $fullVersion"
 
-& $cmake -S $repo -B $build -G "Visual Studio 17 2022" -A x64
+$configureArguments = @(
+    "-S", $repo,
+    "-B", $build,
+    "-G", "Visual Studio 17 2022",
+    "-A", "x64",
+    "-DWPERF_VERSION_MAJOR=$VersionMajor",
+    "-DWPERF_VERSION_MINOR=$VersionMinor",
+    "-DWPERF_VERSION_PATCH=$VersionPatch",
+    "-DWPERF_BUILD_NUMBER=$BuildNumber"
+)
+& $cmake @configureArguments
 if ($LASTEXITCODE -ne 0) { throw "configure failed" }
 & $cmake --build $build --config $Configuration --parallel
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
@@ -45,12 +67,8 @@ foreach ($doc in @("USAGE.md", "ARCHITECTURE.md", "SECURITY.md", "COMPATIBILITY.
     }
 }
 
-$scriptsOutput = Join-Path $OutputDirectory "scripts"
-New-Item -ItemType Directory -Force -Path $scriptsOutput | Out-Null
-Copy-Item -LiteralPath (Join-Path $repo "scripts\flamegraph.ps1") `
-    -Destination (Join-Path $scriptsOutput "flamegraph.ps1") -Force
-
-$version = (& $outputExe --version) -join " "
+$versionOutput = (& $outputExe --version) -join " "
+$version = $versionOutput -replace '^wperf\s+', ''
 $commit = (git -C $repo rev-parse HEAD).Trim()
 $builtAt = (Get-Date).ToString('o')
 

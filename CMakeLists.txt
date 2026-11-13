@@ -1,6 +1,19 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(wperf VERSION 0.7.1 LANGUAGES CXX)
+set(WPERF_VERSION_MAJOR 0 CACHE STRING "wperf major version")
+set(WPERF_VERSION_MINOR 8 CACHE STRING "wperf minor version")
+set(WPERF_VERSION_PATCH 0 CACHE STRING "wperf patch version")
+set(WPERF_BUILD_NUMBER 0 CACHE STRING "wperf build number")
+foreach(part WPERF_VERSION_MAJOR WPERF_VERSION_MINOR WPERF_VERSION_PATCH WPERF_BUILD_NUMBER)
+    set(version_value "${${part}}")
+    if(NOT version_value MATCHES "^[0-9]+$")
+        message(FATAL_ERROR "${part} must be a non-negative integer")
+    endif()
+endforeach()
+set(WPERF_VERSION_BASE "${WPERF_VERSION_MAJOR}.${WPERF_VERSION_MINOR}.${WPERF_VERSION_PATCH}")
+set(WPERF_VERSION_STRING "${WPERF_VERSION_BASE}.${WPERF_BUILD_NUMBER}")
+
+project(wperf VERSION ${WPERF_VERSION_BASE} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,6 +84,7 @@ target_compile_definitions(wperf_core PUBLIC
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     _WIN32_WINNT=0x0A00
+    WPERF_VERSION_STRING="${WPERF_VERSION_STRING}"
 )
 target_compile_options(wperf_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi tdh ole32)
@@ -105,6 +119,7 @@ add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
 add_executable(wperf_regression_tests tests/regression_tests.cpp)
 target_compile_options(wperf_regression_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
+
 target_compile_definitions(wperf_regression_tests PRIVATE WPERF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 add_test(NAME wperf_regression_tests COMMAND wperf_regression_tests)
 set_tests_properties(wperf_regression_tests PROPERTIES TIMEOUT 20)
@@ -114,6 +129,7 @@ target_link_libraries(wperf_live_integration_tests PRIVATE wperf_core)
 add_test(NAME live_integration COMMAND wperf_live_integration_tests)
 set_tests_properties(live_integration PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS integration)
 add_test(NAME cli_version COMMAND wperf --version)
+add_test(NAME cli_version_format COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/version_test.ps1 -Wperf $<TARGET_FILE:wperf>)
 add_test(NAME cli_list COMMAND wperf list)
 add_test(NAME cli_doctor COMMAND wperf doctor)
 add_test(NAME cli_doctor_help COMMAND wperf doctor --help)
@@ -132,6 +148,7 @@ add_test(NAME cli_record_help COMMAND wperf record --help)
 add_test(NAME cli_report_io COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io)
 add_test(NAME cli_report_io_json COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io --json)
 add_test(NAME cli_folded_fixture COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --folded --percent-limit 5)
+add_test(NAME cli_folded_output COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/folded_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
 add_test(NAME cli_report_conflicting_formats COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
 add_test(NAME cli_annotate_conflicting_formats COMMAND wperf annotate -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
 add_test(NAME cli_sched_fixture COMMAND wperf sched -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)
@@ -140,7 +157,7 @@ add_test(NAME cli_script_fixture COMMAND wperf script -i ${CMAKE_CURRENT_SOURCE_
 add_test(NAME cli_script_csv COMMAND wperf script -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --limit 3 -F timestamp,pid,comm,symbol --csv)
 add_test(NAME cli_script_missing_value COMMAND wperf script -i)
 add_test(NAME cli_trace_missing_value COMMAND wperf trace -e)
-add_test(NAME archive_manifest_smoke COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/archive_smoke.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
+add_test(NAME archive_manifest_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/archive_manifest_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
 add_test(NAME cli_provider_list COMMAND wperf list providers --max 1)
 add_test(NAME cli_provider_bad_guid COMMAND wperf record --provider not-a-guid)
 add_test(NAME replay_contract COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/replay_contract.ps1

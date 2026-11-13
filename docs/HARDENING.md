@@ -78,10 +78,10 @@ live snapshot are unloaded. Offline traces are still materialized in memory;
 large-file streaming and stack interning remain future work.
 
 Hardware PMC/LBR behavior, OS/CPU/VBS combinations and sampling perturbation
-need an elevated hardware runner. M6 now distinguishes skipped hardware
-checks from passed checks and fails advertised PMC sources that produce no
-usable events. The soak script records both controller and live worker memory,
-handles and CPU time.
+need an elevated hardware runner. Live integration distinguishes skipped
+hardware checks from passed checks and fails advertised PMC sources that
+produce no usable events. The soak script records both controller and live
+worker memory, handles and CPU time.
 
 New analysis features such as off-CPU flame graphs, scheduler runtime totals,
 I/O pathname correlation, JIT maps and full-function annotate are outside this

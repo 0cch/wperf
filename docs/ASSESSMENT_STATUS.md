@@ -63,7 +63,7 @@ unknown_sample_period=0 later_trace_interval=2000000 weight_applied=2000000
 | 含丢失事件的真实 ETL / parser fuzz | 未完成：现有 golden loss 均为 0；容量淘汰合成测试不等于 ETW loss 测试；截断文件测试不等于 fuzz |
 | PMC query 恒真断言 | 已替换为 processor/owner type/session capacity 检查；真实硬件查询语义仍待验证 |
 | live test 接受 access denied | 仍存在；普通 CI 不能因此证明完成了 live capture |
-| 硬件失败也输出 PASS | M6 的 advertised PMC 失败已改为失败；但 CI 仍 SkipRecord，LBR 的通用失败仍可能被记成 SKIP，不能证明支持状态已严格区分 |
+| 硬件失败也输出 PASS | M6 的 advertised PMC 失败已改为失败；CI 使用 live integration 和 `WPERF_REQUIRE_LIVE_TESTS=1`，但 LBR 的通用失败仍可能被记成 SKIP |
 | soak 只监控 controller | 脚本已同时记录 worker/controller 的 memory/handles/CPU；本轮没有新的长时间 soak 结果 |
 | Intel/AMD、OS、VBS/HVCI、WOW64/多 processor group 矩阵 | 未完成；当前只是本机普通权限和 synthetic/replay 验证 |
 
@@ -82,7 +82,7 @@ unknown_sample_period=0 later_trace_interval=2000000 weight_applied=2000000
 ## 已有验证及下一步
 
 - 两种本地 Release 配置（有/无 Zydis）各 36/36 CTest 通过。
-- `256eb66` 的 GitHub push 与 PR CI 均成功；工作流仍是 replay/smoke 范围，没有硬件采集 runner。
+- GitHub push 与 PR CI 均成功；工作流已移除重复 smoke 脚本，改由 CTest 的 CLI、回放、archive、regression 和 live integration 测试覆盖。
 - 原 benchmark 的三轮交替报告中位数：8.963s → 1.045s；仅代表该 ETL 的报告路径。
 - 本次新建 probe 确认了上面的未知 period 和同名 DLL 合并行为。没有改动产品源码来隐藏这些剩余问题。
 

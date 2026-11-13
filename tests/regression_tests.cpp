@@ -10,6 +10,7 @@
 #include "analysis.h"
 #include "etl_reader.h"
 
+
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -245,6 +246,7 @@ void TestReadyHandshakeAndDisconnect() {
     Check(!client.IsConnected(), "broken pipe is detected even without pending messages");
 }
 
+#if defined(NDEBUG)
 __forceinline int InlineInner(volatile int* value,int index) { return *value+index*3; }
 __forceinline int InlineOuter(volatile int* value,int index) { return InlineInner(value,index)+*value*index; }
 __declspec(noinline) int InlineAnchor(int input) {
@@ -252,6 +254,8 @@ __declspec(noinline) int InlineAnchor(int input) {
     for(int i=0;i<40;++i)result+=InlineOuter(&value,i);
     return result;
 }
+#endif
+
 void TestPeriodsIdentityArchiveAndInline() {
     wperf::TraceData trace;
     trace.profile_interval_ns=2000000;
@@ -278,8 +282,10 @@ void TestPeriodsIdentityArchiveAndInline() {
     image.timestamp=identity.timestamp; image.checksum=identity.checksum;
     wperf::TraceData symbols_trace; symbols_trace.images.push_back(image);
     const auto directory=std::filesystem::temp_directory_path()/(L"wperf-symbols-"+wperf::NewId());
+    std::wstring error;
+#if defined(NDEBUG)
     const auto cache=directory/L"cache";
-    std::wstring error; uint64_t inline_address=0;
+    uint64_t inline_address=0;
     Check(InlineAnchor(17)!=0,"optimized inline fixture executes");
     {
         wperf::Symbolizer symbols; Check(symbols.Initialize(L"",&error,cache),"initialize isolated symcache"); symbols.AddModule(image);
@@ -302,6 +308,9 @@ void TestPeriodsIdentityArchiveAndInline() {
             Check(!restored.inline_frames.empty()&&symbols.Stats().cache_hits>0,"dedicated symcache restores inline context");
         }
     }
+#else
+    std::cout << "SKIP: inline PDB checks require an optimized build\n";
+#endif
     // Build a verified archive map whose recorded path no longer exists.
     const auto archived=directory/L"modules"/L"fixture.exe";
     wperf::EnsureDirectory(archived.parent_path(),nullptr);

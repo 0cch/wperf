@@ -39,21 +39,24 @@ rights.
 ## Validation
 
 ```powershell
-pwsh -NoProfile -File .\scripts\m1_smoke.ps1 -SkipRecord
-pwsh -NoProfile -File .\scripts\m2_smoke.ps1 -SkipRecord
-pwsh -NoProfile -File .\scripts\m4_smoke.ps1
-pwsh -NoProfile -File .\scripts\m5_smoke.ps1
-pwsh -NoProfile -File .\scripts\m6_smoke.ps1
-pwsh -NoProfile -File .\scripts\m7_smoke.ps1
+ctest --test-dir build -C Release --output-on-failure
 ```
+
+The CTest suite contains focused CLI, replay, archive, regression and live
+integration coverage. Live ETW tests return skip code 77 unless the process is
+elevated; CI sets `WPERF_REQUIRE_LIVE_TESTS=1` to turn an unexpected skip into a
+failure. The former M1-M7 smoke scripts duplicated these checks and are no
+longer part of the repository.
 
 FlameGraph integration requires an external `flamegraph.pl` and Perl:
 
 ```powershell
-pwsh -NoProfile -File .\scripts\flamegraph.ps1 `
-  -InputFile tests\data\cpu-stack.etl `
-  -SymbolPath .\build\Release `
-  -OutputFile artifacts\flamegraph.svg
+wperf report -i tests\data\cpu-stack.etl `
+  --symbol-path .\build\Release `
+  --folded --quiet -o artifacts\stacks.folded
+
+perl artifacts\FlameGraph\flamegraph.pl `
+  artifacts\stacks.folded > artifacts\flamegraph.svg
 ```
 
 Hardware-dependent tests must be run on the target CPU/OS combination.
