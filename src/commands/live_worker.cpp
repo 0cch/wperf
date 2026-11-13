@@ -2,14 +2,17 @@
 
 #include "commands/util.h"
 #include "common.h"
+#include "output.h"
 #include "cpu_report.h"
 #include "ipc.h"
 #include "live_top.h"
 #include "symbolizer.h"
+#include "session_guard.h"
 #include "trace_events.h"
 #include "trace_model.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -45,13 +48,14 @@ bool MatchesEventFilter(const TraceEvent& event, const std::wstring& filter) {
 }
 
 bool ReceiveCommand(PipeClient& pipe, bool& stop) {
+    if (!pipe.IsConnected()) return false;
     if (!pipe.HasData()) {
         return true;
     }
     std::wstring line;
     std::wstring error;
-    if (!pipe.ReceiveLine(line, 0, &error)) {
-        return true;
+    if (!pipe.ReceiveLine(line, 1000, &error)) {
+        return false;
     }
     if (line == L"STOP") {
         stop = true;
@@ -70,7 +74,9 @@ bool WaitInterruptibly(PipeClient& pipe, uint64_t duration_ms, bool& stop,
         if (stop) {
             return true;
         }
-        const ULONGLONG remaining = deadline - GetTickCount64();
+        const ULONGLONG now = GetTickCount64();
+        if (now >= deadline) break;
+        const ULONGLONG remaining = deadline - now;
         Sleep(static_cast<DWORD>(std::min<ULONGLONG>(remaining, 50)));
     }
     return true;
@@ -124,7 +130,8 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     }
     wchar_t* percent_end = nullptr;
     const double percent_limit = wcstod(percent_limit_text.c_str(), &percent_end);
-    if (percent_end == nullptr || *percent_end != L'\0') {
+    if (percent_end == nullptr || *percent_end != L'\0' || !std::isfinite(percent_limit) ||
+        percent_limit < 0 || percent_limit > 100) {
         return 2;
     }
     std::optional<uint32_t> pid;
@@ -170,6 +177,13 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     }
 
     bool stop = false;
+    SessionGuard guard;
+    if (!guard.Start(session_name, capture.RestoreInfo(), &error)) {
+        capture.Stop();
+        pipe.SendLine(L"ERROR " + error, nullptr);
+        pipe.SendLine(L"FINISHED 4", nullptr);
+        return 4;
+    }
     int result = 0;
     const ULONGLONG started = GetTickCount64();
     if (mode == L"top") {
@@ -186,7 +200,9 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                 if (stop) {
                     break;
                 }
+                if (!capture.Running()) { error = capture.LastError(); result = 5; break; }
                 TraceData trace = capture.Snapshot();
+                symbolizer.PrepareTrace(trace, true);
                 for (const auto& image : trace.images) {
                     symbolizer.AddModule(image);
                 }
@@ -197,6 +213,9 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                 }
                 if (pid.has_value()) {
                     report_options.pid = pid;
+                }
+                if (profile_source != L"cpu") {
+                    report_options.profile_source = capture.ProfileSourceId();
                 }
                 const uint64_t unattributed = static_cast<uint64_t>(
                     std::count_if(trace.samples.begin(), trace.samples.end(),
@@ -209,6 +228,10 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                        << L"  events=" << trace.quality.events_total
                        << L"  unattributed=" << unattributed
                        << L"  unknown_events=" << trace.quality.unknown_events
+                       << L"  metadata_dropped=" << trace.quality.metadata_dropped
+                       << L"  pmc_samples=" << trace.quality.pmc_samples
+                       << L"  lost=" << trace.quality.lost_events
+                       << L"  lost_buffers=" << trace.quality.lost_buffers
                        << L"  ring_dropped=" << trace.quality.ring_dropped << L"\n";
                 if (trace.samples.empty()) {
                     report << L"No CPU samples in this interval.\n";
@@ -246,10 +269,13 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
             if (stop) {
                 break;
             }
+            if (!capture.Running()) { error = capture.LastError(); result = 5; break; }
             TraceData trace = capture.Snapshot();
-            if (trace.quality.ring_dropped != 0) {
+            if (trace.quality.incomplete) {
                 pipe.SendLine(L"WARN ring_dropped=" +
-                                  std::to_wstring(trace.quality.ring_dropped),
+                                  std::to_wstring(trace.quality.ring_dropped) +
+                                  L" lost=" + std::to_wstring(trace.quality.lost_events) +
+                                  L" lost_buffers=" + std::to_wstring(trace.quality.lost_buffers),
                               &error);
             }
             for (const auto& event : trace.events) {
@@ -283,7 +309,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                     event.timestamp_ns >= first_timestamp
                         ? event.timestamp_ns - first_timestamp
                         : 0;
-                const std::wstring comm = ProcessDisplayName(trace, display_pid);
+                const std::wstring comm = ProcessDisplayName(trace, display_pid, event.timestamp_ns);
                 std::wstring line;
                 if (json) {
                     if (!first_json) {
@@ -309,7 +335,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                             L",\"size\":" + std::to_wstring(event.size) +
                             L",\"offset\":" + std::to_wstring(event.offset) +
                             L",\"correlation_id\":" + std::to_wstring(event.correlation_id) +
-                            L",\"comm\":\"" + comm + L"\"}";
+                            L",\"comm\":\"" + EscapeJson(comm) + L"\"}";
                 } else {
                     line = std::to_wstring(relative) + L" " +
                            std::to_wstring(event.cpu) + L" " +
@@ -339,7 +365,8 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
         }
     }
 
-    capture.Stop();
+    if (capture.Stop()) guard.Complete();
+    else { error = capture.LastError(); result = 4; }
     if (!error.empty()) {
         pipe.SendLine(L"ERROR " + error, nullptr);
     }

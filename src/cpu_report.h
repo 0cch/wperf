@@ -14,6 +14,8 @@ namespace wperf {
 struct CpuReportOptions {
     std::optional<uint32_t> pid;
     std::optional<uint32_t> tid;
+    std::optional<uint32_t> profile_source;
+    bool exact_stacks_only = false;
     std::wstring comm_filter;
     std::wstring dso_filter;
     std::wstring symbol_filter;

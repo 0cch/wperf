@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace wperf {
@@ -33,6 +35,9 @@ struct ImageRecord {
     std::wstring path;
 };
 
+enum class SampleKind { Cpu, Pmc };
+enum class StackQuality { Missing, Exact, Approximate };
+
 struct SampleRecord {
     uint64_t timestamp_ns = 0;
     uint32_t cpu = 0;
@@ -42,6 +47,10 @@ struct SampleRecord {
     std::vector<uint64_t> stack;
     std::vector<uint64_t> pmc_counters;
     bool stack_missing = false;
+    SampleKind kind = SampleKind::Cpu;
+    uint32_t profile_source = 0;
+    uint64_t period = 0;  // CPU: nanoseconds; PMC: source-specific event count.
+    StackQuality stack_quality = StackQuality::Missing;
 };
 
 enum class TraceEventKind {
@@ -102,6 +111,12 @@ struct TraceQuality {
     uint64_t stack_ambiguous = 0;
     uint64_t unknown_events = 0;
     uint64_t lost_events = 0;
+    uint64_t lost_buffers = 0;
+    uint64_t decode_errors = 0;
+    uint64_t metadata_dropped = 0;
+    uint64_t correlation_evicted = 0;
+    uint64_t syscall_orphaned = 0;
+    uint64_t pmc_samples = 0;
     bool incomplete = false;
 };
 
@@ -114,7 +129,8 @@ struct TraceData {
     TraceQuality quality;
     uint32_t pointer_size = sizeof(void*);
     uint64_t qpc_frequency = 10000000;
-    uint64_t profile_interval_ns = 1000000;
+    uint64_t profile_interval_ns = 0;  // Unknown until interval metadata is read.
+    std::unordered_map<uint32_t, uint64_t> profile_intervals;
     std::wstring source_path;
 };
 
@@ -125,6 +141,26 @@ const ThreadRecord* FindThread(const TraceData& trace, uint32_t tid,
                                  uint64_t timestamp_ns);
 const ImageRecord* FindImage(const TraceData& trace, uint32_t pid, uint64_t address,
                              uint64_t timestamp_ns);
-std::wstring ProcessDisplayName(const TraceData& trace, uint32_t pid);
+std::wstring ProcessDisplayName(const TraceData& trace, uint32_t pid,
+                                uint64_t timestamp_ns = UINT64_MAX);
+uint64_t SampleWeightNs(const TraceData& trace, const SampleRecord& sample);
+
+class ImageIndex {
+public:
+    void Build(const TraceData& trace);
+    const ImageRecord* Find(uint32_t pid, uint64_t address, uint64_t timestamp_ns) const;
+private:
+    const TraceData* trace_ = nullptr;
+    std::unordered_map<uint32_t, std::map<uint64_t, std::vector<size_t>>> by_pid_;
+};
+
+class ProcessNameIndex {
+public:
+    explicit ProcessNameIndex(const TraceData& trace);
+    std::wstring Name(uint32_t pid, uint64_t timestamp_ns) const;
+private:
+    struct NameRecord { uint64_t start, end; std::wstring name; };
+    std::unordered_map<uint32_t, std::vector<NameRecord>> names_;
+};
 
 }  // namespace wperf

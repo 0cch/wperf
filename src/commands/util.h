@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cerrno>
+
 #include "common.h"
 #include "elevation.h"
 #include "state.h"
@@ -45,9 +47,11 @@ inline bool ParseUnsigned(const std::wstring& value, uint64_t& result) {
     if (value.empty()) {
         return false;
     }
+    if (value.front() < L'0' || value.front() > L'9') return false;
+    errno = 0;
     wchar_t* end = nullptr;
     const unsigned long long parsed = wcstoull(value.c_str(), &end, 10);
-    if (end == nullptr || *end != L'\0') {
+    if (errno == ERANGE || end == value.c_str() || *end != L'\0') {
         return false;
     }
     result = parsed;

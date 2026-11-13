@@ -87,6 +87,8 @@ Brendan Gregg `flamegraph.pl`. Set `FLAMEGRAPH_PL` or pass
 - [Development](docs/DEVELOPMENT.md)
 - [Release](docs/RELEASE.md)
 - [Disassembly](docs/DISASSEMBLY.md)
+- [Correctness and performance changes](docs/HARDENING.md)
+- [Assessment completion audit](docs/ASSESSMENT_STATUS.md)
 
 ## Boundaries
 

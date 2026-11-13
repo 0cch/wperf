@@ -1,6 +1,7 @@
 #include "etl_reader.h"
 
 #include "common.h"
+#include "etw_decode.h"
 #include "lbr.h"
 #include "trace_events.h"
 
@@ -374,38 +375,20 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace,
     active.push_back(index);
 }
 
-void CopyPmcCounters(const EVENT_RECORD& record,
-                     std::vector<uint64_t>& counters, TraceQuality& quality) {
-    for (USHORT index = 0; index < record.ExtendedDataCount; ++index) {
-        const auto& item = record.ExtendedData[index];
-        if (item.ExtType != EVENT_HEADER_EXT_TYPE_PMC_COUNTERS ||
-            item.DataPtr == 0 || item.DataSize < sizeof(uint64_t)) {
-            continue;
-        }
-        const size_t count = item.DataSize / sizeof(uint64_t);
-        counters.resize(count);
-        std::memcpy(counters.data(),
-                    reinterpret_cast<const void*>(
-                        static_cast<uintptr_t>(item.DataPtr)),
-                    count * sizeof(uint64_t));
-        ++quality.pmc_counter_events;
-        break;
-    }
-}
 
 TraceEvent& AddEvent(const EVENT_RECORD& record, TraceData& trace,
                      TraceEventKind kind, uint64_t value1 = 0,
                      uint64_t value2 = 0) {
     TraceEvent event;
     event.timestamp_ns = TimestampToNs(record, trace);
-    event.cpu = record.BufferContext.ProcessorNumber;
+    event.cpu = EtwProcessorIndex(record);
     event.pid = record.EventHeader.ProcessId;
     event.tid = record.EventHeader.ThreadId;
     event.kind = kind;
     event.value1 = value1;
     event.value2 = value2;
     event.event_id = record.EventHeader.EventDescriptor.Opcode;
-    CopyPmcCounters(record, event.pmc_counters, trace.quality);
+    CopyEtwPmcCounters(record, event.pmc_counters, trace.quality);
     trace.events.push_back(event);
     return trace.events.back();
 }
@@ -520,7 +503,7 @@ void ParseLbr(const EVENT_RECORD& record, TraceData& trace) {
     for (const LbrBranch& branch : decoded.branches) {
         TraceEvent event;
         event.timestamp_ns = QpcToNs(decoded.timestamp_qpc, trace.qpc_frequency);
-        event.cpu = record.BufferContext.ProcessorNumber;
+        event.cpu = EtwProcessorIndex(record);
         event.pid = decoded.pid;
         event.tid = decoded.tid;
         event.kind = TraceEventKind::LastBranchRecord;
@@ -534,21 +517,13 @@ void ParseLbr(const EVENT_RECORD& record, TraceData& trace) {
 }
 
 void ParseSample(const EVENT_RECORD& record, TraceData& trace) {
-    const BYTE* data = static_cast<const BYTE*>(record.UserData);
-    const size_t size = record.UserDataLength;
-    const uint32_t p = trace.pointer_size;
-    if (size < p + 8) {
+    SampleRecord sample;
+    if (!DecodeProfileSample(record, trace, sample)) {
+        ++trace.quality.decode_errors;
         return;
     }
-
-    SampleRecord sample;
-    sample.timestamp_ns = TimestampToNs(record, trace);
-    sample.cpu = record.BufferContext.ProcessorNumber;
-    sample.pid = record.EventHeader.ProcessId;
-    sample.instruction_pointer = ReadPointer(data, size, 0, p);
-    sample.tid = ReadU32(data, size, p);
-    CopyPmcCounters(record, sample.pmc_counters, trace.quality);
-
+    CopyEtwPmcCounters(record, sample.pmc_counters, trace.quality);
+    if (sample.kind == SampleKind::Pmc) ++trace.quality.pmc_samples;
     trace.samples.push_back(std::move(sample));
 }
 
@@ -587,7 +562,7 @@ void ParseStack(const EVENT_RECORD& record, TraceData& trace, StackStore& stacks
         QpcToNs(ReadU64(data, size, 0), trace.qpc_frequency);
     stack.pid = ReadU32(data, size, 8);
     stack.tid = ReadU32(data, size, 12);
-    stack.cpu = record.BufferContext.ProcessorNumber;
+    stack.cpu = EtwProcessorIndex(record);
 
     const uint32_t p = trace.pointer_size;
     for (size_t offset = 16; offset + p <= size; offset += p) {
@@ -634,7 +609,7 @@ void ParseStackReference(const EVENT_RECORD& record, TraceData& trace,
         QpcToNs(ReadU64(data, size, 0), trace.qpc_frequency);
     stack.pid = ReadU32(data, size, 8);
     stack.tid = ReadU32(data, size, 12);
-    stack.cpu = record.BufferContext.ProcessorNumber;
+    stack.cpu = EtwProcessorIndex(record);
     stack.stack_key = ReadPointer(data, size, 16, p);
     stack.compressed = true;
     stack.kernel = kernel;
@@ -740,9 +715,11 @@ void EventRecordCallback(PEVENT_RECORD record) {
                (opcode == 2 || opcode == 3 || opcode == 4 || opcode == 10)) {
         ParseImage(*record, *trace, context->indexes);
     } else if (IsEqualGUID(class_guid, kPerfInfoGuid) &&
-               (opcode == 46 || id == 46)) {
+               (opcode == 46 || opcode == 47 || id == 46 || id == 47)) {
         ++trace->quality.samples_total;
         ParseSample(*record, *trace);
+    } else if (IsEqualGUID(class_guid, kPerfInfoGuid) && opcode >= 72 && opcode <= 74) {
+        if (!DecodeProfileInterval(*record, *trace)) ++trace->quality.decode_errors;
     } else if ((IsEqualGUID(class_guid, kLbrGuid) ||
                 IsEqualGUID(record->EventHeader.ProviderId, kLbrGuid)) &&
                event_code == 32) {
@@ -787,7 +764,7 @@ void EventRecordCallback(PEVENT_RECORD record) {
                IsEqualGUID(record->EventHeader.ProviderId, kFileIoGuid)) {
         ParseFileIo(*record, *trace);
     } else if (IsEqualGUID(record->EventHeader.ProviderId, kSystemTraceGuid) &&
-               opcode == 46) {
+               (opcode == 46 || opcode == 47)) {
         ++trace->quality.samples_total;
         ParseSample(*record, *trace);
     } else {
@@ -824,9 +801,12 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
         trace.qpc_frequency =
             static_cast<uint64_t>(logfile.LogfileHeader.PerfFreq.QuadPart);
     }
-    if (logfile.LogfileHeader.PointerSize == 32 ||
+    if (logfile.LogfileHeader.PointerSize == 4 ||
+        logfile.LogfileHeader.PointerSize == 8 ||
+        logfile.LogfileHeader.PointerSize == 32 ||
         logfile.LogfileHeader.PointerSize == 64) {
-        trace.pointer_size = logfile.LogfileHeader.PointerSize / 8;
+        trace.pointer_size = logfile.LogfileHeader.PointerSize <= 8
+                                 ? logfile.LogfileHeader.PointerSize : logfile.LogfileHeader.PointerSize / 8;
     }
 
     const ULONG result = ProcessTrace(&handle, 1, nullptr, nullptr);
@@ -917,6 +897,7 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
                     const size_t index =
                         candidates.size() == 1 ? 0 : matched;
                     sample.stack = candidates[index];
+                    sample.stack_quality = StackQuality::Exact;
                     ++trace.quality.stack_exact_total;
                     attached = true;
                 } else {
@@ -927,17 +908,21 @@ bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
             const StackKey fallback_key{
                 sample.instruction_pointer, sample.tid, sample.cpu};
             const auto fallback = fallback_by_leaf.find(fallback_key);
-            if (fallback != fallback_by_leaf.end() &&
-                fallback->second.size() == 1) {
+            if (fallback != fallback_by_leaf.end() && fallback->second.size() == 1 &&
+                sample.timestamp_ns >= fallback->second.front().key.tag &&
+                sample.timestamp_ns - fallback->second.front().key.tag <= 1000000 &&
+                FindThread(trace, sample.tid, sample.timestamp_ns) ==
+                    FindThread(trace, sample.tid, fallback->second.front().key.tag)) {
                 const StackCandidateRef& reference = fallback->second.front();
                 const auto candidate = resolved_stacks.find(reference.key);
                 if (candidate != resolved_stacks.end() &&
                     reference.index < candidate->second.candidates.size()) {
                     sample.stack = candidate->second.candidates[reference.index];
+                    sample.stack_quality = StackQuality::Approximate;
                     ++trace.quality.stack_approximate_total;
                     attached = true;
                 }
-            } else if (fallback != fallback_by_leaf.end()) {
+            } else if (fallback != fallback_by_leaf.end() && fallback->second.size() > 1) {
                 ++trace.quality.stack_ambiguous;
             }
         }

@@ -13,3 +13,7 @@ asserted because PDB availability and published symbols vary by machine.
 - `io.etl`: FileIo and DiskIo init/completion correlation, status and duration.
 
 Each fixture has a matching `*.expected.json` file.
+Stack fallback is limited to a preceding stack within 1 ms in the same thread
+lifetime. The CPU fixture's former 44 cross-time fallbacks are now counted as
+missing (1219 total); its 16104 exact matches and 496 ambiguous matches remain
+unchanged. Fixture bytes and SHA256 have not changed.
