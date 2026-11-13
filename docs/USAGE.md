@@ -25,8 +25,11 @@ wperf report -i FILE [-o FILE] [--kind cpu|io] [-p PID] [-t TID]
              [--comm TEXT] [--dso TEXT] [--symbol TEXT]
              [--percent-limit N] [-s FIELD]
              [-g [caller|callee]] [--folded|--collapsed] [--off-cpu]
+             [--off-cpu-include-inferred] [--include-children] [--cpu N]
+             [--time-start MS] [--time-end MS] [--scope all|user|kernel]
              [--stdio|--csv|--json] [--quiet|--verbose]
              [--exact-stacks] [--metadata] [--strict-quality]
+             [--max-lost-events N] [--max-missing-stacks N]
 ```
 
 A concise quality summary is written to stderr. Use `--verbose` for the complete
@@ -37,6 +40,10 @@ with the `UINT32_MAX` sentinel PID are displayed as `[unattributed]`.
 `--json --metadata` wraps rows with machine-readable quality information.
 `--strict-quality` fails on lost, dropped or malformed data; missing stacks
 alone do not cause failure. `--exact-stacks` excludes uncertain stacks.
+`--max-lost-events` and `--max-missing-stacks` apply to every report form,
+including off-CPU. For off-CPU, missing stacks are counted as affected
+intervals. Malformed, lost, or otherwise incomplete trace data returns exit 6
+after writing the selected report output.
 
 ## Flame graphs
 
@@ -84,6 +91,8 @@ intervals:
 wperf report -i sched.etl --off-cpu --symbol-path .\build\Release
 wperf report -i sched.etl --off-cpu --json
 wperf report -i sched.etl --off-cpu --folded --quiet -o offcpu.folded
+wperf report -i sched.etl --off-cpu --metadata --json
+wperf report -i sched.etl --off-cpu --off-cpu-include-inferred --csv
 ```
 
 Folded counts are wait duration in nanoseconds. Render with:
@@ -93,9 +102,21 @@ flamegraph.pl --countname ns offcpu.folded > offcpu.svg
 ```
 
 Blocked intervals require a context switch from `Wait`. Normal preemption and
-ready-but-not-running time are reported separately. A missing ReadyThread event
-produces an inferred blocked boundary. Wakeup stacks are retained separately and
-are not assigned as the blocked thread's stack.
+ready-but-not-running time are reported separately. ETW `CSwitch` uses
+`tid=incoming` and `related_tid=outgoing`; `previous_state` belongs to the
+outgoing thread. Wakeup stacks are retained separately and are not assigned as
+the blocked thread's stack.
+
+Intervals closed only by the end of capture are marked `boundary=truncated` and
+are excluded from exact totals by default. Use `--off-cpu-include-inferred` to
+include them; folded output then appends `[truncated-boundary]`. JSON and CSV
+always expose `confirmed_duration_ns`, `inferred_duration_ns`, and boundary
+status. Aggregation keeps process instances, thread instances, module identity,
+and module-relative addresses separate, avoiding PID/TID reuse merges.
+
+`--time-start` and `--time-end` are capture-relative milliseconds and crop
+intervals crossing the selected bounds. `--include-children` and
+`--scope user|kernel` are supported by the off-CPU path.
 
 ## Command help
 

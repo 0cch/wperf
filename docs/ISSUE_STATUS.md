@@ -52,10 +52,16 @@ The current tree also implements:
 
 - low-privilege live-top symbolization through versioned structured IPC;
 - controller-side DbgHelp/PDB/archive/formatting;
+- asynchronous controller rendering and STOP-responsive window transmission;
+- bounded live metadata/sample queues and explicit loss/truncation counters;
 - scheduler event stack capture and capability status;
-- offline off-CPU blocked/ready interval correlation;
-- off-CPU text, JSON, CSV, and duration-weighted folded output;
-- bounded live metadata/sample queues and explicit loss counters.
+- offline off-CPU blocked/ready interval correlation with instance- and module-aware grouping;
+- off-CPU text, JSON, CSV, and duration-weighted folded output with truncated-boundary status;
+- common report quality gates, including off-CPU lost-event and missing-stack limits.
+
+SEC-01 and ANA-01 are implemented but remain pending re-validation against
+review-4392026; this document does not mark them accepted until the re-review
+evidence is recorded.
 
 Still outside the accepted scope: external-profiler global-state atomic
 restoration, full OS/CPU/VBS/WOW64 matrices, long soak and perturbation curves,

@@ -772,7 +772,9 @@ void FinishReplay(ReplayContext& context, TraceData& trace) {
             event.kind != TraceEventKind::ReadyThread) {
             continue;
         }
-        const StackKey key{event.timestamp_ns, event.tid, event.cpu};
+        const uint32_t stack_tid =
+            event.kind == TraceEventKind::ContextSwitch ? event.related_tid : event.tid;
+        const StackKey key{event.timestamp_ns, stack_tid, event.cpu};
         const auto found = resolved_stacks.find(key);
         const ResolvedStack* selected = nullptr;
         if (found != resolved_stacks.end() && !found->second.ambiguous &&
@@ -782,11 +784,12 @@ void FinishReplay(ReplayContext& context, TraceData& trace) {
             ++trace.quality.event_stack_exact;
         } else if (found != resolved_stacks.end() && found->second.ambiguous) {
             event.stack_missing = true;
+            event.stack_ambiguous = true;
             ++trace.quality.event_stack_ambiguous;
             continue;
         } else {
             const uint64_t thread_cpu =
-                (static_cast<uint64_t>(event.tid) << 32) | event.cpu;
+                (static_cast<uint64_t>(stack_tid) << 32) | event.cpu;
             const auto index = scheduler_stack_index.find(thread_cpu);
             const ResolvedStack* nearest = nullptr;
             uint64_t nearest_delta = UINT64_MAX;

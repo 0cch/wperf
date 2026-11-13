@@ -61,6 +61,7 @@ void BuildOffCpuIntervals(TraceData& trace) {
         uint32_t pid = UINT32_MAX;
         uint32_t tid = 0;
         uint32_t cpu = 0;
+        uint64_t process_start_ns = 0;
         uint64_t thread_start_ns = 0;
         uint64_t blocked_start_ns = 0;
         uint64_t ready_start_ns = 0;
@@ -68,12 +69,16 @@ void BuildOffCpuIntervals(TraceData& trace) {
         SharedStack stack;
         StackQuality stack_quality = StackQuality::Missing;
         bool stack_missing = true;
+        bool stack_ambiguous = false;
         uint32_t wakeup_tid = 0;
         SharedStack wakeup_stack;
     };
     std::unordered_map<uint32_t, Pending> pending;
     const auto valid_tid = [](uint32_t tid) {
         return tid != 0 && tid != UINT32_MAX;
+    };
+    const auto valid_pid = [](uint32_t pid) {
+        return pid != 0 && pid != UINT32_MAX;
     };
     const auto pid_for = [&](uint32_t tid, uint64_t timestamp_ns) {
         const auto* thread = FindThread(trace, tid, timestamp_ns);
@@ -94,16 +99,26 @@ void BuildOffCpuIntervals(TraceData& trace) {
         interval.tid = item.tid;
         interval.wakeup_tid = item.wakeup_tid;
         interval.wait_reason = item.wait_reason;
+        interval.process_start_ns = item.process_start_ns;
+        interval.thread_start_ns = item.thread_start_ns;
+        interval.wakeup_timestamp_ns = item.ready_start_ns;
         interval.kind = kind;
         interval.stack = item.stack.View();
         interval.wakeup_stack = item.wakeup_stack.View();
         interval.stack_quality = item.stack_quality;
         interval.stack_missing = item.stack_missing;
+        interval.stack_ambiguous = item.stack_ambiguous;
         interval.boundary_inferred = inferred;
+        if (inferred) {
+            ++trace.quality.off_cpu_inferred_intervals;
+        }
         if (kind == OffCpuKind::Blocked) {
             ++trace.quality.off_cpu_blocked_intervals;
         } else {
             ++trace.quality.off_cpu_ready_intervals;
+        }
+        if (item.stack_ambiguous) {
+            ++trace.quality.off_cpu_stack_ambiguous;
         }
         if (item.stack_missing) {
             ++trace.quality.off_cpu_stack_missing;
@@ -114,15 +129,17 @@ void BuildOffCpuIntervals(TraceData& trace) {
         }
         trace.off_cpu_intervals.push_back(std::move(interval));
     };
-    const auto close_pending = [&](const Pending& item, uint64_t end) {
+    const auto close_pending = [&](const Pending& item, uint64_t end,
+                                   bool end_inferred) {
         if (item.blocked_start_ns != 0) {
             const bool inferred = item.ready_start_ns == 0;
             add_interval(item, item.blocked_start_ns,
                          inferred ? end : item.ready_start_ns,
-                         OffCpuKind::Blocked, inferred);
+                         OffCpuKind::Blocked, inferred || end_inferred);
         }
         if (item.ready_start_ns != 0) {
-            add_interval(item, item.ready_start_ns, end, OffCpuKind::Ready, false);
+            add_interval(item, item.ready_start_ns, end, OffCpuKind::Ready,
+                         end_inferred);
         }
     };
     std::vector<const TraceEvent*> ordered;
@@ -139,21 +156,25 @@ void BuildOffCpuIntervals(TraceData& trace) {
                      });
     for (const TraceEvent* event : ordered) {
         if (event->kind == TraceEventKind::ContextSwitch) {
-            const uint32_t old_tid = event->tid;
-            const uint32_t new_tid = event->related_tid;
+            const uint32_t old_tid = event->related_tid;
+            const uint32_t new_tid = event->tid;
             if (valid_tid(old_tid)) {
                 auto found = pending.find(old_tid);
                 if (found != pending.end()) {
-                    close_pending(found->second, event->timestamp_ns);
+                    close_pending(found->second, event->timestamp_ns, true);
                     ++trace.quality.off_cpu_unclosed;
                     pending.erase(found);
                 }
                 Pending item;
-                item.pid = event->pid != 0 ? event->pid : pid_for(old_tid, event->timestamp_ns);
+                item.pid = valid_pid(event->related_pid)
+                               ? event->related_pid
+                               : pid_for(old_tid, event->timestamp_ns);
                 item.tid = old_tid;
                 item.cpu = event->cpu;
                 const auto* thread = FindThread(trace, old_tid, event->timestamp_ns);
                 item.thread_start_ns = thread == nullptr ? 0 : thread->start_ns;
+                item.process_start_ns =
+                    ProcessInstanceStart(trace, item.pid, event->timestamp_ns);
                 if (event->previous_state == 5) {
                     item.blocked_start_ns = event->timestamp_ns;
                     item.wait_reason = event->wait_reason;
@@ -168,6 +189,7 @@ void BuildOffCpuIntervals(TraceData& trace) {
                     item.stack = event->stack.View();
                     item.stack_quality = event->stack_quality;
                     item.stack_missing = event->stack_missing;
+                    item.stack_ambiguous = event->stack_ambiguous;
                     if (pending.size() >= 200000) {
                         ++trace.quality.off_cpu_evicted;
                     } else {
@@ -183,7 +205,7 @@ void BuildOffCpuIntervals(TraceData& trace) {
                         thread == nullptr || found->second.thread_start_ns == 0 ||
                         thread->start_ns == found->second.thread_start_ns;
                     if (same_lifetime) {
-                        close_pending(found->second, event->timestamp_ns);
+                        close_pending(found->second, event->timestamp_ns, false);
                     } else {
                         ++trace.quality.off_cpu_evicted;
                     }
@@ -198,13 +220,15 @@ void BuildOffCpuIntervals(TraceData& trace) {
             auto found = pending.find(tid);
             if (found == pending.end()) {
                 Pending item;
-                item.pid = event->related_pid != 0
+                item.pid = valid_pid(event->related_pid)
                                ? event->related_pid
                                : pid_for(tid, event->timestamp_ns);
                 item.tid = tid;
                 item.cpu = event->cpu;
                 const auto* thread = FindThread(trace, tid, event->timestamp_ns);
                 item.thread_start_ns = thread == nullptr ? 0 : thread->start_ns;
+                item.process_start_ns =
+                    ProcessInstanceStart(trace, item.pid, event->timestamp_ns);
                 item.ready_start_ns = event->timestamp_ns;
                 item.wakeup_tid = event->tid;
                 item.wakeup_stack = event->stack.View();
@@ -222,7 +246,7 @@ void BuildOffCpuIntervals(TraceData& trace) {
         trace.end_ns != 0 ? trace.end_ns : (ordered.empty() ? 0 : ordered.back()->timestamp_ns);
     for (const auto& [tid, item] : pending) {
         (void)tid;
-        close_pending(item, end_time);
+        close_pending(item, end_time, true);
         ++trace.quality.off_cpu_unclosed;
     }
     std::stable_sort(trace.off_cpu_intervals.begin(), trace.off_cpu_intervals.end(),

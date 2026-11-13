@@ -5,6 +5,7 @@
 #include "etw_decode.h"
 #include "live_data.h"
 #include "live_top.h"
+#include "off_cpu_report.h"
 #include "output.h"
 #include "symbolizer.h"
 #include "archive.h"
@@ -132,6 +133,142 @@ void TestLiveWindowCodec() {
           "structured live IPC preserves complete stacks");
     Check(decoded.samples[0].pmc_counters == std::vector<uint64_t>({11, 22}),
           "structured live IPC preserves PMC counters");
+}
+
+void TestLiveWindowLongPayloadBound() {
+    wperf::TraceData original;
+    original.quality.samples_total = 1;
+    wperf::ProcessRecord process;
+    process.pid = 42;
+    process.image_name = L"sample.exe";
+    process.command_line.assign(30000, static_cast<wchar_t>(0x4e2d));
+    original.processes.push_back(process);
+    wperf::SampleRecord sample;
+    sample.timestamp_ns = 100;
+    sample.pid = 42;
+    sample.tid = 7;
+    sample.instruction_pointer = 0x1000;
+    std::vector<uint64_t> frames;
+    frames.reserve(10000);
+    for (uint64_t index = 0; index < 10000; ++index) {
+        frames.push_back(0x1000 + index * 8);
+    }
+    sample.stack = frames;
+    sample.stack_quality = wperf::StackQuality::Exact;
+    original.samples.push_back(sample);
+
+    const auto lines = wperf::EncodeLiveWindow(original, 1000);
+    wperf::LiveWindowDecoder decoder;
+    std::wstring error;
+    size_t max_line = 0;
+    for (const std::wstring& line : lines) {
+        max_line = std::max(max_line, line.size());
+        bool ok = false;
+        if (line.rfind(L"TOP2_BEGIN ", 0) == 0) ok = decoder.Begin(line, &error);
+        else if (line.rfind(L"TOP2_", 0) == 0) ok = decoder.Consume(line, &error);
+        Check(ok, "bounded live IPC message decodes");
+        if (!ok) break;
+    }
+    wperf::TraceData decoded;
+    uint64_t interval = 0;
+    Check(decoder.Finish(decoded, interval, &error), "bounded live IPC window finishes");
+    Check(max_line < 65536, "every live IPC message stays below the pipe receive limit");
+    Check(decoded.processes.size() == 1 &&
+              decoded.processes[0].command_line.size() <
+                  original.processes[0].command_line.size(),
+          "long command lines are truncated instead of failing the window");
+    Check(decoded.samples.size() == 1 && !decoded.samples[0].stack.empty() &&
+              decoded.samples[0].stack.size() < original.samples[0].stack.size(),
+          "oversized stacks are truncated at item boundaries");
+    Check(!decoded.samples.empty() &&
+              decoded.samples[0].stack_quality == wperf::StackQuality::Approximate,
+          "stack truncation degrades exact stack quality to approximate");
+    Check(decoded.quality.metadata_dropped >= 2,
+          "live IPC truncation is reported in quality metadata");
+
+    wperf::TraceData budgeted = original;
+    budgeted.quality.samples_total = 700;
+    budgeted.samples.clear();
+    for (size_t index = 0; index < 700; ++index) {
+        wperf::SampleRecord repeated = sample;
+        repeated.timestamp_ns += index;
+        budgeted.samples.push_back(repeated);
+    }
+    const auto budgeted_lines = wperf::EncodeLiveWindow(budgeted, 1000);
+    size_t budgeted_chars = 0;
+    for (const std::wstring& line : budgeted_lines) budgeted_chars += line.size() + 1;
+    Check(budgeted_chars < 8 * 1024 * 1024 + 4096,
+          "the complete live window respects its total encoded budget");
+    wperf::LiveWindowDecoder budgeted_decoder;
+    for (const std::wstring& line : budgeted_lines) {
+        bool ok = false;
+        if (line.rfind(L"TOP2_BEGIN ", 0) == 0) ok = budgeted_decoder.Begin(line, &error);
+        else if (line.rfind(L"TOP2_", 0) == 0) ok = budgeted_decoder.Consume(line, &error);
+        Check(ok, "budgeted live window messages decode");
+        if (!ok) break;
+    }
+    wperf::TraceData budgeted_decoded;
+    Check(budgeted_decoder.Finish(budgeted_decoded, interval, &error),
+          "budgeted live window finishes");
+    Check(budgeted_decoded.quality.samples_total == 700 &&
+              budgeted_decoded.quality.samples_dropped > 0 &&
+              budgeted_decoded.samples.size() < 700 &&
+              budgeted_decoded.quality.incomplete,
+          "whole-window overflow is explicitly counted and marks the window incomplete");
+
+    const auto process_line = std::find_if(
+        lines.begin(), lines.end(), [](const std::wstring& line) {
+            return line.rfind(L"TOP2_PROCESS ", 0) == 0;
+        });
+    Check(process_line != lines.end() && process_line->size() < 65536,
+          "long metadata is encoded as one bounded pipe message");
+    if (process_line != lines.end()) {
+        const std::wstring correlation_id = wperf::NewId();
+        wperf::PipeServer server;
+        Check(server.Create(correlation_id, &error), "create bounded IPC test pipe");
+        bool client_ok = false;
+        std::wstring client_error;
+        std::thread client_thread([&] {
+            wperf::PipeClient client;
+            if (!client.Connect(wperf::MakePipePath(correlation_id), 3000, &client_error)) {
+                return;
+            }
+            client_ok = client.SendLine(*process_line, &client_error);
+        });
+        Check(server.WaitForClient(3000, &error), "bounded IPC test client connects");
+        std::wstring received;
+        Check(server.ReceiveLine(received, 5000, &error), "bounded long message crosses the pipe");
+        client_thread.join();
+        Check(client_ok && received == *process_line,
+              "bounded long Unicode metadata round-trips through the named pipe");
+    }
+}
+
+void TestPipeSendDeadline() {
+    const std::wstring correlation_id = wperf::NewId();
+    wperf::PipeServer server;
+    std::wstring error;
+    Check(server.Create(correlation_id, &error), "create send-deadline test pipe");
+    bool final_result = true;
+    std::wstring send_error;
+    ULONGLONG elapsed_ms = 0;
+    std::thread client_thread([&] {
+        wperf::PipeClient client;
+        if (!client.Connect(wperf::MakePipePath(correlation_id), 3000, &send_error)) {
+            final_result = false;
+            return;
+        }
+        const ULONGLONG started = GetTickCount64();
+        const std::wstring payload(16000, L'x');
+        for (size_t index = 0; index < 64 && final_result; ++index) {
+            final_result = client.SendLine(payload, &send_error, 500);
+        }
+        elapsed_ms = GetTickCount64() - started;
+    });
+    Check(server.WaitForClient(3000, &error), "send-deadline client connects");
+    client_thread.join();
+    Check(!final_result && !send_error.empty() && elapsed_ms < 3000,
+          "a stalled pipe reader cannot block the worker send indefinitely");
 }
 
 void TestLiveIdentityAndCorrelation() {
@@ -464,6 +601,52 @@ void TestStreamingAndStopDeadline() {
     SetEnvironmentVariableW(L"WPERF_ENABLE_TEST_FAULTS",nullptr);
 }
 
+void TestRawSchedulerStackAssociation() {
+    const GUID thread_guid = {0x3d6fa8d1,0xfe05,0x11d0,{0x9d,0xda,0x00,0xc0,0x4f,0xd7,0xba,0x7c}};
+    const GUID stack_guid = {0xdef2fe46,0x7bd6,0x4b80,{0xbd,0x94,0xf5,0x7f,0xe2,0x0d,0x0c,0xe3}};
+    std::vector<std::vector<BYTE>> storage;
+    storage.reserve(2);
+    std::vector<EVENT_RECORD> records;
+    records.reserve(2);
+    const auto add = [&](GUID provider, BYTE opcode, uint64_t qpc,
+                         std::vector<BYTE> payload) {
+        storage.push_back(std::move(payload));
+        EVENT_RECORD record{};
+        record.EventHeader.ProviderId = provider;
+        record.EventHeader.EventDescriptor.Opcode = opcode;
+        record.EventHeader.Flags = EVENT_HEADER_FLAG_64_BIT_HEADER;
+        record.EventHeader.TimeStamp.QuadPart = qpc;
+        record.UserData = storage.back().data();
+        record.UserDataLength = static_cast<USHORT>(storage.back().size());
+        records.push_back(record);
+    };
+    std::vector<BYTE> switch_payload(16);
+    const uint32_t incoming = 20, outgoing = 10;
+    std::memcpy(switch_payload.data(), &incoming, 4);
+    std::memcpy(switch_payload.data() + 4, &outgoing, 4);
+    switch_payload[12] = 6;
+    switch_payload[14] = 5;
+    add(thread_guid, 36, 100, std::move(switch_payload));
+    std::vector<BYTE> stack_payload(16 + 2 * sizeof(uint64_t));
+    const uint64_t qpc = 100, frame1 = 0x1000, frame2 = 0x2000;
+    const uint32_t pid = 100, tid = 10;
+    std::memcpy(stack_payload.data(), &qpc, 8);
+    std::memcpy(stack_payload.data() + 8, &pid, 4);
+    std::memcpy(stack_payload.data() + 12, &tid, 4);
+    std::memcpy(stack_payload.data() + 16, &frame1, 8);
+    std::memcpy(stack_payload.data() + 24, &frame2, 8);
+    add(stack_guid, 32, 100, std::move(stack_payload));
+    wperf::TraceData trace;
+    Check(wperf::ReadEtwRecords(records, trace), "raw scheduler stack replay succeeds");
+    Check(trace.events.size() == 1 && trace.events[0].related_tid == outgoing &&
+              trace.events[0].tid == incoming,
+          "CSwitch decoder keeps incoming and outgoing thread contract");
+    Check(trace.events[0].stack.size() == 2 &&
+              trace.events[0].stack.front() == frame1 &&
+              trace.events[0].stack_quality == wperf::StackQuality::Exact,
+          "Raw CSwitch stack attaches to the outgoing thread");
+}
+
 void TestOffCpuIntervals() {
     wperf::TraceData trace;
     trace.threads.push_back({100, 10, 1, 0});
@@ -473,8 +656,8 @@ void TestOffCpuIntervals() {
     trace.end_ns = 800;
     wperf::TraceEvent leave;
     leave.kind = wperf::TraceEventKind::ContextSwitch;
-    leave.timestamp_ns = 100; leave.cpu = 0; leave.pid = 100;
-    leave.tid = 10; leave.related_tid = 20;
+    leave.timestamp_ns = 100; leave.cpu = 0; leave.pid = UINT32_MAX;
+    leave.tid = 20; leave.related_tid = 10; leave.related_pid = UINT32_MAX;
     leave.previous_state = 5; leave.wait_reason = 6;
     leave.stack = {0x1000, 0x2000};
     leave.stack_quality = wperf::StackQuality::Exact;
@@ -490,8 +673,9 @@ void TestOffCpuIntervals() {
     trace.events.push_back(ready);
     wperf::TraceEvent resume;
     resume.kind = wperf::TraceEventKind::ContextSwitch;
-    resume.timestamp_ns = 800; resume.cpu = 0; resume.pid = 200;
-    resume.tid = 20; resume.related_tid = 10; resume.previous_state = 1;
+    resume.timestamp_ns = 800; resume.cpu = 0; resume.pid = UINT32_MAX;
+    resume.tid = 10; resume.related_tid = 20; resume.related_pid = 200;
+    resume.previous_state = 1;
     resume.stack = {0x4000};
     resume.stack_quality = wperf::StackQuality::Exact;
     resume.stack_missing = false;
@@ -506,12 +690,175 @@ void TestOffCpuIntervals() {
         Check(trace.off_cpu_intervals[1].kind == wperf::OffCpuKind::Ready &&
                   trace.off_cpu_intervals[1].duration_ns == 500,
               "ready interval ends when the thread resumes");
+        Check(trace.off_cpu_intervals[0].pid == 100,
+              "outgoing thread PID falls back to lifecycle metadata");
         Check(trace.off_cpu_intervals[0].wakeup_tid == 20,
               "wakeup thread identity is preserved");
         Check(trace.off_cpu_intervals[0].stack.size() == 2 &&
                   trace.off_cpu_intervals[0].stack.front() == 0x1000,
               "off-CPU interval retains the switching-out stack");
     }
+}
+
+void TestOffCpuTruncatedInterval() {
+    wperf::TraceData trace;
+    trace.threads.push_back({100, 10, 1, 0});
+    trace.start_ns = 100;
+    trace.end_ns = 800;
+    wperf::TraceEvent leave;
+    leave.kind = wperf::TraceEventKind::ContextSwitch;
+    leave.timestamp_ns = 100; leave.cpu = 1; leave.pid = UINT32_MAX;
+    leave.tid = 20; leave.related_tid = 10; leave.related_pid = 100;
+    leave.previous_state = 5; leave.wait_reason = 6;
+    trace.events.push_back(leave);
+    wperf::BuildOffCpuIntervals(trace);
+    Check(trace.off_cpu_intervals.size() == 1 &&
+              trace.off_cpu_intervals[0].kind == wperf::OffCpuKind::Blocked &&
+              trace.off_cpu_intervals[0].duration_ns == 700 &&
+              trace.off_cpu_intervals[0].boundary_inferred,
+          "end-of-trace off-CPU closure is retained as a truncated interval");
+    Check(trace.quality.off_cpu_inferred_intervals == 1 &&
+              trace.quality.off_cpu_unclosed == 1,
+          "truncated off-CPU intervals are counted in quality metadata");
+}
+
+void TestOffCpuReportIdentityBoundariesAndFilters() {
+    const auto count_text = [](const std::wstring& text, const std::wstring& needle) {
+        size_t count = 0;
+        size_t offset = 0;
+        while ((offset = text.find(needle, offset)) != std::wstring::npos) {
+            ++count;
+            offset += needle.size();
+        }
+        return count;
+    };
+
+    wperf::TraceData trace;
+    trace.start_ns = 1000;
+    trace.end_ns = 8000;
+    trace.processes.push_back({42, 1, L"first.exe", L"", 1000, 4000});
+    trace.processes.push_back({42, 1, L"second.exe", L"", 5000, 9000});
+    trace.processes.push_back({43, 42, L"child.exe", L"", 5500, 9000});
+    trace.threads.push_back({42, 7, 1000, 4000});
+    trace.threads.push_back({42, 7, 5000, 9000});
+    trace.threads.push_back({43, 8, 5500, 9000});
+
+    wperf::OffCpuInterval first;
+    first.start_ns = 1000; first.end_ns = 3000; first.duration_ns = 2000;
+    first.pid = 42; first.tid = 7; first.process_start_ns = 1000;
+    first.thread_start_ns = 1000; first.kind = wperf::OffCpuKind::Blocked;
+    first.stack = {0x1000}; first.stack_quality = wperf::StackQuality::Exact;
+    first.stack_missing = false;
+    trace.off_cpu_intervals.push_back(first);
+
+    wperf::OffCpuInterval second = first;
+    second.start_ns = 5000; second.end_ns = 6000; second.duration_ns = 1000;
+    second.process_start_ns = 5000; second.thread_start_ns = 5000;
+    trace.off_cpu_intervals.push_back(second);
+
+    wperf::OffCpuInterval inferred = first;
+    inferred.start_ns = 6000; inferred.end_ns = 7000; inferred.duration_ns = 1000;
+    inferred.process_start_ns = 5000; inferred.thread_start_ns = 5000;
+    inferred.boundary_inferred = true;
+    trace.off_cpu_intervals.push_back(inferred);
+
+    wperf::TraceData module_trace;
+    module_trace.start_ns = 1;
+    module_trace.processes.push_back({42, 1, L"module.exe", L"", 1, 0});
+    module_trace.threads.push_back({42, 7, 1, 0});
+    wperf::ImageRecord first_image;
+    first_image.pid = 42; first_image.base = 0x1000; first_image.size = 0x1000;
+    first_image.timestamp = 1; first_image.checksum = 1;
+    first_image.load_ns = 1; first_image.path = L"C:\\modules\\first.dll";
+    wperf::ImageRecord second_image = first_image;
+    second_image.timestamp = 2; second_image.checksum = 2;
+    second_image.load_ns = 30; second_image.path = L"C:\\modules\\second.dll";
+    module_trace.images = {first_image, second_image};
+    wperf::OffCpuInterval module_first;
+    module_first.start_ns = 10; module_first.end_ns = 20; module_first.duration_ns = 10;
+    module_first.pid = 42; module_first.tid = 7; module_first.process_start_ns = 1;
+    module_first.thread_start_ns = 1; module_first.stack = {0x1010};
+    module_first.stack_quality = wperf::StackQuality::Exact; module_first.stack_missing = false;
+    wperf::OffCpuInterval module_second = module_first;
+    module_second.start_ns = 30; module_second.end_ns = 40; module_second.duration_ns = 10;
+    module_trace.off_cpu_intervals = {module_first, module_second};
+
+    wperf::Symbolizer symbolizer;
+    wperf::CpuReportOptions options;
+    options.json = true;
+    std::wostringstream complete;
+    wperf::WriteOffCpuReport(trace, symbolizer, options, complete);
+    Check(count_text(complete.str(), L"\"kind\":") == 2,
+          "off-CPU default excludes inferred-boundary intervals from exact totals");
+    Check(complete.str().find(L"\"process_start_ns\":1000") != std::wstring::npos &&
+              complete.str().find(L"\"process_start_ns\":5000") != std::wstring::npos,
+          "off-CPU aggregation keeps reused PID process instances separate");
+    std::wostringstream module_rows;
+    wperf::WriteOffCpuReport(module_trace, symbolizer, options, module_rows);
+    Check(count_text(module_rows.str(), L"\"kind\":") == 2,
+          "off-CPU aggregation keys frames by module identity and RVA");
+
+
+    options.off_cpu_include_inferred = true;
+    std::wostringstream with_inferred;
+    wperf::WriteOffCpuReport(trace, symbolizer, options, with_inferred);
+    Check(with_inferred.str().find(L"\"boundary\":\"truncated\"") != std::wstring::npos &&
+              with_inferred.str().find(L"\"inferred_duration_ns\":1000") != std::wstring::npos,
+          "off-CPU JSON preserves inferred boundary status and duration");
+
+    options.csv = true;
+    options.json = false;
+    std::wostringstream csv_inferred;
+    wperf::WriteOffCpuReport(trace, symbolizer, options, csv_inferred);
+    Check(csv_inferred.str().find(L"inferred_duration_ns") != std::wstring::npos &&
+              csv_inferred.str().find(L"truncated") != std::wstring::npos,
+          "off-CPU CSV preserves inferred boundary status and duration");
+
+    options.csv = false;
+    options.folded = true;
+    std::wostringstream folded_inferred;
+    wperf::WriteOffCpuReport(trace, symbolizer, options, folded_inferred);
+    Check(folded_inferred.str().find(L"[truncated-boundary]") != std::wstring::npos,
+          "off-CPU folded output marks truncated boundaries");
+
+    options = {};
+    options.json = true;
+    options.start_offset_ns = 500;
+    options.end_offset_ns = 1000;
+    trace.off_cpu_intervals = {first};
+    std::wostringstream cropped;
+    wperf::WriteOffCpuReport(trace, symbolizer, options, cropped);
+    Check(cropped.str().find(L"\"duration_ns\":500") != std::wstring::npos,
+          "off-CPU time selectors use capture-relative time and crop crossing intervals");
+
+    wperf::OffCpuInterval child = first;
+    child.start_ns = 6000; child.end_ns = 7000; child.duration_ns = 1000;
+    child.pid = 43; child.tid = 8; child.process_start_ns = 5500;
+    child.thread_start_ns = 5500; child.stack = {0x1000};
+    trace.off_cpu_intervals = {child};
+    options = {};
+    options.json = true;
+    options.pid = 1;
+    options.include_children = true;
+    std::wostringstream descendants;
+    wperf::WriteOffCpuReport(trace, symbolizer, options, descendants);
+    Check(descendants.str().find(L"\"pid\":43") != std::wstring::npos,
+          "off-CPU --include-children selects descendant process intervals");
+
+    child.stack = {0xfffff80000001000ull};
+    trace.off_cpu_intervals = {child};
+    options.include_children = false;
+    options.pid.reset();
+    options.scope = wperf::CpuReportOptions::Scope::User;
+    std::wostringstream user_only;
+    wperf::WriteOffCpuReport(trace, symbolizer, options, user_only);
+    Check(count_text(user_only.str(), L"\"kind\":") == 0,
+          "off-CPU --scope user rejects kernel leaf frames");
+    options.scope = wperf::CpuReportOptions::Scope::Kernel;
+    std::wostringstream kernel_only;
+    wperf::WriteOffCpuReport(trace, symbolizer, options, kernel_only);
+    Check(count_text(kernel_only.str(), L"\"kind\":") == 1,
+          "off-CPU --scope kernel retains kernel leaf frames");
 }
 
 void TestSelectorsAndObservedIntervals() {
@@ -541,6 +888,8 @@ void TestSelectorsAndObservedIntervals() {
 int main() {
     TestProfileDecoder();
     TestLiveWindowCodec();
+    TestLiveWindowLongPayloadBound();
+    TestPipeSendDeadline();
     TestLiveIdentityAndCorrelation();
     TestBoundedCorrelation();
     TestAddressSpacesAndNames();
@@ -551,7 +900,10 @@ int main() {
     TestModernStackKeyEpochs();
     TestRawPayloadsAndCounterDomains();
     TestStreamingAndStopDeadline();
+    TestRawSchedulerStackAssociation();
     TestOffCpuIntervals();
+    TestOffCpuTruncatedInterval();
+    TestOffCpuReportIdentityBoundariesAndFilters();
     TestSelectorsAndObservedIntervals();
     if (failures == 0) std::cout << "regression tests: PASS\n";
     return failures == 0 ? 0 : 1;

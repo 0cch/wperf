@@ -63,16 +63,18 @@ Options:
   --metadata               With --json, include quality metadata and rows.
   --strict-quality         Fail on lost/dropped/malformed data.
   --max-lost-events N       Maximum acceptable ETW lost-event count.
-  --max-missing-stacks N    Maximum acceptable missing-stack count.
+  --max-missing-stacks N    Maximum acceptable missing-stack count (intervals for off-CPU).
   --exact-stacks            Include only exact stack correlations.
   --stream                  Two-pass CPU table; omits stacks and retains no samples.
   --include-children        Include descendants of --pid.
   --cpu N                   Select processor index.
-  --time-start MS           Select samples after capture-relative time.
-  --time-end MS             Select samples before capture-relative time.
+  --time-start MS           Select data after capture-relative time; crop intervals.
+  --time-end MS             Select data before capture-relative time; crop intervals.
   --scope all|user|kernel   Select sampled address space.
   --folded, --collapsed     Print collapsed stacks: comm;frame;... count.
   --off-cpu                 Report blocked/ready intervals weighted by wait time.
+  --off-cpu-include-inferred
+                            Include end-of-capture truncated intervals.
   --stdio                   Text output (default; perf-compatible).
   --quiet                   Suppress quality diagnostics.
   --verbose                 Print complete quality counters to stderr.

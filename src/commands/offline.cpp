@@ -817,6 +817,8 @@ int RunReport(const std::vector<std::wstring>& arguments) {
             else return 2;
         } else if (argument == L"--off-cpu") {
             off_cpu = true;
+        } else if (argument == L"--off-cpu-include-inferred") {
+            report_options.off_cpu_include_inferred = true;
         } else if (argument == L"--kind") {
             if (index + 1 >= arguments.size()) {
                 PrintError(L"--kind requires cpu or io");
@@ -968,8 +970,12 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         PrintError(L"--quiet and --verbose are mutually exclusive");
         return 2;
     }
-    if (off_cpu && (!kind.empty() || report_options.call_tree || stream || metadata)) {
-        PrintError(L"--off-cpu cannot be combined with --kind, --call-graph, --stream, or --metadata");
+    if (off_cpu && (!kind.empty() || report_options.call_tree || stream)) {
+        PrintError(L"--off-cpu cannot be combined with --kind, --call-graph, or --stream");
+        return 2;
+    }
+    if (off_cpu && metadata && !report_options.json) {
+        PrintError(L"--off-cpu --metadata requires --json");
         return 2;
     }
     if ((report_options.folded || report_options.call_tree) &&
@@ -989,9 +995,9 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         PrintError(L"report requires -i FILE");
         return 2;
     }
-    if (!output_path.empty() &&
+    if (!output_path.empty() && !off_cpu &&
         ((!kind.empty() && kind != L"cpu") || stream || metadata)) {
-        PrintError(L"--output currently supports CPU report output without --stream or --metadata");
+        PrintError(L"--output currently supports CPU or off-CPU report output without --stream");
         return 2;
     }
     if (!kind.empty() && kind != L"cpu" && kind != L"io" && kind != L"pmc") {
@@ -1012,7 +1018,7 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         return 6;
     }
     if (metadata && !report_options.json) { PrintError(L"--metadata requires --json"); return 2; }
-    if (metadata && !stream) {
+    if (metadata && !stream && !off_cpu) {
         std::wcout << L"{\"quality\":";
         WriteQualityJson(trace, std::wcout);
         std::wcout << L",\"rows\":";
@@ -1060,7 +1066,13 @@ int RunReport(const std::vector<std::wstring>& arguments) {
 
     if (off_cpu) {
         std::wostringstream result;
+        if (metadata) {
+            result << L"{\"quality\":";
+            WriteQualityJson(trace, result);
+            result << L",\"rows\":";
+        }
         WriteOffCpuReport(trace, symbolizer, report_options, result);
+        if (metadata) result << L"}\n";
         if (!output_path.empty()) {
             if (!WriteReportFile(output_path, result.str(), &error)) {
                 PrintError(error);
@@ -1069,7 +1081,18 @@ int RunReport(const std::vector<std::wstring>& arguments) {
         } else {
             std::wcout << result.str();
         }
-        return 0;
+        const bool exceeds_loss =
+            maximum_lost && trace.quality.lost_events > *maximum_lost;
+        const bool exceeds_missing =
+            maximum_missing && trace.quality.off_cpu_stack_missing > *maximum_missing;
+        const bool strict_failure =
+            strict_quality &&
+            (trace.quality.incomplete || trace.quality.off_cpu_inferred_intervals != 0 ||
+             trace.quality.off_cpu_evicted != 0);
+        return trace.off_cpu_intervals.empty() || exceeds_loss || exceeds_missing ||
+                       strict_failure
+                   ? 6
+                   : 0;
     }
 
     const uint64_t unattributed_samples = static_cast<uint64_t>(

@@ -17,6 +17,7 @@ struct CpuReportOptions {
     std::optional<uint32_t> tid;
     std::optional<uint32_t> profile_source;
     bool exact_stacks_only = false;
+    bool off_cpu_include_inferred = false;
     std::optional<uint32_t> cpu;
     std::optional<uint64_t> start_offset_ns, end_offset_ns;
     bool include_children = false;

@@ -27,8 +27,8 @@ when implementation, scoped evidence, and known limitations are all recorded.
 | VAL-02 | Real modern cached-stack ETL | Validation expansion | P1 | ETW stack-cache capable capture environment |
 | RUN-01 | Long soak and fault stress | Script exists; manual run required | P1 | Elevated runner and sustained workloads |
 | RUN-02 | Sampling perturbation and capacity curves | Planned / manual run required | P1 | Repeatable workload on fixed hardware |
-| SEC-01 | Low-privilege live symbolization | Complete for current architecture | P1 | Structured IPC and controller-side symbols |
-| ANA-01 | Off-CPU blocked/ready analysis | Complete for offline record/report | P2 | Scheduler stacks and interval correlation |
+| SEC-01 | Low-privilege live symbolization | Implemented; review re-validation pending | P1 | Structured IPC and controller-side symbols |
+| ANA-01 | Off-CPU blocked/ready analysis | Implemented; review re-validation pending | P2 | Scheduler stacks and interval correlation |
 | ANA-02 | JIT method lifecycle mapping | Planned | P2 | Runtime-specific ETW events |
 | CO-01 | External profiler conflicts and recovery | Partial / manual validation required | P1 | Controlled competing capture tool |
 | REL-01 | Continuous validation and release evidence | Partial | P1 | Specialized runners and evidence retention |
@@ -98,38 +98,46 @@ target platform.
 
 ### SEC-01: Move DbgHelp, PDB handling, and formatting out of the elevated worker
 
-**Status: complete for the current live-top architecture.**
+**Status: implemented; acceptance remains pending after review-4392026 re-validation.**
 
 Implemented:
 
 - [x] The elevated worker owns ETW configuration, raw trace windows, metadata, quality counters, and recovery only.
-- [x] Versioned structured IPC (`TOP2`, protocol version 1) transports interval, quality counters, images, processes, threads, samples, stacks, periods, sources, and PMC payloads.
-- [x] Per-message and receive-buffer limits are bounded; metadata, sample rings, and IPC recovery counters remain visible.
+- [x] Versioned structured IPC (`TOP2`, protocol version 2) transports interval, quality counters, images, processes, threads, samples, stacks, periods, sources, and PMC payloads.
+- [x] Every encoded metadata and U64 payload is bounded below the pipe receive limit; the total window has an 8 MiB encoded-character budget. Field truncation increments `metadata_dropped`, and dropped samples/records are counted separately.
 - [x] The normal-integrity controller owns DbgHelp, PDB lookup, symbol caches, archive loading, aggregation, formatting, and output.
 - [x] `top --symbol-path` remains a controller-side option and `top --archive` supports user-provided verified modules.
 - [x] The worker does not accept arbitrary file/download requests and keeps nonce, ACL, controller-PID, and process-handle validation.
 - [x] Module and process metadata are preserved even when the controller cannot read a file; unsymbolized results remain explicit.
-- [x] Structured live-window round-trip and live-integration tests cover Unicode-independent metadata, long stacks, PMC payloads, and control messages.
+- [x] Structured live-window round-trip tests cover long Unicode metadata, oversized stack truncation, PMC payloads, and control messages.
+- [x] Controller receive/control is separated from symbolization and rendering; stale render windows are bounded and reported.
+- [x] Worker pipe handles are overlapped, window transmission checks the control pipe between messages, and each write has a bounded deadline.
 
-Remaining manual hardening: slow symbol-server, controller symbolizer crash,
-multi-token UAC boundaries, and very large metadata windows should be included
-in a hardware/fault-injection report before declaring universal behavior.
+Remaining manual hardening: slow symbol-server behavior, controller symbolizer
+crash injection, and real multi-token UAC boundaries still require a
+hardware/fault-injection acceptance run. Large metadata windows no longer
+overflow the pipe because payloads are truncated with explicit quality
+counters.
 
 ## 6. Off-CPU analysis
 
 ### ANA-01: Correlate wait intervals with stacks
 
-**Status: complete for the offline record/report path.**
+**Status: implemented; acceptance remains pending after review-4392026 re-validation.**
 
 Implemented:
 
 - [x] Blocked means a context switch from `Wait`; ready means runnable but not running. Preemption and other switch reasons are not treated as blocking.
 - [x] `sched`, `cpu-sched`, and `all` profiles request CSwitch/ReadyThread stack tracing and report scheduler-stack capability status.
 - [x] Replay attaches scheduler-event stacks from exact StackWalk keys and records exact/missing/ambiguous quality.
-- [x] A cross-CPU blocked/ready state machine handles wakeups, duplicate ready events, TID lifetimes, migration, eviction, and inferred boundaries.
+- [x] A cross-CPU blocked/ready state machine uses CSwitch contract `tid=incoming` and `related_tid=outgoing`, and handles wakeups, duplicate ready events, TID lifetimes, migration, eviction, and truncated boundaries.
 - [x] Wakeup stacks are retained separately and are never assigned as the blocked thread's stack.
-- [x] `report --off-cpu` supports text, JSON, CSV, and duration-weighted folded output; folded counts are nanoseconds.
-- [x] Synthetic regression coverage verifies blocked/ready separation, wakeup identity, interval weights, and stack retention.
+- [x] `report --off-cpu` supports text, JSON, CSV, and duration-weighted folded output; folded counts are nanoseconds and inferred boundaries are excluded by default.
+- [x] Aggregation keys include process instance, thread instance, module identity, and module-relative address; symbols resolve at the interval/wakeup timestamp.
+- [x] Relative `--time-start`/`--time-end` crop crossing intervals; `--include-children` and `--scope user|kernel` are honored.
+- [x] Off-CPU JSON/CSV expose confirmed versus truncated duration and boundary status; `--off-cpu-include-inferred` is opt-in.
+- [x] Off-CPU reports run the same lost-event and missing-stack quality gates as CPU reports; strict quality also rejects truncated or evicted intervals.
+- [x] Synthetic regression coverage verifies blocked/ready separation, wakeup identity, interval weights, stack retention, instance/module-aware aggregation, boundary status, relative-time cropping, and selectors.
 - [x] `report --stream` remains explicitly unsupported for off-CPU because streaming does not retain stacks.
 
 Remaining manual validation: real scheduler-stack ETLs from supported Windows

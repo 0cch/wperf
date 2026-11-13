@@ -13,7 +13,7 @@
 - `symbolizer.*`: PE/RSDS identity validation, DbgHelp, synthetic module bases,
   source line and in-memory symbol cache.
 - `live_top.*`: real-time ETW consumer and bounded sample/event rings.
-- `live_data.*`: versioned structured IPC windows for low-privilege controller-side analysis.
+- `live_data.*`: versioned, size-bounded structured IPC windows for low-privilege controller-side analysis.
 - `off_cpu_report.*`: blocked/ready interval aggregation and folded report output.
 - `commands/`: CLI controllers, live worker protocol, reports and analysis.
 - `zydis`: optional static disassembly engine.
@@ -36,13 +36,18 @@
 - Snapshot exchanges ring buffers under a short lock, then correlates outside it.
 - Controller and worker communicate through a nonce-authenticated named pipe.
 - The worker validates the named-pipe server PID against the expected controller.
-- DbgHelp and formatting run outside the ETW callback.
-- Ctrl-C sends STOP, waits for worker exit and cleans stale sessions if needed.
+- DbgHelp and formatting run outside the ETW callback and outside the controller receive loop.
+- A bounded asynchronous renderer consumes completed windows, so symbol lookup and output cannot block STOP processing.
+- Ctrl-C sends STOP, keeps draining control messages, waits for worker exit and cleans stale sessions if needed.
 - The elevated worker sends raw trace windows and metadata; the normal-integrity
   controller owns DbgHelp, PDB lookup, archive resolution, symbol caches,
   aggregation, and formatting.
-- Live IPC uses a bounded, versioned line protocol with control messages kept
-  outside data formatting.
+- Live IPC uses a bounded, versioned line protocol. String and U64 payloads are
+  truncated below the pipe receive limit, and truncation increments explicit
+  metadata quality counters. The worker checks the control pipe between
+  messages, and client pipe handles use overlapped I/O with bounded write
+  deadlines. STOP remains responsive and a stalled reader cannot block the
+  worker indefinitely.
 - Live and record workers have a session guard for abnormal exit and conditional
   sampling-configuration recovery.
 
@@ -52,7 +57,10 @@
 - Unknown, lost, ambiguous, key-mismatched, metadata-dropped and ring-dropped data is counted.
 - Scheduler-event stacks are correlated separately from sample stacks.
 - Off-CPU blocked intervals require a switch from Wait; ready intervals and
-  preemption are represented separately, and unclosed intervals are marked.
+  preemption are represented separately. End-of-capture closures retain a
+  truncated boundary flag and are excluded from exact totals by default.
+- Off-CPU grouping uses process/thread instance starts plus module identity and
+  RVA, and resolves stacks at the original interval or wakeup timestamp.
 - PE timestamp/checksum and RSDS PDB GUID/age are validated before symbols are
   trusted.
 - PMC values are labeled sample-derived and are not presented as exact totals.

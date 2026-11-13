@@ -45,7 +45,8 @@ bool WaitOverlapped(HANDLE handle, OVERLAPPED& overlapped, DWORD timeout_ms,
     return true;
 }
 
-bool WriteMessage(HANDLE pipe, std::wstring_view line, std::wstring* error) {
+bool WriteMessage(HANDLE pipe, std::wstring_view line, uint32_t timeout_ms,
+                  std::wstring* error) {
     std::wstring payload(line);
     payload.push_back(L'\n');
     const DWORD bytes = static_cast<DWORD>(payload.size() * sizeof(wchar_t));
@@ -65,7 +66,7 @@ bool WriteMessage(HANDLE pipe, std::wstring_view line, std::wstring* error) {
     if (ok) {
         result = true;
     } else if (initial_error == ERROR_IO_PENDING) {
-        result = WaitOverlapped(pipe, overlapped, 5000, &written, error);
+        result = WaitOverlapped(pipe, overlapped, timeout_ms, &written, error);
     } else if (error != nullptr) {
         *error = L"WriteFile(pipe) failed: " + FormatWindowsError(initial_error);
     }
@@ -193,14 +194,15 @@ bool PipeServer::WaitForClient(uint32_t timeout_ms, std::wstring* error) {
     return ok;
 }
 
-bool PipeServer::SendLine(std::wstring_view line, std::wstring* error) {
+bool PipeServer::SendLine(std::wstring_view line, std::wstring* error,
+                          uint32_t timeout_ms) {
     if (!IsConnected()) {
         if (error != nullptr) {
             *error = L"pipe client is not connected";
         }
         return false;
     }
-    return WriteMessage(pipe_, line, error);
+    return WriteMessage(pipe_, line, timeout_ms, error);
 }
 
 bool PipeServer::ReceiveLine(std::wstring& line, uint32_t timeout_ms,
@@ -249,7 +251,8 @@ bool PipeClient::Connect(std::wstring_view pipe_path, uint32_t timeout_ms,
     const ULONGLONG deadline = GetTickCount64() + timeout_ms;
     while (GetTickCount64() <= deadline) {
         pipe_ = CreateFileW(pipe_path.data(), GENERIC_READ | GENERIC_WRITE, 0,
-                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                            nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
         if (pipe_ != INVALID_HANDLE_VALUE) {
             DWORD mode = PIPE_READMODE_MESSAGE;
             SetNamedPipeHandleState(pipe_, &mode, nullptr, nullptr);
@@ -270,14 +273,15 @@ bool PipeClient::Connect(std::wstring_view pipe_path, uint32_t timeout_ms,
     return false;
 }
 
-bool PipeClient::SendLine(std::wstring_view line, std::wstring* error) {
+bool PipeClient::SendLine(std::wstring_view line, std::wstring* error,
+                          uint32_t timeout_ms) {
     if (!IsConnected()) {
         if (error != nullptr) {
             *error = L"pipe server is not connected";
         }
         return false;
     }
-    return WriteMessage(pipe_, line, error);
+    return WriteMessage(pipe_, line, timeout_ms, error);
 }
 
 bool PipeClient::ReceiveLine(std::wstring& line, uint32_t timeout_ms,

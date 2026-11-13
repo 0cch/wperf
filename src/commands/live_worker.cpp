@@ -83,6 +83,20 @@ bool WaitInterruptibly(PipeClient& pipe, HANDLE controller, uint64_t duration_ms
     return true;
 }
 
+bool SendWindowInterruptibly(PipeClient& pipe, HANDLE controller,
+                                const std::vector<std::wstring>& lines, bool& stop,
+                                std::wstring& error) {
+    for (const std::wstring& line : lines) {
+        if (!ReceiveCommand(pipe, controller, stop)) {
+            error = L"live control pipe disconnected";
+            return false;
+        }
+        if (stop) return true;
+        if (!pipe.SendLine(line, &error, 2000)) return false;
+    }
+    return true;
+}
+
 bool SendTextLines(PipeClient& pipe, const std::wstring& prefix,
                    const std::wstring& text, std::wstring& error) {
     std::wistringstream stream(text);
@@ -196,13 +210,11 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
             }
             TraceData trace = capture.Snapshot();
             const auto window = EncodeLiveWindow(trace, interval_ms);
-            for (const std::wstring& line : window) {
-                if (!pipe.SendLine(line, &error)) {
-                    result = 5;
-                    break;
-                }
+            if (!SendWindowInterruptibly(pipe, controller.get(), window, stop, error)) {
+                result = 5;
+                break;
             }
-            if (result != 0) {
+            if (stop || result != 0) {
                 break;
             }
             if (duration_ms != 0 && GetTickCount64() - started >= duration_ms) {
@@ -308,12 +320,14 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                            std::to_wstring(event.related_pid) + L" " +
                            std::to_wstring(event.duration_ns / 1000) + L"us " + comm;
                 }
-                if (!pipe.SendLine(L"OUT " + line, &error)) {
+                if (!SendWindowInterruptibly(pipe, controller.get(), {L"OUT " + line},
+                                              stop, error)) {
                     result = 5;
                     break;
                 }
+                if (stop) break;
             }
-            if (result != 0) {
+            if (stop || result != 0) {
                 break;
             }
             if (duration_ms != 0 && GetTickCount64() - started >= duration_ms) {

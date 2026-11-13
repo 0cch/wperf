@@ -1,6 +1,8 @@
 # wperf Changelog
 
 ## 0.8.0.0
+- Fixed CSwitch incoming/outgoing attribution, off-CPU instance/module-aware aggregation, truncated-boundary accounting, capture-relative interval cropping, and off-CPU quality gates found in review-4392026.
+- Bounded live IPC metadata and stack payloads, kept STOP reachable while symbols render, and added full controller decode/render live smoke coverage.
 - Moved live-top DbgHelp, PDB, archive, symbol cache and formatting into the ordinary-permission controller using bounded structured IPC.
 - Added scheduler-event stack capture and offline off-CPU blocked/ready interval analysis with text, JSON, CSV and folded output.
 - Added controller-side live archive resolution through `top --archive`.

@@ -116,6 +116,7 @@ struct TraceEvent {
     SharedStack stack;
     StackQuality stack_quality = StackQuality::Missing;
     bool stack_missing = true;
+    bool stack_ambiguous = false;
 };
 
 enum class OffCpuKind { Blocked, Ready };
@@ -129,17 +130,22 @@ struct OffCpuInterval {
     uint32_t tid = 0;
     uint32_t wakeup_tid = 0;
     uint32_t wait_reason = 0;
+    uint64_t process_start_ns = 0;
+    uint64_t thread_start_ns = 0;
+    uint64_t wakeup_timestamp_ns = 0;
     OffCpuKind kind = OffCpuKind::Blocked;
     SharedStack stack;
     SharedStack wakeup_stack;
     StackQuality stack_quality = StackQuality::Missing;
     bool stack_missing = true;
+    bool stack_ambiguous = false;
     bool boundary_inferred = false;
 };
 
 struct TraceQuality {
     uint64_t events_total = 0;
     uint64_t samples_total = 0;
+    uint64_t samples_dropped = 0;
     uint64_t stack_events_total = 0;
     uint64_t stack_ref_events_total = 0;
     uint64_t stack_def_events_total = 0;
@@ -177,6 +183,7 @@ struct TraceQuality {
     uint64_t off_cpu_stack_missing = 0;
     uint64_t off_cpu_preemptions = 0;
     uint64_t off_cpu_unclosed = 0;
+    uint64_t off_cpu_inferred_intervals = 0;
     uint64_t off_cpu_duplicate_ready = 0;
     uint64_t off_cpu_evicted = 0;
     bool incomplete = false;

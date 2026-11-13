@@ -130,6 +130,11 @@ target_compile_options(wperf_live_integration_tests PRIVATE /W4 /permissive- /ut
 target_link_libraries(wperf_live_integration_tests PRIVATE wperf_core)
 add_test(NAME live_integration COMMAND wperf_live_integration_tests)
 set_tests_properties(live_integration PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS integration)
+add_test(NAME live_top_controller_smoke
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/live_top_smoke.ps1
+         -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_top_controller_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
+                     SKIP_RETURN_CODE 77 LABELS integration)
 add_test(NAME cli_version COMMAND wperf --version)
 add_test(NAME cli_version_format COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/version_test.ps1 -Wperf $<TARGET_FILE:wperf>)
 add_test(NAME cli_list COMMAND wperf list)
@@ -151,8 +156,18 @@ add_test(NAME cli_report_io COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/
 add_test(NAME cli_report_io_json COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io --json)
 add_test(NAME cli_folded_fixture COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --folded --percent-limit 5)
 add_test(NAME cli_folded_output COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/folded_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
-add_test(NAME cli_off_cpu_fixture COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --folded --percent-limit 1)
-add_test(NAME cli_off_cpu_json COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --json --percent-limit 1)
+add_test(NAME cli_off_cpu_fixture COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --folded --percent-limit 0)
+add_test(NAME cli_off_cpu_json COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --json --percent-limit 0)
+add_test(NAME cli_off_cpu_folded_output
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/folded_output_test.ps1
+         -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl
+         -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR} -OffCpu)
+add_test(NAME cli_off_cpu_missing_gate
+         COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --json --percent-limit 100 --max-missing-stacks 0)
+set_tests_properties(cli_off_cpu_missing_gate PROPERTIES WILL_FAIL TRUE)
+add_test(NAME cli_off_cpu_strict_gate
+         COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --json --percent-limit 100 --strict-quality)
+set_tests_properties(cli_off_cpu_strict_gate PROPERTIES WILL_FAIL TRUE)
 add_test(NAME cli_report_conflicting_formats COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
 add_test(NAME cli_annotate_conflicting_formats COMMAND wperf annotate -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
 add_test(NAME cli_sched_fixture COMMAND wperf sched -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)

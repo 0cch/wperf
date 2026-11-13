@@ -51,8 +51,17 @@ are maintained in [TODO.md](TODO.md).
 - Scheduler output adds observed running/ready/blocked intervals and wakeup
   P50/P95/P99. Boundary fragments without both endpoints are not counted.
   I/O output adds per-path/operation byte totals and latency quantiles.
-- Offline CPU reports add `--include-children`, `--cpu`, `--time-start`,
+- Offline reports add `--include-children`, `--cpu`, `--time-start`,
   `--time-end` (milliseconds relative to capture), and `--scope all|user|kernel`.
+  The off-CPU path crops intervals at relative-time bounds and honors the same
+  PID/descendant, CPU, stack, module, symbol and scope selectors.
+- Off-CPU reports expose confirmed and truncated-boundary durations separately.
+  Truncated intervals are excluded by default; `--off-cpu-include-inferred`
+  opts them in, and strict quality rejects them. Lost-event and missing-stack
+  gates are shared with CPU reports.
+- Live top decodes and drains control IPC independently from bounded rendering.
+  Oversized metadata/stack payloads are truncated at safe boundaries and counted
+  in `metadata_dropped`; worker sends check STOP between messages.
 - `annotate --disasm` decodes a known function range with per-instruction sample
   hits; symbols without a known size retain the bounded address-heat fallback.
 
@@ -77,8 +86,10 @@ Mixed-source merged traces and unknown source metadata are not inferred.
 
 `wperf_live_integration_tests` requires real CPU samples and decoded live sched
 events, graceful STOP, worker-kill cleanup and controller-kill cleanup with no
-matching output. Ordinary local sessions skip with exit 77 when not elevated.
-CI sets `WPERF_REQUIRE_LIVE_TESTS=1`, so access denial or empty capture fails.
+matching output. A separate live smoke runs the ordinary `wperf top` controller
+through decode, symbolization and render. Ordinary local sessions skip with
+exit 77 when not elevated. CI sets `WPERF_REQUIRE_LIVE_TESTS=1`, so access denial
+or empty capture fails.
 The portable regression also tests the teardown watchdog, raw payload mutation,
 streaming a real checked-in ETL, inline/cache and verified archive replay.
 

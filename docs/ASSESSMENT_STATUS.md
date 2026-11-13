@@ -14,7 +14,9 @@ recovery checkpoints, zero-event validation, controller handles, teardown
 deadlines, report selectors, and quantile analysis.
 
 The remaining work is primarily target-hardware evidence rather than missing
-core plumbing.
+core plumbing. Review-4392026 then found CSwitch attribution, off-CPU
+aggregation/boundary/filter/gate, and live IPC progress defects. Those fixes are
+implemented in the current tree and await the next acceptance review.
 
 ## Resolved findings
 
@@ -24,6 +26,9 @@ core plumbing.
 - Inline frames survive cache reopen and identity validation.
 - Live top symbolization runs in the ordinary-permission controller, not the elevated worker.
 - Scheduler stack capture and off-CPU blocked/ready correlation are implemented.
+- CSwitch now treats `tid` as incoming and `related_tid` as outgoing throughout scheduler-stack and off-CPU correlation.
+- Off-CPU reports preserve inferred/truncated boundaries, crop relative-time windows, and apply common quality gates.
+- Live IPC payloads are bounded and controller rendering no longer blocks the receive/control loop.
 - Repeated milestone smoke scripts were removed; focused CTest coverage is authoritative.
 
 ## Remaining validation gaps
@@ -42,7 +47,8 @@ core plumbing.
 ## Current verification
 
 - Stable CTest coverage includes CLI contracts, replay, archive, regression,
-  folded output, off-CPU output, and live integration.
+  folded output, off-CPU output/quality-gate behavior, full top controller
+  decode/render smoke, and live integration.
 - CI runs both Zydis-enabled and Zydis-disabled Release builds.
 - CI sets `WPERF_REQUIRE_LIVE_TESTS=1`, so an unexpected live-test skip fails.
 - Hardware-dependent claims remain NOT-RUN/UNSUPPORTED until target evidence is attached.

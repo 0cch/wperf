@@ -3,13 +3,18 @@ param(
     [Parameter(Mandatory)] [string]$Wperf,
     [Parameter(Mandatory)] [string]$Fixture,
     [Parameter(Mandatory)] [string]$SymbolPath,
-    [Parameter(Mandatory)] [string]$OutputDirectory
+    [Parameter(Mandatory)] [string]$OutputDirectory,
+    [switch]$OffCpu
 )
 
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-$output = Join-Path $OutputDirectory "folded-output.folded"
-& $Wperf report -i $Fixture --symbol-path $SymbolPath --folded --quiet -o $output
+$output = Join-Path $OutputDirectory $(if ($OffCpu) { "offcpu-folded-output.folded" } else { "folded-output.folded" })
+$arguments = @("report", "-i", $Fixture, "--symbol-path", $SymbolPath, "--folded", "--quiet", "-o", $output)
+if ($OffCpu) {
+    $arguments += @("--off-cpu", "--percent-limit", "0")
+}
+& $Wperf @arguments
 if ($LASTEXITCODE -ne 0) {
     throw "folded report failed with exit $LASTEXITCODE"
 }

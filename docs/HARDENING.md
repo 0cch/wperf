@@ -36,7 +36,9 @@ findings, test gaps and roadmap items to their current implementation status.
 - `report --json --metadata` emits `{ "quality": ..., "rows": ... }`.
   Ordinary `--json` remains an array. `--strict-quality` returns exit 6 on
   ETW loss, buffer/ring loss, metadata eviction, decoder errors or correlator
-  eviction. Missing call stacks alone do not imply a corrupt trace.
+  eviction. Missing call stacks alone do not imply a corrupt trace. Off-CPU
+  reports apply the same lost-event and missing-stack gates; strict mode also
+  rejects truncated or evicted intervals.
 - `script -F source,period,stack_quality` exposes sample provenance. CPU period
   is in nanoseconds; PMC period is a source-specific event count. Zero means
 unavailable. Diff currently falls back to the trace-level interval for a CPU
@@ -84,9 +86,20 @@ produce no usable events. The soak script records both controller and live
 worker memory, handles and CPU time.
 
 Off-CPU blocked/ready analysis and duration-weighted folded output are now
-implemented for offline traces. Scheduler runtime totals, I/O pathname
-correlation, JIT maps, live off-CPU and full-function annotate remain separate
-analysis work.
+implemented for offline traces, including instance/module-aware aggregation,
+capture-relative interval cropping, explicit truncated boundaries, and quality
+gates. Scheduler runtime totals, I/O pathname correlation, JIT maps, live
+off-CPU and full-function annotate remain separate analysis work.
+
+Live metadata is encoded into bounded messages. Oversized command lines and
+stack arrays are truncated on complete UTF-8 and item boundaries; each
+truncation increments `metadata_dropped`. The complete encoded window has an
+8 MiB character budget; dropped samples and records are reported separately and
+mark the window incomplete. The controller parses and drains IPC
+on its control thread while a bounded renderer performs DbgHelp work, so slow
+symbolization cannot prevent STOP from reaching the worker. Client pipe handles
+are opened for overlapped I/O, so a stalled reader reaches the write deadline
+instead of blocking the worker indefinitely.
 
 ## Local report benchmark
 
