@@ -36,6 +36,9 @@ pwsh -File .\scripts\build_release.ps1
 .\\build\\Release\\wperf.exe record --elevate --lbr --duration 1000 -o .\\lbr.etl
 .\\build\\Release\\wperf.exe trace -i .\\lbr.etl -e lbr --max 20
 .\build\Release\wperf.exe report -i .\trace.etl --symbol-path .\build\Release
+.\\build\\Release\\wperf.exe list providers --max 20
+.\\build\\Release\\wperf.exe record --elevate --provider {GUID} --duration 3000 -o .\\provider.etl
+.\\build\\Release\\wperf.exe diff -1 .\\before.etl -2 .\\after.etl --calltree --json
 .\build\Release\wperf.exe stat -- .\build\Release\wperf_cpu_burn.exe 1000 2
 .\build\Release\wperf.exe top --elevate --interval 1000 --iterations 1
 .\build\Release\wperf.exe record --profile cpu-sched -o .\sched.etl -- .\build\Release\wperf_cpu_burn.exe 2000 4

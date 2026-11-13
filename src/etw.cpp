@@ -3,6 +3,7 @@
 #include "common.h"
 
 #include <algorithm>
+#include <tdh.h>
 #include <vector>
 
 namespace wperf {
@@ -105,8 +106,8 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     properties->MaximumBuffers = options.maximum_buffers;
     properties->MaximumFileSize = options.maximum_file_size_mb;
     properties->FlushTimer = options.flush_timer_seconds;
-    properties->EnableFlags = options.enable_flags;
-    if (options.pmc_profile) {
+    properties->EnableFlags = options.system_logger ? options.enable_flags : 0;
+    if (options.system_logger && options.pmc_profile) {
         properties->EnableFlags |= EVENT_TRACE_FLAG_CSWITCH |
                                    EVENT_TRACE_FLAG_DISPATCHER |
                                    EVENT_TRACE_FLAG_SYSTEMCALL;
@@ -114,7 +115,8 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     properties->LogFileMode =
         (options.realtime ? EVENT_TRACE_REAL_TIME_MODE
                           : EVENT_TRACE_FILE_MODE_SEQUENTIAL) |
-        EVENT_TRACE_USE_GLOBAL_SEQUENCE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
+        EVENT_TRACE_USE_GLOBAL_SEQUENCE |
+        (options.system_logger ? EVENT_TRACE_SYSTEM_LOGGER_MODE : 0);
 
     TRACEHANDLE handle = 0;
     const ULONG start_result =
@@ -128,6 +130,25 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
 
     handle_ = handle;
     name_ = options.session_name;
+
+    if (options.enable_provider) {
+        const ULONG enable_result = EnableTraceEx2(
+            handle_, &options.provider_id, EVENT_CONTROL_CODE_ENABLE_PROVIDER,
+            options.provider_level, options.provider_match_any,
+            options.provider_match_all, 0, nullptr);
+        if (enable_result != ERROR_SUCCESS) {
+            std::wstring stop_error;
+            Stop(&stop_error);
+            if (error != nullptr) {
+                *error = LastErrorWith(L"EnableTraceEx2(provider)", enable_result);
+            }
+            return false;
+        }
+    }
+
+    if (!options.system_logger) {
+        return true;
+    }
 
     if (options.pmc_profile) {
         ULONG source = options.pmc_source;
@@ -378,6 +399,53 @@ std::vector<ProfileSource> QueryProfileSources(std::wstring* error) {
             break;
         }
         offset += source->NextEntryOffset;
+    }
+    return result;
+}
+
+std::vector<ProviderInfo> QueryProviders(std::wstring* error) {
+    std::vector<ProviderInfo> result;
+    ULONG required = 0;
+    TDHSTATUS status = TdhEnumerateProviders(nullptr, &required);
+    if (status != ERROR_INSUFFICIENT_BUFFER && status != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = L"TdhEnumerateProviders failed: " +
+                     FormatWindowsError(status);
+        }
+        return result;
+    }
+    if (required == 0) {
+        return result;
+    }
+    std::vector<BYTE> buffer(required, 0);
+    status = TdhEnumerateProviders(
+        reinterpret_cast<PPROVIDER_ENUMERATION_INFO>(buffer.data()), &required);
+    if (status != ERROR_SUCCESS) {
+        if (error != nullptr) {
+            *error = L"TdhEnumerateProviders failed: " +
+                     FormatWindowsError(status);
+        }
+        return result;
+    }
+    const auto* providers =
+        reinterpret_cast<const PROVIDER_ENUMERATION_INFO*>(buffer.data());
+    for (ULONG index = 0; index < providers->NumberOfProviders; ++index) {
+        const auto& provider = providers->TraceProviderInfoArray[index];
+        ProviderInfo info;
+        info.id = provider.ProviderGuid;
+        info.schema_source = provider.SchemaSource;
+        if (provider.ProviderNameOffset < buffer.size()) {
+            const auto* name = reinterpret_cast<const wchar_t*>(
+                buffer.data() + provider.ProviderNameOffset);
+            const size_t remaining =
+                (buffer.size() - provider.ProviderNameOffset) / sizeof(wchar_t);
+            size_t length = 0;
+            while (length < remaining && name[length] != L'\0') {
+                ++length;
+            }
+            info.name.assign(name, length);
+        }
+        result.push_back(std::move(info));
     }
     return result;
 }

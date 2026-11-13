@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(wperf VERSION 0.4.0 LANGUAGES CXX)
+project(wperf VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,7 +35,7 @@ target_compile_definitions(wperf_core PUBLIC
     _WIN32_WINNT=0x0A00
 )
 target_compile_options(wperf_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
-target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi)
+target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi tdh ole32)
 
 add_executable(wperf
     src/main.cpp
@@ -77,3 +77,7 @@ add_test(NAME cli_record_help COMMAND wperf record --help)
 add_test(NAME cli_report_io COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io)
 add_test(NAME cli_sched_fixture COMMAND wperf sched -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)
 add_test(NAME cli_syscall_fixture COMMAND wperf trace -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/syscall.etl -e syscall --max 10)
+add_test(NAME archive_manifest_smoke COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/archive_smoke.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
+add_test(NAME cli_provider_list COMMAND wperf list providers --max 1)
+add_test(NAME cli_provider_bad_guid COMMAND wperf record --provider not-a-guid)
+set_tests_properties(cli_provider_bad_guid PROPERTIES WILL_FAIL TRUE)
