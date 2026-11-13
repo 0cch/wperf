@@ -45,6 +45,7 @@ inline void WriteQualityJson(const TraceData& trace, std::wostream& output) {
            << L",\"lost_events\":" << q.lost_events << L",\"lost_buffers\":" << q.lost_buffers
            << L",\"ring_dropped\":" << q.ring_dropped
            << L",\"metadata_dropped\":" << q.metadata_dropped
+           << L",\"context_register_events\":" << q.context_register_events
            << L",\"off_cpu_blocked_intervals\":" << q.off_cpu_blocked_intervals
            << L",\"off_cpu_ready_intervals\":" << q.off_cpu_ready_intervals
            << L",\"off_cpu_exact_stacks\":" << q.off_cpu_stack_exact

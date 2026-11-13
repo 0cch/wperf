@@ -35,9 +35,9 @@ implemented in the current tree and await the next acceptance review.
 
 | Area | Remaining work |
 |---|---|
-| Intel LBR | Capture on supported Intel hardware and verify branch fields |
-| PMC calibration | Known-counter workload, source/period validation, and reset behavior |
-| Context registers | Real payload schema and decoding |
+| Intel LBR | Validated on Intel Core i5-14600K: timer and PMC captures decode non-empty branches; see [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) |
+| PMC calibration | ETW source IDs, periods, per-CPU deltas, restore and `exact:false` snapshots validated; unsupported-source inventory remains open |
+| Context registers | AMD64 capture and decoding validated against the WMI event type 122 field order and public RMP layout; ARM64 not claimed |
 | Platform matrix | OS/CPU/VBS/HVCI/WOW64/processor-group coverage |
 | Real cached stacks | Native StackWalkDef/Ref ETL evidence |
 | Soak and perturbation | Long runs, fault injection, overhead/loss curves |
@@ -51,8 +51,8 @@ implemented in the current tree and await the next acceptance review.
   decode/render smoke, and live integration.
 - CI runs both Zydis-enabled and Zydis-disabled Release builds.
 - CI sets `WPERF_REQUIRE_LIVE_TESTS=1`, so an unexpected live-test skip fails.
-- Hardware-dependent claims remain NOT-RUN/UNSUPPORTED until target evidence is attached.
+- LBR, ETW PMC semantics and AMD64 context-register decoding now have Intel hardware evidence.
 
 The project does not claim exact Linux perf equivalence for event groups,
-multiplex scaling, syscall argument semantics, context-register payloads, or
-unverified hardware features.
+multiplex scaling, syscall argument semantics, ARM64 context-register
+payloads, or unverified hardware features.

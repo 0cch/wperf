@@ -96,14 +96,15 @@ streaming a real checked-in ETL, inline/cache and verified archive replay.
 Issue #3's decoder/cache/inline regressions and Issue #4's mandatory elevated
 integration passed in both CI configurations at `10825e8` (37/37 each):
 https://github.com/0cch/wperf/actions/runs/43410931662 . Both issues are closed.
-Issue #5 still requires supported Intel LBR, PMC calibration and context-register
-integration on target hardware; implementing configuration and decoders does
-not satisfy those acceptance conditions by itself.
+Issue #5 is closed: Intel LBR, ETW PMC semantics and AMD64 context-register
+capture/decoding were hardware-validated on an i5-14600K. See
+[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md); ARM64 context decoding is not claimed.
 
 Windows has no supported query for the previous global PMC source list.
 Conditional interval rollback and ownership rejection cannot provide atomic
 coexistence with unrelated profilers. Complete cross-OS/CPU/VBS/WOW64 coverage,
 long soak and sampling perturbation measurements remain open. Context-register
-payload decoding remains disabled until its schema is validated. Off-CPU
-blocked/ready stack analysis is now implemented for the offline record/report
-path; JIT maps and live off-CPU remain separate analysis work.
+payload capture and decoding are validated for AMD64; ARM64 remains outside
+the accepted scope. Off-CPU blocked/ready stack analysis is now implemented
+for the offline record/report path; JIT maps and live off-CPU remain separate
+analysis work.

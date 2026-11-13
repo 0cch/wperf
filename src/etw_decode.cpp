@@ -71,6 +71,62 @@ bool DecodeProfileSample(const EVENT_RECORD& record, const TraceData& metadata,
     return true;
 }
 
+bool DecodeContextRegisters(const EVENT_RECORD& record, uint32_t pointer_size,
+                            ContextRegisterRecord& registers) {
+    const auto code = record.EventHeader.EventDescriptor.Opcode != 0
+                          ? record.EventHeader.EventDescriptor.Opcode
+                          : record.EventHeader.EventDescriptor.Id;
+    constexpr size_t kAmd64PayloadBytes = 18 * sizeof(uint64_t);
+    if (code != 122 || pointer_size != 8 || record.UserData == nullptr ||
+        record.UserDataLength < kAmd64PayloadBytes) {
+        return false;
+    }
+    registers = {};
+    registers.timestamp_qpc = Read<uint64_t>(record.UserData, 0);
+    registers.rip = Read<uint64_t>(record.UserData, 8);
+    registers.rax = Read<uint64_t>(record.UserData, 16);
+    registers.rcx = Read<uint64_t>(record.UserData, 24);
+    registers.rdx = Read<uint64_t>(record.UserData, 32);
+    registers.rbx = Read<uint64_t>(record.UserData, 40);
+    registers.rsp = Read<uint64_t>(record.UserData, 48);
+    registers.rbp = Read<uint64_t>(record.UserData, 56);
+    registers.rsi = Read<uint64_t>(record.UserData, 64);
+    registers.rdi = Read<uint64_t>(record.UserData, 72);
+    registers.r8 = Read<uint64_t>(record.UserData, 80);
+    registers.r9 = Read<uint64_t>(record.UserData, 88);
+    registers.r10 = Read<uint64_t>(record.UserData, 96);
+    registers.r11 = Read<uint64_t>(record.UserData, 104);
+    registers.r12 = Read<uint64_t>(record.UserData, 112);
+    registers.r13 = Read<uint64_t>(record.UserData, 120);
+    registers.r14 = Read<uint64_t>(record.UserData, 128);
+    registers.r15 = Read<uint64_t>(record.UserData, 136);
+    return true;
+}
+bool DecodePmcCounterMetadata(const EVENT_RECORD& record, TraceData& metadata) {
+    const auto code = record.EventHeader.EventDescriptor.Opcode != 0
+                          ? record.EventHeader.EventDescriptor.Opcode
+                          : record.EventHeader.EventDescriptor.Id;
+    if (code != 49 || record.UserData == nullptr || record.UserDataLength < 8) {
+        return false;
+    }
+    const uint32_t count = Read<uint32_t>(record.UserData, 4);
+    if (count == 0 || count > 32 || record.UserDataLength < 8 + count * 12) {
+        return false;
+    }
+    std::vector<uint32_t> sources;
+    sources.reserve(count);
+    for (uint32_t index = 0; index < count; ++index) {
+        const uint32_t source = Read<uint32_t>(record.UserData, 8 + index * 12);
+        if (source == 0) return false;
+        sources.push_back(source);
+    }
+    if (!metadata.pmc_counter_sources.empty() &&
+        metadata.pmc_counter_sources != sources) {
+        return false;
+    }
+    metadata.pmc_counter_sources = std::move(sources);
+    return true;
+}
 bool DecodeProfileInterval(const EVENT_RECORD& record, TraceData& metadata) {
     const auto code = record.EventHeader.EventDescriptor.Opcode != 0
                           ? record.EventHeader.EventDescriptor.Opcode

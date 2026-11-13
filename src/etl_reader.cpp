@@ -304,7 +304,9 @@ void ParseLbr(const EVENT_RECORD& record, TraceData& trace) {
     ++trace.quality.lbr_events;
     for (const LbrBranch& branch : decoded.branches) {
         TraceEvent event;
-        event.timestamp_ns = QpcToNs(decoded.timestamp_qpc, trace.qpc_frequency);
+        event.timestamp_ns = decoded.timestamp_qpc != 0
+                                 ? QpcToNs(decoded.timestamp_qpc, trace.qpc_frequency)
+                                 : EtwTimestampNs(record, trace.qpc_frequency);
         event.cpu = EtwProcessorIndex(record);
         event.pid = decoded.pid;
         event.tid = decoded.tid;
@@ -316,6 +318,29 @@ void ParseLbr(const EVENT_RECORD& record, TraceData& trace) {
         trace.events.push_back(std::move(event));
     }
     trace.quality.lbr_branches += decoded.branches.size();
+}
+
+void ParseContextRegisters(const EVENT_RECORD& record, TraceData& trace) {
+    ContextRegisterRecord registers;
+    if (!DecodeContextRegisters(record, trace.pointer_size, registers)) {
+        ++trace.quality.decode_errors;
+        return;
+    }
+    const uint32_t index = static_cast<uint32_t>(trace.context_registers.size());
+    trace.context_registers.push_back(registers);
+    TraceEvent event;
+    event.timestamp_ns = registers.timestamp_qpc != 0
+                             ? QpcToNs(registers.timestamp_qpc, trace.qpc_frequency)
+                             : EtwTimestampNs(record, trace.qpc_frequency);
+    event.cpu = EtwProcessorIndex(record);
+    event.pid = record.EventHeader.ProcessId;
+    event.tid = record.EventHeader.ThreadId;
+    event.kind = TraceEventKind::ContextRegister;
+    event.context_register_index = index;
+    event.value1 = registers.rip;
+    event.value2 = registers.rsp;
+    trace.events.push_back(std::move(event));
+    ++trace.quality.context_register_events;
 }
 
 void ParseSample(const EVENT_RECORD& record, TraceData& trace) {
@@ -546,7 +571,7 @@ void ConsumeEventRecord(PEVENT_RECORD record) {
     const bool stored=IsEqualGUID(class_guid,kProcessGuid)||IsEqualGUID(class_guid,kThreadGuid)||
         IsEqualGUID(class_guid,kImageGuid)||IsEqualGUID(class_guid,kStackWalkGuid)||IsEqualGUID(class_guid,kPageFaultGuid)||
         IsEqualGUID(class_guid,kDiskIoGuid)||IsEqualGUID(class_guid,kFileIoGuid)||IsEqualGUID(class_guid,kLbrGuid)||
-        (IsEqualGUID(class_guid,kPerfInfoGuid)&&(opcode==46||opcode==47||opcode==51||opcode==52));
+        (IsEqualGUID(class_guid,kPerfInfoGuid)&&(opcode==46||opcode==47||opcode==51||opcode==52||opcode==122));
     if(stored)context->charged_bytes+=(IsEqualGUID(class_guid,kStackWalkGuid)?4:2)*
         (uint64_t{record->UserDataLength}+sizeof(SampleRecord)+sizeof(TraceEvent));
     if(context->charged_bytes>512ull*1024*1024) {
@@ -570,6 +595,10 @@ void ConsumeEventRecord(PEVENT_RECORD record) {
                (opcode == 46 || opcode == 47 || id == 46 || id == 47)) {
         ++trace->quality.samples_total;
         ParseSample(*record, *trace);
+    } else if (IsEqualGUID(class_guid, kPerfInfoGuid) && opcode == 122) {
+        ParseContextRegisters(*record, *trace);
+    } else if (IsEqualGUID(class_guid, kPerfInfoGuid) && opcode == 49) {
+        if (!DecodePmcCounterMetadata(*record, *trace)) ++trace->quality.decode_errors;
     } else if (IsEqualGUID(class_guid, kPerfInfoGuid) && opcode >= 72 && opcode <= 74) {
         if (!DecodeProfileInterval(*record, *trace)) ++trace->quality.decode_errors;
     } else if ((IsEqualGUID(class_guid, kLbrGuid) ||
@@ -861,7 +890,6 @@ bool ReadEtwPass(const std::filesystem::path& path, TraceData& trace,
         return false;
     }
 
-    if(logfile.LogfileHeader.LoggerName)trace.session_name=logfile.LogfileHeader.LoggerName;
     trace.quality.lost_events = logfile.LogfileHeader.EventsLost;
     if (logfile.LogfileHeader.PerfFreq.QuadPart > 0) {
         trace.qpc_frequency =
@@ -874,7 +902,6 @@ bool ReadEtwPass(const std::filesystem::path& path, TraceData& trace,
         trace.pointer_size = logfile.LogfileHeader.PointerSize <= 8
                                  ? logfile.LogfileHeader.PointerSize : logfile.LogfileHeader.PointerSize / 8;
     }
-
     const ULONG result = ProcessTrace(&handle, 1, nullptr, nullptr);
     CloseTrace(handle);
     if (context.failure) { if(error)*error=context.failure; return false; }

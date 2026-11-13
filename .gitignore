@@ -1,4 +1,5 @@
 build/
+build-intel/
 out/
 dist/
 .vs/
@@ -9,3 +10,4 @@ dist/
 artifacts/
 !tests/data/
 !tests/data/*.etl
+evidence/

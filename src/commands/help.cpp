@@ -134,7 +134,7 @@ Print scheduler, syscall, page-fault, I/O, or LBR events.
 Options:
   -i, --input FILE          Read an offline ETL trace.
   --live                    Capture and print events in real time.
-  -e, --event KIND          sched, syscall, pagefault, io, or lbr.
+  -e, --event KIND          sched, syscall, pagefault, io, lbr, or context (offline).
   -p, --pid PID             Include only PID.
   --max N                   Limit emitted events.
   --duration MS             Live capture duration in milliseconds.

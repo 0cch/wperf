@@ -312,10 +312,14 @@ bool MatchesEventFilter(const TraceEvent& event, const std::wstring& filter) {
     if (filter == L"lbr") {
         return event.kind == TraceEventKind::LastBranchRecord;
     }
+    if (filter == L"context" || filter == L"context-register" ||
+        filter == L"context-registers") {
+        return event.kind == TraceEventKind::ContextRegister;
+    }
     return kind == filter;
 }
 
-std::wstring EventDetail(const TraceEvent& event) {
+std::wstring EventDetail(const TraceData& trace, const TraceEvent& event) {
     std::wostringstream detail;
     if (event.event_id != 0) {
         detail << L"id=" << event.event_id << L" ";
@@ -353,7 +357,29 @@ std::wstring EventDetail(const TraceEvent& event) {
                    << L" offset=" << event.offset << L" size=" << event.size
                    << L" completion=" << (event.is_completion ? L"true" : L"false");
             break;
-        case TraceEventKind::LastBranchRecord:
+        case TraceEventKind::ContextRegister:
+            if (event.context_register_index < trace.context_registers.size()) {
+                const auto& registers = trace.context_registers[event.context_register_index];
+                detail << L"rip=0x" << std::hex << registers.rip
+                       << L" rsp=0x" << registers.rsp
+                       << L" rax=0x" << registers.rax
+                       << L" rcx=0x" << registers.rcx
+                       << L" rdx=0x" << registers.rdx
+                       << L" rbx=0x" << registers.rbx
+                       << L" rbp=0x" << registers.rbp
+                       << L" rsi=0x" << registers.rsi
+                       << L" rdi=0x" << registers.rdi
+                       << L" r8=0x" << registers.r8
+                       << L" r9=0x" << registers.r9
+                       << L" r10=0x" << registers.r10
+                       << L" r11=0x" << registers.r11
+                       << L" r12=0x" << registers.r12
+                       << L" r13=0x" << registers.r13
+                       << L" r14=0x" << registers.r14
+                       << L" r15=0x" << registers.r15
+                       << std::dec;
+            }
+            break;        case TraceEventKind::LastBranchRecord:
             detail << L"from=0x" << std::hex << event.value1
                    << L" to=0x" << event.value2 << std::dec
                    << L" filters=0x" << std::hex << event.flags << std::dec;
@@ -387,7 +413,7 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
             input = arguments[++index];
         } else if (argument == L"-e" || argument == L"--event") {
             if (index + 1 >= arguments.size()) {
-                PrintError(L"--event requires sched, syscall, pagefault, io, or lbr");
+                PrintError(L"--event requires sched, syscall, pagefault, io, lbr, or context");
                 return 2;
             }
             filter = arguments[++index];
@@ -425,7 +451,9 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
         }
     }
     if (filter != L"all" && filter != L"sched" && filter != L"syscall" &&
-        filter != L"pagefault" && filter != L"io" && filter != L"lbr") {
+        filter != L"pagefault" && filter != L"io" && filter != L"lbr" &&
+        filter != L"context" && filter != L"context-register" &&
+        filter != L"context-registers") {
         PrintError(L"unsupported trace event: " + filter);
         return 2;
     }
@@ -454,6 +482,11 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
     if (live) {
         if (!input.empty()) {
             PrintError(L"trace --live cannot be combined with -i FILE");
+            return 2;
+        }
+        if (filter == L"context" || filter == L"context-register" ||
+            filter == L"context-registers") {
+            PrintError(L"context register tracing is currently supported for offline ETL traces");
             return 2;
         }
         return RunLiveTrace(filter, pid_text, max_text, duration_text, json, elevate);
@@ -518,7 +551,7 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
             event.timestamp_ns >= first_timestamp ? event.timestamp_ns - first_timestamp
                                                   : 0;
         const std::wstring comm = ProcessDisplayName(trace, display_pid, event.timestamp_ns);
-        const std::wstring detail = EventDetail(event);
+        const std::wstring detail = EventDetail(trace, event);
         if (json) {
             if (!first_json) {
                 std::wcout << L",\n";
@@ -541,8 +574,29 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
                        << L",\"wait_reason\":" << event.wait_reason
                        << L",\"previous_state\":" << event.previous_state
                        << L",\"flags\":" << event.flags
-                       << L",\"file_path\":\"" << EscapeJson(event.file_path) << L"\""
-                       << L",\"detail\":\"" << detail
+                       << L",\"file_path\":\"" << EscapeJson(event.file_path) << L"\"";
+            if (event.kind == TraceEventKind::ContextRegister &&
+                event.context_register_index < trace.context_registers.size()) {
+                const auto& registers = trace.context_registers[event.context_register_index];
+                std::wcout << L",\"context_registers\":{\"rip\":" << registers.rip
+                           << L",\"rsp\":" << registers.rsp
+                           << L",\"rax\":" << registers.rax
+                           << L",\"rcx\":" << registers.rcx
+                           << L",\"rdx\":" << registers.rdx
+                           << L",\"rbx\":" << registers.rbx
+                           << L",\"rbp\":" << registers.rbp
+                           << L",\"rsi\":" << registers.rsi
+                           << L",\"rdi\":" << registers.rdi
+                           << L",\"r8\":" << registers.r8
+                           << L",\"r9\":" << registers.r9
+                           << L",\"r10\":" << registers.r10
+                           << L",\"r11\":" << registers.r11
+                           << L",\"r12\":" << registers.r12
+                           << L",\"r13\":" << registers.r13
+                           << L",\"r14\":" << registers.r14
+                           << L",\"r15\":" << registers.r15 << L"}";
+            }
+            std::wcout << L",\"detail\":\"" << detail
                        << L"\",\"comm\":\"" << comm << L"\"}";
         } else {
             std::wcout << relative << L" " << event.cpu << L" " << display_pid << L" "
@@ -1115,6 +1169,7 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                        << L" pmc_counter_events=" << trace.quality.pmc_counter_events
                        << L" lbr_events=" << trace.quality.lbr_events
                        << L" lbr_branches=" << trace.quality.lbr_branches
+                       << L" context_register_events=" << trace.quality.context_register_events
                        << L" sched_unknown_pid=" << trace.quality.sched_unknown_pid
                        << L" io_init=" << trace.quality.io_init_events
                        << L" io_complete=" << trace.quality.io_complete_events

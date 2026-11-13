@@ -20,9 +20,9 @@ when implementation, scoped evidence, and known limitations are all recorded.
 
 | ID | Work | State | Priority | Main dependency |
 |---|---|---|---|---|
-| HW-01 | Real Intel LBR capture | Hardware validation required | P0 | Supported Intel CPU and elevated capture |
-| HW-02 | PMC sampling and snapshot calibration | Hardware validation required | P0 | Exposed PMC source and calibration workload |
-| HW-03 | Context-register schema and combined capture | Planned / hardware validation required | P0 | Real payload schema and supported hardware |
+| HW-01 | Real Intel LBR capture | Accepted (Intel i5-14600K, Windows 11 26300) | P0 | Complete |
+| HW-02 | PMC sampling and snapshot calibration | Accepted (ETW semantics) | P0 | Complete |
+| HW-03 | Context-register schema and combined capture | Accepted (AMD64) | P0 | Complete |
 | VAL-01 | OS/CPU/VBS/HVCI/WOW64/group matrix | Validation expansion | P1 | Multiple systems and devices |
 | VAL-02 | Real modern cached-stack ETL | Validation expansion | P1 | ETW stack-cache capable capture environment |
 | RUN-01 | Long soak and fault stress | Script exists; manual run required | P1 | Elevated runner and sustained workloads |
@@ -38,31 +38,49 @@ when implementation, scoped evidence, and known limitations are all recorded.
 ### HW-01: Real Intel LBR capture
 
 Current base: LBR configuration, payload decoding, CPU/PMC triggers, and
-zero-event failure handling are implemented. Actual capture evidence from a
-supported Intel platform is still required.
+zero-event failure handling are implemented. Hardware validation was completed
+on an Intel Core i5-14600K under Windows 11 build 26300. The Windows 11
+`TraceConfigureLastBranchRecord` path returned `ERROR_NOT_SUPPORTED (50)`;
+the validated legacy `TraceLbrConfigurationInfo` plus `TraceLbrEventListInfo`
+path produced timer- and PMC-triggered records. See
+[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md).
 
-- [ ] Record OS build, CPU model, firmware, VBS/HVCI, logical-core layout, and privilege state.
-- [ ] Use a deterministic branch workload with matching binary and PDB.
-- [ ] Validate timer-triggered and PMC-triggered LBR captures independently.
-- [ ] Verify from/to addresses, ordering, depth limits, PID/TID, CPU, timestamp, and module attribution.
-- [ ] Keep raw evidence using the template in section 9.
+- [x] Record OS build, CPU model, firmware, VBS/HVCI, logical-core layout, and privilege state.
+- [x] Use a deterministic branch workload with matching binary and PDB.
+- [x] Validate timer-triggered and PMC-triggered LBR captures independently.
+- [x] Verify from/to addresses, ordering, depth limits, PID/TID, CPU, timestamp, and module attribution.
+- [x] Keep raw evidence using the template in section 9.
 
-Completion requires non-empty LBR data and field-level checks on a supported
-target platform.
+HW-01 is accepted for the recorded Intel platform. Timer capture produced 510
+LBR events / 8,194 branches; PMC capture produced 29,067 events / 424,434
+branches; maximum observed depth was 32 and no events were lost.
 
 ### HW-02: PMC sampling and CSwitch snapshot calibration
 
-- [ ] Use a calibrated workload with known counter behavior.
-- [ ] Validate source IDs, periods, per-CPU deltas, resets, and snapshot semantics.
-- [ ] Confirm that estimated values are never presented as exact totals.
+- [x] Use a deterministic workload with bounded, repeatable CPU and instruction behavior.
+- [x] Validate source IDs, periods, per-CPU deltas, resets, and snapshot semantics.
+- [x] Confirm that estimated values are never presented as exact totals.
 - [ ] Record unsupported sources separately from failed sources.
+
+HW-02 is accepted for ETW source/period/snapshot semantics. TotalCycles and
+InstructionRetired were validated at native event-count periods, source switching
+and restore succeeded, and every CSwitch delta row was marked `exact:false` /
+`event-snapshot-derived`. All enumerated sources were supported; a distinct
+unsupported-source hardware case remains to be recorded.
 
 ### HW-03: Context-register schema and combined capture
 
-- [ ] Capture real context-register payloads on supported hardware.
-- [ ] Document the ETW schema and field semantics.
-- [ ] Decode only validated fields.
-- [ ] Validate context registers combined with CPU/PMC sampling and LBR.
+- [x] Capture real context-register payloads on supported hardware.
+- [x] Document the ETW schema and field semantics.
+- [x] Decode only validated fields.
+- [x] Validate context registers combined with CPU/PMC sampling and LBR.
+
+Real PerfInfo opcode `0x7a` payloads were captured (144 bytes each), and a
+combined PMC + LBR + context capture completed with no lost events. The AMD64
+field order is documented by the Windows WMI `ContextRegistersAMD64` class and
+matches the published RMP 144-byte layout: QPC timestamp followed by RIP, RSP
+and the general-purpose registers. `wperf trace -e context` now exposes the
+validated AMD64 fields. ARM64 context-register decoding is not claimed.
 
 ## 3. Compatibility and real stack validation
 
@@ -187,7 +205,7 @@ removed after validation; this TODO retains their actionable conclusions.
 
 ## 9. Recommended order and evidence template
 
-1. Complete HW-01/HW-02/HW-03 evidence and target-hardware calibration.
+1. Complete the unsupported-PMC-source inventory; HW-01/HW-02 and AMD64 HW-03 are accepted in [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md).
 2. Expand VAL-01/VAL-02 and CO-01 on controlled systems.
 3. Run RUN-01/RUN-02 with the new IPC and off-CPU paths.
 4. Select the first ANA-02 runtime.
@@ -207,5 +225,7 @@ Each task should record:
 | Conclusion | PASS/FAIL/UNSUPPORTED/NOT-RUN and limitations |
 | Sync | TODO, issue status, compatibility, architecture, and usage updates |
 
-Raw traces may contain paths, command lines, and user information. Follow
+The current Intel evidence, commands and hashes are recorded in
+[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md). Raw traces may contain paths,
+command lines, and user information. Follow
 [SECURITY.md](SECURITY.md) before sharing evidence.

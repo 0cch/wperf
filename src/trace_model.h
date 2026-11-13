@@ -59,6 +59,26 @@ private:
     std::shared_ptr<std::vector<uint64_t>> data_;
 };
 
+struct ContextRegisterRecord {
+    uint64_t timestamp_qpc = 0;
+    uint64_t rip = 0;
+    uint64_t rax = 0;
+    uint64_t rcx = 0;
+    uint64_t rdx = 0;
+    uint64_t rbx = 0;
+    uint64_t rsp = 0;
+    uint64_t rbp = 0;
+    uint64_t rsi = 0;
+    uint64_t rdi = 0;
+    uint64_t r8 = 0;
+    uint64_t r9 = 0;
+    uint64_t r10 = 0;
+    uint64_t r11 = 0;
+    uint64_t r12 = 0;
+    uint64_t r13 = 0;
+    uint64_t r14 = 0;
+    uint64_t r15 = 0;
+};
 struct SampleRecord {
     uint64_t timestamp_ns = 0;
     uint32_t cpu = 0;
@@ -83,6 +103,7 @@ enum class TraceEventKind {
     DiskIo,
     FileIo,
     LastBranchRecord,
+    ContextRegister,
     Unknown,
 };
 
@@ -113,6 +134,7 @@ struct TraceEvent {
     uint64_t file_object = 0;
     std::wstring file_path;
     uint32_t operation_id = 0;
+    uint32_t context_register_index = UINT32_MAX;
     SharedStack stack;
     StackQuality stack_quality = StackQuality::Missing;
     bool stack_missing = true;
@@ -164,6 +186,7 @@ struct TraceQuality {
     uint64_t pmc_counter_events = 0;
     uint64_t lbr_events = 0;
     uint64_t lbr_branches = 0;
+    uint64_t context_register_events = 0;
     uint64_t samples_without_stack = 0;
     uint64_t stack_ambiguous = 0;
     uint64_t unknown_events = 0;
@@ -199,6 +222,7 @@ struct TraceData {
     std::vector<ImageRecord> images;
     std::vector<SampleRecord> samples;
     std::vector<TraceEvent> events;
+    std::vector<ContextRegisterRecord> context_registers;
     std::vector<OffCpuInterval> off_cpu_intervals;
     TraceQuality quality;
     uint32_t pointer_size = sizeof(void*);

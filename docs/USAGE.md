@@ -165,7 +165,7 @@ reported separately. Pending correlations expire after 60 seconds.
 
 ```powershell
 wperf script -i FILE [-p PID] [-F LIST] [--symbol-path DIR] [--limit N] [--csv]
-wperf trace -i FILE [-e sched|syscall|pagefault|io|lbr] [--pid PID] [--max N] [--json]
+wperf trace -i FILE [-e sched|syscall|pagefault|io|lbr|context] [--pid PID] [--max N] [--json]
 wperf sched -i FILE
 wperf report -i FILE --kind io [--json]
 ```
@@ -175,6 +175,8 @@ CPU period is in nanoseconds; PMC period is a source-specific count; zero means
 unavailable. Diff uses CPU sample periods and falls back to the trace-level
 interval when a sample period is unknown; late metadata handling remains a
 follow-up. It does not assign sampling gaps or PMC counts as execution time.
+
+`trace -e context` emits decoded AMD64 context-register events from an offline ETL. The JSON object includes RIP, RSP, and RAX/RBX/RCX/RDX/RSI/RDI/RBP/R8-R15; ARM64 payloads are not decoded.
 
 `script` text is wperf-specific and is not intended as input to
 `stackcollapse-perf.pl`. Use `report --folded` for FlameGraph.

@@ -89,6 +89,7 @@ Brendan Gregg `flamegraph.pl`.
 - [Correctness and performance changes](docs/HARDENING.md)
 - [Assessment completion audit](docs/ASSESSMENT_STATUS.md)
 - [Main-branch follow-ups](docs/MAIN_FOLLOWUPS.md)
+- [Hardware validation evidence](docs/HARDWARE_VALIDATION.md)
 - [Issue acceptance status](docs/ISSUE_STATUS.md)
 - [Remaining work and acceptance plan](docs/TODO.md)
 

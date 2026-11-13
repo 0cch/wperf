@@ -60,7 +60,8 @@ foreach ($doc in @("README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.
 $docsOutput = Join-Path $OutputDirectory "docs"
 New-Item -ItemType Directory -Force -Path $docsOutput | Out-Null
 foreach ($doc in @("USAGE.md", "ARCHITECTURE.md", "SECURITY.md", "COMPATIBILITY.md",
-                  "DEVELOPMENT.md", "RELEASE.md", "DISASSEMBLY.md")) {
+                  "DEVELOPMENT.md", "RELEASE.md", "DISASSEMBLY.md",
+                  "HARDWARE_VALIDATION.md")) {
     $source = Join-Path $repo (Join-Path "docs" $doc)
     if (Test-Path $source) {
         Copy-Item -LiteralPath $source -Destination (Join-Path $docsOutput $doc) -Force

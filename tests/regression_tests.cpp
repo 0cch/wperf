@@ -39,6 +39,7 @@ void Check(bool value, const char* message) {
 }
 const GUID perf = {0xce1dbfb4,0x137e,0x4da6,{0x87,0xb0,0x3f,0x59,0xaa,0x10,0x2c,0xbc}};
 const GUID thread = {0x3d6fa8d1,0xfe05,0x11d0,{0x9d,0xda,0x00,0xc0,0x4f,0xd7,0xba,0x7c}};
+const GUID lbr = {0x99134383,0x5248,0x43fc,{0x83,0x4b,0x52,0x94,0x54,0xe7,0x5d,0xf3}};
 void Feed(wperf::LiveTopCapture& capture, GUID provider, BYTE opcode, uint64_t qpc,
           uint32_t pid, uint32_t tid, void* payload, USHORT size) {
     EVENT_RECORD event{};
@@ -64,6 +65,36 @@ void TestProfileDecoder() {
     Check(trace.profile_interval_ns == 2000000, "CPU intervals are converted from 100ns");
     interval[0] = 19; interval[1] = 65536;
     Check(wperf::DecodeProfileInterval(event, trace), "decode PMC interval metadata");
+
+    uint32_t counter_metadata[] = {0, 2, 19, 0, 0, 26, 0, 0};
+    event.EventHeader.EventDescriptor.Opcode = 49;
+    event.UserData = counter_metadata;
+    event.UserDataLength = sizeof(counter_metadata);
+    Check(wperf::DecodePmcCounterMetadata(event, trace),
+          "decode CSwitch PMC counter source metadata");
+    Check(trace.pmc_counter_sources == std::vector<uint32_t>({19, 26}),
+          "CSwitch PMC counter source IDs are preserved");
+    event.UserDataLength = sizeof(counter_metadata) - 4;
+    Check(!wperf::DecodePmcCounterMetadata(event, trace),
+          "reject truncated CSwitch PMC counter metadata");
+
+    uint64_t context_payload[18]{};
+    for (size_t index = 0; index < std::size(context_payload); ++index) {
+        context_payload[index] = 0x1000 + index;
+    }
+    event.EventHeader.EventDescriptor.Opcode = 122;
+    event.EventHeader.Flags = EVENT_HEADER_FLAG_64_BIT_HEADER;
+    event.UserData = context_payload;
+    event.UserDataLength = sizeof(context_payload);
+    wperf::ContextRegisterRecord registers;
+    Check(wperf::DecodeContextRegisters(event, 8, registers),
+          "decode AMD64 context registers");
+    Check(registers.timestamp_qpc == 0x1000 && registers.rip == 0x1001 &&
+          registers.rsp == 0x1006 && registers.r15 == 0x1011,
+          "context register timestamp, RIP, RSP and GPR order preserved");
+    event.UserDataLength = sizeof(context_payload) - 1;
+    Check(!wperf::DecodeContextRegisters(event, 8, registers),
+          "reject truncated context register metadata");
     std::array<BYTE,16> payload{};
     const uint64_t ip = 0x12345678;
     const uint32_t tid = 42;
@@ -1095,9 +1126,56 @@ void TestSelectorsAndObservedIntervals() {
     Check(rows.at(100).running_ns==200&&rows.at(100).blocked_ns==500,"scheduler times use matched observed endpoints");
 }
 }
+void TestContextRegisterAndLbrReplay() {
+    std::vector<std::vector<BYTE>> storage;
+    storage.reserve(2);
+    std::vector<EVENT_RECORD> records;
+    records.reserve(2);
+    const auto record = [&](GUID provider, BYTE opcode, uint64_t time, std::vector<BYTE> payload) {
+        storage.push_back(std::move(payload));
+        EVENT_RECORD event{};
+        event.EventHeader.ProviderId = provider;
+        event.EventHeader.EventDescriptor.Opcode = opcode;
+        event.EventHeader.Flags = EVENT_HEADER_FLAG_64_BIT_HEADER;
+        event.EventHeader.TimeStamp.QuadPart = time;
+        event.UserData = storage.back().data();
+        event.UserDataLength = static_cast<USHORT>(storage.back().size());
+        records.push_back(event);
+    };
+
+    std::vector<BYTE> lbr_payload(48, 0);
+    uint64_t lbr_time = 100, from = 0x1000, to = 0x2000;
+    uint32_t pid = 10, tid = 20, filters = 0x200;
+    memcpy(lbr_payload.data(), &lbr_time, 8);
+    memcpy(lbr_payload.data() + 8, &pid, 4);
+    memcpy(lbr_payload.data() + 12, &tid, 4);
+    memcpy(lbr_payload.data() + 16, &filters, 4);
+    memcpy(lbr_payload.data() + 24, &from, 8);
+    memcpy(lbr_payload.data() + 32, &to, 8);
+    record(lbr, 32, lbr_time, std::move(lbr_payload));
+
+    std::vector<BYTE> context_payload(144, 0);
+    uint64_t context_values[18] = {200, 0x3000, 1, 2, 3, 4, 0x4000, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    memcpy(context_payload.data(), context_values, sizeof(context_values));
+    record(perf, 122, 200, std::move(context_payload));
+
+    wperf::TraceData trace;
+    Check(wperf::ReadEtwRecords(records, trace, 10000000),
+          "combined context-register and LBR replay succeeds");
+    Check(trace.quality.lbr_events == 1 && trace.quality.lbr_branches == 1,
+          "LBR replay remains available beside context registers");
+    Check(trace.quality.context_register_events == 1 && trace.context_registers.size() == 1,
+          "context-register replay records one AMD64 payload");
+    const auto& registers = trace.context_registers.front();
+    Check(registers.timestamp_qpc == 200 && registers.rip == 0x3000 &&
+          registers.rsp == 0x4000 && registers.r15 == 15,
+          "context-register replay preserves timestamp and register order");
+}
+
 
 int main() {
     TestProfileDecoder();
+    TestContextRegisterAndLbrReplay();
     TestLiveWindowCodec();
     TestLiveWindowLongPayloadBound();
     TestPipeSendDeadline();

@@ -34,17 +34,19 @@ the live acceptance requirement.
 
 | Item | Status |
 |---|---|
-| LBR payload/configuration | Decoder and CPU/PMC triggers implemented; supported Intel capture evidence is still required |
-| Context-register CLI | Configured; real payload schema and decoding remain unverified |
-| PMC period and semantics | Interrupt sampling and CSwitch snapshots are separate; estimates are not reported as exact totals |
+| LBR payload/configuration | Accepted on Intel Core i5-14600K / Windows 11 26300: timer capture produced 510 LBR events (8,194 branches) and PMC capture 29,067 events (424,434 branches), with no loss |
+| Context-register CLI | Real AMD64 opcode `0x7a` payloads captured and decoded through `wperf trace -e context`; field order validated against the WMI `ContextRegistersAMD64` class and public RMP layout |
+| PMC period and semantics | Accepted for ETW semantics on Intel: native source IDs/periods, per-CPU deltas, source switch/restore, and CSwitch snapshots marked exact:false |
 | Zydis annotation | Implemented and tested for known function ranges |
 | Weighted/call-tree diff | Implemented with period, identity, percentages, coverage, and sampling bounds |
 | Archive/PDB metadata | Validated PDB GUID/age, identity/hash layout, portable mapping, and optional ETL |
-| Context/LBR combined capture | Still requires supported Intel hardware and a verified context schema |
+| Context/LBR combined capture | Combined PMC + LBR + context capture passed (9,905 samples, 6,828 LBR events, 8,558 context payloads, no loss) |
 
-**#5 remains open.** The local AMD Ryzen 7 8700G environment and ordinary
-privilege are not sufficient to accept Intel LBR or full context-register
-support.
+**#5 is closed.** Intel LBR, ETW PMC semantics and AMD64 context-register
+capture/decoding were hardware-validated on an Intel Core i5-14600K under
+Windows 11 build 26300. Evidence is recorded in
+[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md). ARM64 context-register
+decoding remains outside the accepted scope.
 
 ## Additional completed follow-up work
 
@@ -65,4 +67,4 @@ evidence is recorded.
 
 Still outside the accepted scope: external-profiler global-state atomic
 restoration, full OS/CPU/VBS/WOW64 matrices, long soak and perturbation curves,
-real context-register payload decoding, and JIT method lifecycle support.
+ARM64 context-register payload decoding, and JIT method lifecycle support.

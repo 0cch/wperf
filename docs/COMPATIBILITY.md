@@ -8,12 +8,15 @@
 | Stack correlation | Direct StackWalk + modern StackWalkRef/Def |
 | Symbols | DbgHelp, local PDB, optional symbol server |
 | Scheduler/syscall/I/O | ETW classic events |
-| PMU | ETW profile sources; sample-derived semantics |
-| LBR | Available only when TraceConfigureLastBranchRecord succeeds |
-| Context registers | Best-effort TraceContextRegisterInfo; payload decoding requires platform schema validation |
+| PMU | ETW profile sources; source/period/snapshot semantics hardware-validated on Intel; values remain sample-derived |
+| LBR | `TraceConfigureLastBranchRecord`, with legacy `TraceLbrConfigurationInfo` fallback; timer/PMC paths validated on Intel i5-14600K |
+| Context registers | AMD64 capture/decoding through `trace -e context`; ARM64 payload decoding is not claimed |
 | Private providers | `record --provider GUID` |
 | Disassembly | Zydis x86/x64, enabled by default |
 | Release | Single EXE plus optional PDB/docs; no WPA/WPR runtime |
+
+See [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) for the Intel evidence and
+Windows build used for these claims.
 
 ## Explicit limitations
 
@@ -21,7 +24,7 @@
   through ETW.
 - Syscall argument-level interpretation is not provided.
 - LBR depth is finite and architecture-dependent; it is not Intel PT.
-- Context-register payload decoding is disabled until a stable schema is
-  verified on supported platforms.
+- Context-register decoding is validated for AMD64 only; ARM64 payload fields
+  are not claimed.
 - 32-bit/WOW64 ETL replay must not crash, but full symbolization coverage is
   not claimed.

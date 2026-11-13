@@ -12,6 +12,9 @@ uint32_t EtwProcessorIndex(const EVENT_RECORD& record);
 bool DecodeProfileSample(const EVENT_RECORD& record, const TraceData& metadata,
                          SampleRecord& sample);
 bool DecodeProfileInterval(const EVENT_RECORD& record, TraceData& metadata);
+bool DecodePmcCounterMetadata(const EVENT_RECORD& record, TraceData& metadata);
+bool DecodeContextRegisters(const EVENT_RECORD& record, uint32_t pointer_size,
+                             ContextRegisterRecord& registers);
 void CopyEtwPmcCounters(const EVENT_RECORD& record, std::vector<uint64_t>& counters,
                         TraceQuality& quality);
 uint64_t EtwTimestampNs(const EVENT_RECORD& record, uint64_t frequency);

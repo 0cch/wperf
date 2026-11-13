@@ -361,7 +361,8 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
         output.empty() || log_path.empty() || guard_log.empty() ||
         state_path.empty() || correlation_id.empty() ||
         !ParseUnsigned(duration_text, duration_ms) ||
-        !ParseUint32(interval_text, profile_interval)) {
+        !ParseUint32(interval_text, profile_interval) ||
+        !ParseUint32(pmc_source_text, pmc_source)) {
         PrintError(L"invalid internal worker arguments");
         return 2;
     }

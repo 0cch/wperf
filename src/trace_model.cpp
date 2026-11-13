@@ -23,6 +23,8 @@ const wchar_t* TraceEventKindName(TraceEventKind kind) {
             return L"file-io";
         case TraceEventKind::LastBranchRecord:
             return L"lbr";
+        case TraceEventKind::ContextRegister:
+            return L"context-register";
         case TraceEventKind::Unknown:
             return L"unknown";
     }

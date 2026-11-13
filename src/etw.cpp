@@ -257,12 +257,35 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         CLASSIC_EVENT_ID lbr_event{};
         lbr_event.EventGuid = kPerfInfoGuid;
         lbr_event.Type = options.pmc_profile ? 47 : 46;
-        const ULONG lbr_result = ConfigureLbrCompat(
+        ULONG lbr_result = ConfigureLbrCompat(
             handle_, TRACE_LBR_CONFIGURATION_CALLSTACK_ENABLE, &lbr_event, 1);
-        lbr_status_ = lbr_result == ERROR_SUCCESS
-                          ? L"enabled"
-                          : L"unsupported: " +
-                                FormatWindowsError(lbr_result);
+        if (lbr_result == ERROR_NOT_SUPPORTED || lbr_result == ERROR_INVALID_PARAMETER) {
+            const ULONG raw_result = ConfigureLbrCompat(
+                handle_, TRACE_LBR_CONFIGURATION_NONE, &lbr_event, 1);
+            if (raw_result == ERROR_SUCCESS) {
+                lbr_status_ = L"enabled (raw LBR; callstack mode unsupported)";
+                lbr_result = ERROR_SUCCESS;
+            }
+        }
+        if (lbr_result != ERROR_SUCCESS) {
+            ULONG filters = TRACE_LBR_CONFIGURATION_CALLSTACK_ENABLE;
+            ULONG legacy_result = TraceSetInformation(
+                handle_, TraceLbrConfigurationInfo, &filters, sizeof(filters));
+            if (legacy_result == ERROR_SUCCESS) {
+                ULONG hook = 0x0F00 | lbr_event.Type;
+                legacy_result = TraceSetInformation(
+                    handle_, TraceLbrEventListInfo, &hook, sizeof(hook));
+            }
+            if (legacy_result == ERROR_SUCCESS) {
+                lbr_status_ = L"enabled (legacy event-triggered LBR)";
+                lbr_result = ERROR_SUCCESS;
+            }
+        }
+        if (lbr_result == ERROR_SUCCESS && lbr_status_.empty()) {
+            lbr_status_ = L"enabled";
+        } else if (lbr_result != ERROR_SUCCESS) {
+            lbr_status_ = L"unsupported: " + FormatWindowsError(lbr_result);
+        }
         if (lbr_result != ERROR_SUCCESS) {
             std::wstring stop_error;
             Stop(&stop_error);
@@ -357,8 +380,10 @@ constexpr wchar_t kProfileMutexName[] = L"Global\\wperf-profile-configuration-v1
 bool RestoreOwnedConfiguration(const ProfileRestoreInfo& info, std::wstring* error) {
     if (info.original_interval == 0) {
         if (!info.clear_pmc) return true;
-        const ULONG result = TraceSetInformation(0, TraceProfileSourceConfigInfo, nullptr, 0);
-        if (result != ERROR_SUCCESS && error) *error = LastErrorWith(L"clear PMC profile sources", result);
+        ULONG timer_source = 0;
+        const ULONG result = TraceSetInformation(0, TraceProfileSourceConfigInfo,
+                                              &timer_source, sizeof(timer_source));
+        if (result != ERROR_SUCCESS && error) *error = LastErrorWith(L"restore timer profile source", result);
         return result == ERROR_SUCCESS;
     }
     TRACE_PROFILE_INTERVAL current{info.source, 0};
@@ -372,8 +397,11 @@ bool RestoreOwnedConfiguration(const ProfileRestoreInfo& info, std::wstring* err
         TRACE_PROFILE_INTERVAL original{info.source, info.original_interval};
         result = TraceSetInformation(0, TraceSampledProfileIntervalInfo, &original, sizeof(original));
     }
-    if (result == ERROR_SUCCESS && info.clear_pmc)
-        result = TraceSetInformation(0, TraceProfileSourceConfigInfo, nullptr, 0);
+    if (result == ERROR_SUCCESS && info.clear_pmc) {
+        ULONG timer_source = 0;
+        result = TraceSetInformation(0, TraceProfileSourceConfigInfo,
+                                     &timer_source, sizeof(timer_source));
+    }
     if (result != ERROR_SUCCESS && error) *error = LastErrorWith(L"restore profile configuration", result);
     return result == ERROR_SUCCESS;
 }
