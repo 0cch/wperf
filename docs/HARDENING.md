@@ -3,6 +3,10 @@
 The report at `artifacts/review/assessment.md` evaluated commit `03ddd1f`.
 This change addresses the concrete correctness and performance findings:
 
+This is a partial hardening pass, not completion of every recommendation.
+The [assessment completion audit](ASSESSMENT_STATUS.md) maps all 14 original
+findings, test gaps and roadmap items to their current implementation status.
+
 | Finding | Change |
 |---|---|
 | PMC profile was indistinguishable from timer samples | Enable PERF_PMC_PROFILE; decode opcode 47 and source IDs; retain native periods; validate requested events after capture |
@@ -15,7 +19,7 @@ This change addresses the concrete correctness and performance findings:
 | Live LBR has no trigger | Enable profile events and configure the appropriate CPU/PMC trigger |
 | Missing loss and capacity accounting | Query ETW loss counters; report metadata/ring/correlation eviction; expire pending records after 60 seconds |
 | Cross-process kernel module lookup | Separate kernel fallback from user-space PID lookup, with indexed module address lookup |
-| Diff assigns idle gaps to symbols | Use captured sampling periods; unknown/PMC time weights stay zero |
+| Diff assigns idle gaps to symbols | Use captured sampling periods; PMC time weights stay zero; unknown-sample fallback remains an audit follow-up |
 | Wrong-version annotate/archive | Validate PE identity; resolve a matching PDB; archive binaries by hash and PDBs in symbol-store layout |
 | Table reports traverse every stack | Only resolve sampled IPs for ordinary rows; build trees or folded stacks only when requested |
 | Stack provenance and output escaping | Preserve exact/approximate/missing; constrain fallback to 1 ms and one lifetime; add exact-only output and shared JSON/CSV escaping |
@@ -35,7 +39,8 @@ This change addresses the concrete correctness and performance findings:
   eviction. Missing call stacks alone do not imply a corrupt trace.
 - `script -F source,period,stack_quality` exposes sample provenance. CPU period
   is in nanoseconds; PMC period is a source-specific event count. Zero means
-  unavailable.
+unavailable. Diff currently falls back to the trace-level interval for a CPU
+sample with unknown period; handling late interval metadata is still pending.
 - Folded and call-tree frames include module names to keep same-named functions
   in different modules separate.
 - Archive binaries are in `modules/<SHA256>/<filename>` and PDBs are in
