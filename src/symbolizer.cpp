@@ -208,6 +208,23 @@ std::wstring FileNameForImage(const ImageRecord& image) {
 
 }  // namespace
 
+ModuleIdentity ReadModuleIdentity(const std::wstring& path) {
+    PeImageIdentity identity;
+    ModuleIdentity result;
+    if (!ReadPeImageIdentity(path, identity)) {
+        return result;
+    }
+    result.valid = true;
+    result.timestamp = identity.timestamp;
+    result.checksum = identity.checksum;
+    result.size_of_image = identity.size_of_image;
+    result.machine = identity.machine;
+    result.pdb_guid = identity.pdb_guid;
+    result.pdb_age = identity.pdb_age;
+    result.has_pdb_guid = identity.has_pdb_guid;
+    return result;
+}
+
 Symbolizer::~Symbolizer() {
     Close();
 }

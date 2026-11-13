@@ -495,3 +495,14 @@ R4 的硬件能力边界已进一步明确，详见 `docs/R4_STATUS.md`：
 - LBR payload 32/64-bit 解码及 `trace -e lbr`。
 - context register best-effort 开关和明确的 unsupported 状态。
 - 当前 AMD 平台的 LBR unsupported 保持合法结果，不伪造能力。
+## 21. R5 当前状态
+
+R5 的工程化能力已推进，详见 `docs/R5_STATUS.md`：
+
+- weighted/calltree diff、PID/DSO filter、CSV/JSON。
+- annotate source/line 与结构化输出。
+- archive PE/PDB identity、SHA256、体积上限和三种 manifest。
+- provider 枚举及 private provider record。
+- release manifest、兼容性文件和 PDB 发布。
+
+反汇编尚未接入，等待 `docs/DISASSEMBLY_DECISION.md` 的库选型确认。

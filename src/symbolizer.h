@@ -2,6 +2,8 @@
 
 #include "trace_model.h"
 
+#include <windows.h>
+
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -18,6 +20,19 @@ struct ResolvedSymbol {
     uint64_t displacement = 0;
     bool resolved = false;
 };
+
+struct ModuleIdentity {
+    bool valid = false;
+    uint32_t timestamp = 0;
+    uint32_t checksum = 0;
+    uint32_t size_of_image = 0;
+    uint16_t machine = 0;
+    GUID pdb_guid{};
+    uint32_t pdb_age = 0;
+    bool has_pdb_guid = false;
+};
+
+ModuleIdentity ReadModuleIdentity(const std::wstring& path);
 
 struct SymbolizerStats {
     uint64_t cache_hits = 0;

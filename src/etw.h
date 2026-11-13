@@ -10,6 +10,12 @@
 
 namespace wperf {
 
+struct ProviderInfo {
+    GUID id{};
+    uint32_t schema_source = 0;
+    std::wstring name;
+};
+
 struct ProfileSource {
     uint32_t source = 0;
     uint32_t min_interval = 0;
@@ -31,6 +37,12 @@ struct TraceOptions {
     bool enable_stack_tracing = true;
     bool enable_context_registers = false;
     bool realtime = false;
+    bool system_logger = true;
+    bool enable_provider = false;
+    GUID provider_id{};
+    uint8_t provider_level = 0;
+    uint64_t provider_match_any = 0;
+    uint64_t provider_match_all = 0;
     bool pmc_profile = false;
     uint32_t pmc_source = 0;
     bool enable_lbr = false;
@@ -77,6 +89,7 @@ struct PmcSessionInfo {
 ULONG TraceFlagsForProfile(std::wstring_view profile);
 ULONG TraceFlagsForLiveFilter(std::wstring_view filter);
 std::vector<ProfileSource> QueryProfileSources(std::wstring* error = nullptr);
+std::vector<ProviderInfo> QueryProviders(std::wstring* error = nullptr);
 uint32_t QueryMaxLoggers(std::wstring* error = nullptr);
 uint32_t QueryMaxPmcCounters(std::wstring* error = nullptr);
 std::vector<PmcCounterOwnerInfo> QueryPmcCounterOwners(

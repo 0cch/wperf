@@ -6,6 +6,8 @@
 #include "commands/top.h"
 #include "commands/util.h"
 
+#include <combaseapi.h>
+
 #include "common.h"
 #include <psapi.h>
 #include <realtimeapiset.h>
@@ -55,7 +57,34 @@ BOOL WINAPI ConsoleControlHandler(DWORD control_type) {
     return FALSE;
 }
 
-int RunList() {
+int RunList(const std::vector<std::wstring>& arguments) {
+    if (!arguments.empty() && (arguments[0] == L"--help" || arguments[0] == L"-h")) {
+        std::wcout << L"Usage: wperf list [providers] [--max N]\n";
+        return 0;
+    }
+    if (!arguments.empty() && arguments[0] == L"providers") {
+        uint64_t limit = 500;
+        for (size_t index = 1; index < arguments.size(); ++index) {
+            if (arguments[index] == L"--max" && index + 1 < arguments.size()) {
+                ParseUnsigned(arguments[++index], limit);
+            }
+        }
+        std::wstring error;
+        const auto providers = QueryProviders(&error);
+        if (!error.empty()) {
+            PrintError(error);
+            return 5;
+        }
+        std::wcout << L"ETW providers: " << providers.size() << L"\n";
+        std::wcout << L"GUID                                  SchemaSource  Name\n";
+        for (size_t index = 0; index < providers.size() && index < limit; ++index) {
+            std::wcout << FormatGuid(providers[index].id) << L"  " << std::setw(12)
+                       << providers[index].schema_source << L"  "
+                       << providers[index].name << L"\n";
+        }
+        return 0;
+    }
+
     std::wstring error;
     const auto sources = QueryProfileSources(&error);
     if (!error.empty()) {
@@ -258,6 +287,7 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     const std::wstring lbr_text = OptionValue(arguments, L"--lbr", L"0");
     const std::wstring context_registers_text =
         OptionValue(arguments, L"--context-registers", L"0");
+    const std::wstring provider_text = OptionValue(arguments, L"--provider");
     uint64_t duration_ms = 5000;
     uint32_t profile_interval = 10000;
     uint32_t pmc_source = 0;
@@ -317,6 +347,17 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     trace_options.pmc_source = pmc_source;
     trace_options.enable_lbr = lbr_text == L"1";
     trace_options.enable_context_registers = context_registers_text == L"1";
+    if (!provider_text.empty()) {
+        if (FAILED(IIDFromString(provider_text.c_str(), &trace_options.provider_id))) {
+            logger.Log(LogLevel::Error, L"WORKER_READY", L"invalid provider GUID");
+            pipe.SendLine(L"ERROR 4 invalid provider GUID", nullptr);
+            pipe.SendLine(L"FINISHED 4", nullptr);
+            return 4;
+        }
+        trace_options.system_logger = false;
+        trace_options.enable_provider = true;
+        trace_options.enable_stack_tracing = false;
+    }
     if (!session.Start(trace_options, &error)) {
         logger.Log(LogLevel::Error, L"WORKER_READY", error);
         state.phase = L"INTERNAL_ERROR";
@@ -494,6 +535,7 @@ struct RecordOptions {
     bool pmc_source_set = false;
     bool lbr = false;
     bool context_registers = false;
+    std::optional<GUID> provider;
     bool elevate = false;
 };
 
@@ -539,6 +581,17 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
             options.lbr = true;
         } else if (argument == L"--context-registers") {
             options.context_registers = true;
+        } else if (argument == L"--provider") {
+            if (index + 1 >= arguments.size()) {
+                error = L"--provider requires a GUID";
+                return false;
+            }
+            GUID provider_id{};
+            if (FAILED(IIDFromString(arguments[++index].c_str(), &provider_id))) {
+                error = L"invalid provider GUID";
+                return false;
+            }
+            options.provider = provider_id;
         } else if (argument == L"--profile") {
             if (index + 1 >= arguments.size()) {
                 error = L"--profile requires a profile name";
@@ -574,7 +627,7 @@ bool ParseRecordOptions(const std::vector<std::wstring>& arguments,
         } else if (argument == L"--help" || argument == L"-h") {
             std::wcout << L"Usage: wperf record [--elevate] [-F HZ] [-p PID] "
                           L"[--duration MS] [-o FILE] [--lbr] "
-                          L"[--context-registers] [--] command\n";
+                          L"[--context-registers] [--provider GUID] [--] command\n";
             return false;
         } else {
             error = L"unknown record option: " + argument;
@@ -678,6 +731,13 @@ int RunRecord(const std::vector<std::wstring>& arguments) {
         L"--context-registers", options.context_registers ? L"1" : L"0",
         L"--duration-ms", std::to_wstring(options.duration_ms),
     };
+    if (options.provider.has_value()) {
+        wchar_t provider_text[64]{};
+        StringFromGUID2(*options.provider, provider_text,
+                        static_cast<int>(std::size(provider_text)));
+        worker_arguments.push_back(L"--provider");
+        worker_arguments.push_back(provider_text);
+    }
 
     state.phase = L"ELEVATING";
     state_store.Write(state, nullptr);
@@ -1261,7 +1321,7 @@ int RunCommandLine(const std::vector<std::wstring>& arguments) {
         return 0;
     }
     if (command == L"list") {
-        return RunList();
+        return RunList(rest);
     }
     if (command == L"doctor") {
         return RunDoctor(rest);
