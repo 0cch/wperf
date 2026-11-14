@@ -1,7 +1,9 @@
 # Usage
 
-This guide describes the stable workflows exposed by the current wperf CLI. Run
-`wperf help <command>` for the option set of an installed build.
+This guide describes the stable workflows exposed by the current wperf CLI.
+For the exhaustive option list of the installed build, use `wperf help`,
+`wperf help <command>`, `wperf <command> --help`, or the generated
+[command reference](COMMAND_REFERENCE.md).
 
 ## Conventions
 
@@ -12,6 +14,12 @@ This guide describes the stable workflows exposed by the current wperf CLI. Run
   without raising the interactive controller.
 - JSON and CSV are intended for scripts. Diagnostics go to stderr unless
   `--quiet` is used.
+- Option values may be separate (`-F 99`) or attached (`-F99`). Long forms
+  may use `--name=value`.
+- Use `--` to stop wperf option parsing and pass the remaining arguments to a
+  launched command.
+- `wperf help <command>` and `wperf <command> --help` render the same text.
+  `wperf help --format markdown` emits the generated command reference.
 
 ## Choose a workflow
 

@@ -57,6 +57,11 @@ cmake --build build --config Release --parallel
   --symbol-path .\build\Release --call-graph
 ```
 
+Discover the full public surface with `wperf help`,
+`wperf help <command>`, or the generated
+[command reference](docs/COMMAND_REFERENCE.md). Perf-style forms such as
+`-F99`, `--percent-limit=1`, and `-- command args` are supported.
+
 Illustrative report shape:
 
 ```text
@@ -114,8 +119,9 @@ wperf trace -i captured-with-context.etl -e context --json
 - Elevation for system capture; offline replay runs at normal integrity.
 
 The release executable uses Windows system DLLs only. Zydis is statically linked.
-The first CMake configure fetches pinned Zydis/Zycore revisions unless
-`-DWPERF_ENABLE_DISASM=OFF` is used.
+The first CMake configure fetches pinned CLI11, Zydis, and Zycore revisions;
+CLI11 is always required and Zydis can be disabled with
+`-DWPERF_ENABLE_DISASM=OFF`.
 
 ## Design principles
 
@@ -142,6 +148,7 @@ See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) and the
 ## Documentation
 
 - [Complete usage guide](docs/USAGE.md)
+- [Command reference](docs/COMMAND_REFERENCE.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Architecture and trust boundaries](docs/ARCHITECTURE.md)
 - [Public contract and versioning](docs/PUBLIC_CONTRACT.md)
@@ -161,7 +168,8 @@ tests, and hardware validation. Good entry points:
 - test a CPU/Windows/VBS combination;
 - improve symbolization or output diagnostics;
 - implement an item from [docs/TODO.md](docs/TODO.md);
-- improve examples and troubleshooting.
+- improve examples and troubleshooting;
+- extend CLI conformance cases and generated command documentation.
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) and
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). If wperf saves you time, a star helps

@@ -1,5 +1,10 @@
 # wperf Changelog
 
+## Unreleased
+- Added a CLI11-backed command catalog used for option validation, aliases, text help, generated Markdown reference, and consistent option-value normalization.
+- Added exhaustive CLI unit tests for every public option plus checked-in command-reference conformance testing.
+- Documented attached short values, `--name=value`, target forwarding with `--`, and the command-reference regeneration workflow.
+
 ## 0.8.0.0
 - Hardware-validated timer/PMC LBR, ETW PMC source/period/snapshot semantics and AMD64 context-register decoding on Intel Core i5-14600K; added the legacy LBR API fallback required by that platform.
 - Fixed elevated PMC source parsing, profile-source restore, ETL header lifetime, PMC snapshot source metadata, zero-valued legacy LBR timestamps, and added `trace -e context` AMD64 register output.

@@ -17,3 +17,10 @@ wperf itself is licensed under the MIT License; see `LICENSE`.
 - Use: dependency of Zydis.
 
 Source and license text are available from the pinned upstream repositories.
+
+## CLI11
+
+- Project: https://github.com/CLIUtils/CLI11
+- Version: v2.7.2
+- License: BSD-3-Clause
+- Use: command-line parsing, subcommands, aliases, and option validation.

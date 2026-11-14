@@ -38,7 +38,7 @@ unbounded aggregation stay outside the elevated process.
 
 | Area | Files |
 |---|---|
-| CLI entry and dispatch | `src/main.cpp`, `src/commands.cpp`, `src/commands/` |
+| CLI entry, catalog, and dispatch | `src/main.cpp`, `src/cli.cpp`, `src/commands.cpp`, `src/commands/` |
 | ETW session and recovery | `src/etw.cpp`, `src/session_guard.cpp`, `src/state.cpp` |
 | Elevated launch and IPC | `src/elevation.cpp`, `src/ipc.cpp` |
 | Raw ETW decoding | `src/etw_decode.cpp`, `src/lbr.cpp` |
@@ -49,6 +49,25 @@ unbounded aggregation stay outside the elevated process.
 | Disassembly | `src/disassembler.cpp` |
 | Rendering/output | `src/top_renderer.cpp`, `src/output.h` |
 | Tests | `tests/`, `tests/data/`, `tests/workloads/` |
+
+## CLI validation and documentation
+
+`src/cli.cpp` owns the public command catalog: names, aliases, elevation,
+options, examples, and compatibility notes. The runtime selects exactly one
+command before invoking CLI11. Parsing only that command avoids ambiguity when
+an option value equals another command name (for example, `trace -e sched`).
+
+The same catalog renders text help and the generated Markdown command
+reference. CLI11 validates option names and arity; wperf normalizes attached
+short values and `--name=value` before dispatch. Separator forwarding is kept
+verbatim so `-- child.exe --help` remains an argument to the child.
+
+Two tests protect the boundary:
+
+- `tests/cli_unit_tests.cpp` invokes the parser with a fake dispatcher and
+  covers every public option and alias.
+- `tests/cli_conformance_test.ps1` compares `help <command>` with
+  `<command> --help` and fails when `docs/COMMAND_REFERENCE.md` is stale.
 
 ## Capture pipeline
 

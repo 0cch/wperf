@@ -24,8 +24,19 @@ add_link_options(/DEBUG)
 
 option(WPERF_ENABLE_DISASM "Build optional Zydis-based disassembly support" ON)
 
+include(FetchContent)
+set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    cli11
+    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+    GIT_TAG v2.7.2
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(cli11)
+
 if(WPERF_ENABLE_DISASM)
-    include(FetchContent)
     set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
     set(ZYDIS_BUILD_MAN OFF CACHE BOOL "" FORCE)
@@ -99,14 +110,20 @@ endif()
 add_executable(wperf
     src/main.cpp
     src/commands.cpp
-    src/commands/help.cpp
+    src/cli.cpp
     src/commands/advanced.cpp
     src/commands/offline.cpp
     src/commands/live_worker.cpp
     src/commands/top.cpp
 )
 target_compile_options(wperf PRIVATE /W4 /permissive- /utf-8 /EHsc)
-target_link_libraries(wperf PRIVATE wperf_core)
+target_link_libraries(wperf PRIVATE wperf_core CLI11::CLI11)
+add_custom_target(generate-command-reference
+    COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_command_reference.ps1
+            -Wperf $<TARGET_FILE:wperf>
+            -OutputPath ${CMAKE_CURRENT_SOURCE_DIR}/docs/COMMAND_REFERENCE.md
+    DEPENDS wperf
+    COMMENT "Generating docs/COMMAND_REFERENCE.md from the wperf command catalog")
 add_executable(wperf_cpu_burn tests/workloads/cpu_burn.cpp)
 target_compile_definitions(wperf_cpu_burn PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(wperf_cpu_burn PRIVATE /W4 /permissive- /utf-8 /EHsc)
@@ -119,6 +136,10 @@ target_compile_definitions(wperf_unit_tests PRIVATE
     WPERF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 target_link_libraries(wperf_unit_tests PRIVATE wperf_core)
 add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
+add_executable(wperf_cli_tests tests/cli_unit_tests.cpp src/cli.cpp)
+target_compile_options(wperf_cli_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_cli_tests PRIVATE wperf_core CLI11::CLI11)
+add_test(NAME cli_unit_tests COMMAND wperf_cli_tests)
 add_executable(wperf_regression_tests tests/regression_tests.cpp)
 target_compile_options(wperf_regression_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
@@ -189,6 +210,11 @@ add_test(NAME json_contract_test
          -FixtureDirectory ${CMAKE_CURRENT_SOURCE_DIR}/tests/data
          -SchemaDirectory ${CMAKE_CURRENT_SOURCE_DIR}/docs/schemas)
 set_tests_properties(json_contract_test PROPERTIES TIMEOUT 60)
+add_test(NAME cli_conformance_test
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_conformance_test.ps1
+         -Wperf $<TARGET_FILE:wperf>
+         -ReferencePath ${CMAKE_CURRENT_SOURCE_DIR}/docs/COMMAND_REFERENCE.md)
+set_tests_properties(cli_conformance_test PROPERTIES TIMEOUT 60)
 add_test(NAME cli_pmc_frequency_rejected COMMAND wperf record --pmc-source 19 -F 999)
 add_test(NAME cli_report_nan_rejected COMMAND wperf report --percent-limit nan)
 add_test(NAME cli_negative_limit_rejected COMMAND wperf script --limit -1)

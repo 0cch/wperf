@@ -42,6 +42,16 @@ limitations are all recorded.
 - [x] Added a good-first-contribution list to [CONTRIBUTING.md](../CONTRIBUTING.md).
 - [x] Documented the issue, private-advisory, CI, and maintainer-review workflow.
 
+### OSS-04: CLI command catalog and reference
+
+- [x] Added a CLI11-backed command catalog for aliases, option validation, help,
+  and Markdown generation.
+- [x] Added [COMMAND_REFERENCE.md](COMMAND_REFERENCE.md) and the
+  `generate-command-reference` CMake target.
+- [x] Added exhaustive parser tests for every public option and alias.
+- [x] Added process-level conformance tests for help parity, generated-doc
+  freshness, compact values, and `--` forwarding.
+
 ## P1: Validation and robustness
 
 ### VAL-01: Platform matrix

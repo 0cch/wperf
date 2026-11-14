@@ -84,7 +84,9 @@ an access-denied or empty capture cannot be mistaken for a pass.
 |---|---|---|
 | Unit | `tests/unit_tests.cpp` | Decoders, aggregation, symbol/cache primitives |
 | Regression | `tests/regression_tests.cpp` | Raw event replay, quality gates, IPC, report contracts |
-| CLI | `CMakeLists.txt` `add_test` entries | Option validation and checked-in ETL fixtures |
+| CLI parser | `tests/cli_unit_tests.cpp` | Every public command/option, aliases, arity, conflicts, and target forwarding |
+| CLI conformance | `tests/cli_conformance_test.ps1` | Process-level help consistency and checked-in generated reference |
+| CLI fixtures | `CMakeLists.txt` `add_test` entries | Option validation and checked-in ETL workflows |
 | Live integration | `tests/live_integration_tests.cpp` | Real ETW capture, STOP, orphan cleanup |
 | Live controller smoke | `tests/live_top_smoke.ps1` | Worker/controller decode and rendering |
 | Replay contract | `scripts/replay_contract.ps1` | Stable report/JSON contract on fixture data |
@@ -115,7 +117,10 @@ redaction before adding new fixtures.
 
 ## Source map
 
-- `src/commands.cpp` and `src/commands/*` — CLI parsing/dispatch.
+- `src/cli.cpp`, `src/cli.h` — command catalog, CLI11 validation, aliases,
+  help rendering, Markdown generation, and argument normalization.
+- `src/commands.cpp` and `src/commands/*` — command implementations and
+  dispatch.
 - `src/etw.cpp` — logger lifecycle, profile source/interval configuration,
   LBR/context/PCM setup, restore paths.
 - `src/etl_reader.cpp` — ETL replay, correlation, StackWalk/cached stacks,
@@ -134,14 +139,28 @@ redaction before adding new fixtures.
 
 ## Adding a command or option
 
-1. Extend the dispatcher/parser in `src/commands.cpp` or the relevant
+The public CLI surface is described once in `BuildCatalog()` in
+`src/cli.cpp`. That catalog drives CLI11 validation, aliases, text help, and the
+generated Markdown reference. Command bodies still perform their own semantic
+parsing, so each new option needs an end-to-end test.
+
+1. Add the command or option to `BuildCatalog()` in `src/cli.cpp`.
+2. Implement dispatch/semantics in `src/commands.cpp` or the relevant
    `src/commands/*.cpp` file.
-2. Add help text in `src/commands/help.cpp`.
-3. Return a documented exit code and route errors to stderr.
-4. Add CLI validation tests in `CMakeLists.txt`.
-5. Add a replay/regression test if the command changes analysis output.
-6. Update [USAGE.md](USAGE.md) and the compatibility notes if the behavior is
+3. Add a case to `tests/cli_unit_tests.cpp` proving the option is accepted.
+4. Return a documented exit code and route errors to stderr.
+5. Regenerate the checked-in reference:
+   `cmake --build build --config Release --target generate-command-reference`.
+6. Run `ctest --test-dir build -C Release -R "cli_|wperf_unit_tests"`.
+7. Add a replay/regression test if the command changes analysis output.
+8. Update [USAGE.md](USAGE.md) and compatibility notes if behavior is
    platform-dependent.
+
+CLI11 parses only the selected command, not the full subcommand tree. This is
+intentional: values such as `sched` or `archive` can be option values without
+being mistaken for command names. wperf then normalizes attached short values
+(`-F99`) and `--name=value` before dispatch; arguments after `--` are preserved
+verbatim for the launched target.
 
 Do not add a new parser merely to inspect an existing ETL. Reuse
 `ReadEtwFile`/the shared `TraceData` model.

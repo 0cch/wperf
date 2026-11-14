@@ -2,6 +2,7 @@
 #include "commands/live_control.h"
 
 #include "commands/advanced.h"
+#include "cli.h"
 #include "commands/help.h"
 #include "commands/offline.h"
 #include "commands/live_worker.h"
@@ -1466,133 +1467,51 @@ int RunStat(const std::vector<std::wstring>& arguments) {
     }
     return 0;
 }
-int RunCommandLine(const std::vector<std::wstring>& arguments) {
-    if (arguments.empty()) {
-        PrintGeneralHelp();
-        return 0;
-    }
-
-    const std::wstring command = arguments[0];
-    std::vector<std::wstring> rest(arguments.begin() + 1, arguments.end());
-    if (command == L"--version") {
-        PrintVersion();
-        return 0;
-    }
-    if (command == L"version") {
-        if (!rest.empty()) {
-            if (rest.size() == 1 && (rest[0] == L"--help" || rest[0] == L"-h")) {
-                PrintCommandHelp(L"version");
-                return 0;
-            }
-            PrintError(L"version does not accept arguments");
-            return 2;
-        }
-        PrintVersion();
-        return 0;
-    }
-    if (command == L"--help" || command == L"-h") {
-        if (!rest.empty()) {
-            if (!PrintCommandHelp(rest.front())) {
-                PrintError(L"unknown command: " + rest.front());
-                return 2;
-            }
-        } else {
-            PrintGeneralHelp();
-        }
-        return 0;
-    }
-    if (command == L"help") {
-        if (rest.empty()) {
-            PrintGeneralHelp();
-            return 0;
-        }
-        if (rest.size() != 1) {
-            PrintError(L"help accepts at most one command name");
-            return 2;
-        }
-        if (!PrintCommandHelp(rest.front())) {
-            PrintError(L"unknown command: " + rest.front());
-            return 2;
-        }
-        return 0;
-    }
-    if (command == L"list") {
-        return RunList(rest);
-    }
-    if (command == L"doctor") {
-        return RunDoctor(rest);
-    }
-    if (command == L"test") {
-        if (!rest.empty()) {
-            if (rest.size() == 1 && (rest[0] == L"--help" || rest[0] == L"-h")) {
-                PrintCommandHelp(L"test");
-                return 0;
-            }
-            PrintError(L"test does not accept arguments");
-            return 2;
-        }
-        return RunTest();
-    }
-    if (command == L"recover") {
-        return RunRecover(rest);
-    }
-    if (command == L"record") {
-        return RunRecord(rest);
-    }
-    if (command == L"report") {
-        return RunReport(rest);
-    }
-    if (command == L"trace") {
-        return RunTrace(rest);
-    }
-    if (command == L"sched") {
-        return RunSched(rest);
-    }
-    if (command == L"stat") {
-        return RunStat(rest);
-    }
-    if (command == L"top") {
-        return RunTop(rest);
-    }
-    if (command == L"script") {
-        return RunScript(rest);
-    }
-    if (command == L"annotate") {
-        return RunAnnotate(rest);
-    }
-    if (command == L"diff") {
-        return RunDiff(rest);
-    }
-    if (command == L"archive") {
-        return RunArchive(rest);
-    }
-    if (command == L"buildid-list") {
-        return RunBuildIdList(rest);
-    }
-    if (command == L"--internal-live-worker") {
-        return RunLiveWorker(rest);
-    }
-    if (command == L"--internal-elevated-worker") {
-        return RunWorker(rest);
-    }
-    if (command == L"--internal-session-guard") {
-        return RunGuard(rest);
-    }
-    if(command==L"--internal-stop-timeout-test") {
-        if(GetEnvironmentVariableW(L"WPERF_ENABLE_TEST_FAULTS",nullptr,0)==0)return 2;
-        WorkerStopWatchdog timeout(200);
-        Sleep(INFINITE);
-        return 9;
-    }
-    if (command == L"--internal-test-crash") {
-        InstallCrashHandler(GetCrashesDirectory(), NewId());
-        RaiseException(0xE0000001, EXCEPTION_NONCONTINUABLE, 0, nullptr);
-        return 9;
-    }
-
+int RunPublicCommand(const std::wstring& command,
+                     const std::vector<std::wstring>& rest) {
+    if (command == L"list") return RunList(rest);
+    if (command == L"doctor") return RunDoctor(rest);
+    if (command == L"test") return RunTest();
+    if (command == L"recover") return RunRecover(rest);
+    if (command == L"record") return RunRecord(rest);
+    if (command == L"report") return RunReport(rest);
+    if (command == L"trace") return RunTrace(rest);
+    if (command == L"sched") return RunSched(rest);
+    if (command == L"stat") return RunStat(rest);
+    if (command == L"top") return RunTop(rest);
+    if (command == L"script") return RunScript(rest);
+    if (command == L"annotate") return RunAnnotate(rest);
+    if (command == L"diff") return RunDiff(rest);
+    if (command == L"archive") return RunArchive(rest);
+    if (command == L"buildid-list") return RunBuildIdList(rest);
     PrintError(L"unknown command: " + command);
-    PrintGeneralHelp();
     return 2;
 }
 
+int RunCommandLine(const std::vector<std::wstring>& arguments) {
+    if (!arguments.empty()) {
+        const std::wstring& command = arguments[0];
+        std::vector<std::wstring> rest(arguments.begin() + 1, arguments.end());
+        if (command == L"--internal-live-worker") return RunLiveWorker(rest);
+        if (command == L"--internal-elevated-worker") return RunWorker(rest);
+        if (command == L"--internal-session-guard") return RunGuard(rest);
+        if (command == L"--internal-stop-timeout-test") {
+            if (GetEnvironmentVariableW(L"WPERF_ENABLE_TEST_FAULTS", nullptr, 0) == 0) {
+                return 2;
+            }
+            WorkerStopWatchdog timeout(200);
+            Sleep(INFINITE);
+            return 9;
+        }
+        if (command == L"--internal-test-crash") {
+            InstallCrashHandler(GetCrashesDirectory(), NewId());
+            RaiseException(0xE0000001, EXCEPTION_NONCONTINUABLE, 0, nullptr);
+            return 9;
+        }
+    }
+    return cli::Run(arguments, [](const std::wstring& command,
+                                  const std::vector<std::wstring>& rest) {
+        return RunPublicCommand(command, rest);
+    });
+}
 }  // namespace wperf
