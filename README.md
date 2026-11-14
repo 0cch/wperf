@@ -1,155 +1,172 @@
 # wperf
 
-`wperf` is a lightweight Windows profiler built on Event Tracing for Windows
-(ETW). It aims to bring the everyday `perf` workflow to Windows while keeping
-the platform boundary explicit: no custom driver, no kernel patching, and no
-pretence that ETW exposes every Linux `perf_event_open` feature.
+**A lightweight Windows profiler built on ETW — closer to the `perf` workflow,
+without a custom driver.**
 
-Use it to capture CPU samples, call stacks, scheduler events, PMC samples,
-LBR branches, and AMD64 context registers, then inspect the result as tables,
-trees, JSON/CSV, or FlameGraph folded stacks.
+[![CI](https://github.com/0cch/wperf/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/0cch/wperf/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/0cch/wperf?sort=semver)](https://github.com/0cch/wperf/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue.svg)](docs/COMPATIBILITY.md)
 
-> wperf is pre-1.0. CLI and machine-readable schemas are usable, but may still
-> change between minor releases. Hardware and ETW capability differences are
-> reported explicitly rather than hidden.
+`wperf` captures CPU samples, call stacks, scheduler events, page faults, I/O,
+off-CPU time, PMC samples, Intel LBR branches, and AMD64 context registers. It
+then gives you perf-style tables, call trees, JSON/CSV, and FlameGraph folded
+stacks — with explicit quality and compatibility metadata.
 
-## Highlights
+> Pre-1.0: useful today, but CLI and machine-readable fields can still evolve.
+> Compatibility rules are documented in [PUBLIC_CONTRACT.md](docs/PUBLIC_CONTRACT.md).
 
-- CPU sampling with ETW call stacks and PDB-backed symbolization.
-- Scheduler, syscall, page-fault, file/disk I/O, and off-CPU analysis.
-- ETW PMC sampling, CSwitch counter snapshots, Intel LBR, and AMD64
-  context-register decoding.
-- Perf-style reports: flat tables, call trees, JSON/CSV, and folded stacks.
-- Live `top` and `trace` workflows with an ordinary-integrity controller.
-- Instruction heat and optional Zydis disassembly.
-- Weighted profile diff and reproducible module/PDB archives.
-- Verified module identity, symbol caching, inline frames, and archive replay.
+## Why wperf?
 
-## Requirements
+WPA/WPR and PerfView are excellent full-featured tools. wperf focuses on the
+developer loop:
 
-- Windows 11, or Windows 10 21H2+.
-- x64 process; Windows system ETW capture requires administrator rights.
-- Visual Studio 2022 with the Desktop C++ workload.
-- Windows SDK 10.
-- CMake 3.24+.
-- PowerShell 7 recommended for development and release scripts.
+- **Fast command line:** record, report, top, trace, diff, annotate.
+- **Scriptable output:** deterministic exits, JSON schemas, CSV, folded stacks.
+- **Clear semantics:** missing, approximate, lost, and estimated data stay visible.
+- **Small trust boundary:** only a hidden worker runs elevated.
+- **No kernel component:** ETW only; no driver, patching, or PMU MSR access.
+- **Windows-native:** PDBs, ETW stacks, process/thread lifetimes, and ETW quality counters.
 
-No WPA/WPR runtime is required to run the built executable. Disassembly is
-provided by statically linked Zydis.
+## What can it do?
 
-## Build
+| Workflow | Commands |
+|---|---|
+| Find CPU hotspots | `record`, `report`, `top` |
+| Inspect call trees and FlameGraphs | `report --call-graph`, `report --folded` |
+| Diagnose stalls and scheduling | `record --profile sched`, `report --off-cpu`, `trace -e sched` |
+| Inspect syscalls, faults, and I/O | `trace -e syscall`, `trace -e pagefault`, `trace -e io` |
+| Hardware profiling | PMC intervals, CSwitch snapshots, Intel LBR, AMD64 context registers |
+| Compare before/after | `diff --calltree` |
+| Reproduce symbols later | `archive`, `buildid-list`, `.symcache` |
+| Inspect instructions | `annotate --disasm` with optional Zydis |
+
+## 60-second tour
 
 ```powershell
+# 1. Build
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release --parallel
-ctest --test-dir build -C Release --output-on-failure
-```
 
-Build without Zydis when third-party disassembly is not needed:
-
-```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DWPERF_ENABLE_DISASM=OFF
-```
-
-The default build uses CMake `FetchContent` for pinned Zydis/Zycore revisions,
-so the first configure requires access to GitHub.
-
-## Quick start
-
-```powershell
-# Capture all CPU samples for five seconds.
-.\build\Release\wperf.exe record --elevate --duration 5000 -o cpu.etl
-
-# Inspect hot functions and call stacks.
-.\build\Release\wperf.exe report -i cpu.etl `
-  --symbol-path .\build\Release --call-graph
-
-# Capture a child process.
-.\build\Release\wperf.exe record --elevate --duration 10000 `
+# 2. Capture your app
+.\build\Release\wperf.exe record --elevate --duration 5000 `
   -o app.etl -- .\path\to\app.exe
 
-# Produce FlameGraph input.
+# 3. Show hot functions and call stacks
+.\build\Release\wperf.exe report -i app.etl `
+  --symbol-path .\build\Release --call-graph
+```
+
+Illustrative report shape:
+
+```text
+Overhead  Samples  Command     Module       Symbol
+  42.1%     1840   app.exe     app.exe      render_frame
+  17.4%      762   app.exe     app.exe      decode_packet
+  11.8%      516   ntdll.dll   ntdll.dll    RtlAllocateHeap
+```
+
+Generate flame graph input:
+
+```powershell
 .\build\Release\wperf.exe report -i app.etl `
   --symbol-path .\build\Release --folded --quiet -o stacks.folded
+perl flamegraph.pl stacks.folded > stacks.svg
 ```
 
-Live views:
+## Common workflows
+
+### Live CPU view
 
 ```powershell
-.\build\Release\wperf.exe top --elevate --interval 1000
-.\build\Release\wperf.exe trace --live --elevate -e sched --duration 5000
+wperf top --elevate --interval 1000
 ```
 
-Off-CPU analysis:
+### Off-CPU stalls
 
 ```powershell
-.\build\Release\wperf.exe record --elevate --profile sched --duration 5000 `
-  -o sched.etl
-.\build\Release\wperf.exe report -i sched.etl --off-cpu `
-  --symbol-path .\build\Release
+wperf record --elevate --profile sched --duration 5000 -o sched.etl
+wperf report -i sched.etl --off-cpu --symbol-path .\symbols
 ```
 
-Hardware profiler examples:
+### Machine-readable automation
 
 ```powershell
-# ETW PMC sampling.
+wperf report -i app.etl --json --metadata --strict-quality
+wperf trace -i sched.etl -e sched --json --max 100
+```
+
+### Hardware counters and branch history
+
+```powershell
 wperf record --elevate --pmc-source TotalCycles --period 1000000 `
   --duration 3000 -o pmc.etl
-
-# Intel LBR on timer or PMC interrupts.
 wperf record --elevate --lbr -F 99 --duration 3000 -o lbr.etl
-
-# AMD64 context registers from an offline ETL.
-wperf trace -i captured.etl -e context --json
+wperf trace -i captured-with-context.etl -e context --json
 ```
 
-## Privilege model
+## Build requirements
 
-`record` and live ETW capture require elevation. `--elevate` launches one hidden
-elevated worker; the interactive controller stays at its current integrity
-level and owns parsing, symbolization, reporting, and terminal output. See
-[SECURITY.md](SECURITY.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- Windows 11 or Windows 10 21H2+ x64.
+- Visual Studio 2022 with the Desktop C++ workload.
+- Windows SDK 10 and CMake 3.24+.
+- PowerShell 7 recommended for development and release scripts.
+- Elevation for system capture; offline replay runs at normal integrity.
 
-## Compatibility and limits
+The release executable uses Windows system DLLs only. Zydis is statically linked.
+The first CMake configure fetches pinned Zydis/Zycore revisions unless
+`-DWPERF_ENABLE_DISASM=OFF` is used.
 
-- PMU results are ETW sample-derived unless explicitly documented otherwise.
-- CSwitch counter snapshots are estimated deltas and are always marked
-  `exact:false`.
-- LBR depth is finite and CPU-dependent; it is not Intel PT.
-- Context-register decoding is validated for AMD64; ARM64 decoding is not
-  implemented.
-- Syscall argument and kernel-internal memory semantics are not synthesized.
-- Windows ETW cannot reproduce every Linux `perf_event_open` group or
-  multiplexing behavior.
+## Design principles
 
-See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the full matrix.
+- **Evidence over guesswork.** Quality counters and provenance are part of the result.
+- **Exact is a claim.** Estimated PMC snapshots are never presented as exact totals.
+- **Least privilege.** DbgHelp, PDB parsing, aggregation, and rendering stay in the controller.
+- **Stable automation.** Exit codes and documented JSON fields are compatibility surface.
+- **Small, extensible core.** One replay model feeds reports, scripts, diffs, and live views.
+
+## Compatibility
+
+| Area | Status |
+|---|---|
+| Windows 10/11 x64 | Supported; broader hardware matrix ongoing |
+| Intel LBR | Hardware-validated on Intel i5-14600K |
+| PMC sampling/snapshots | Hardware-validated; values are ETW-derived |
+| AMD64 context registers | Capture and decoding validated |
+| ARM64 context registers | Not decoded |
+| Custom driver / direct MSR | Not supported by design |
+
+See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) and the
+[hardware validation evidence](docs/HARDWARE_VALIDATION.md).
 
 ## Documentation
 
-- [Usage and command reference](docs/USAGE.md)
+- [Complete usage guide](docs/USAGE.md)
 - [Development guide](docs/DEVELOPMENT.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Compatibility](docs/COMPATIBILITY.md)
+- [Architecture and trust boundaries](docs/ARCHITECTURE.md)
 - [Public contract and versioning](docs/PUBLIC_CONTRACT.md)
 - [JSON schemas](docs/schemas)
-- [Hardware validation evidence](docs/HARDWARE_VALIDATION.md)
+- [Compatibility matrix](docs/COMPATIBILITY.md)
 - [Roadmap and open work](docs/TODO.md)
 - [Release process](docs/RELEASE.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 
-Run `wperf help`, `wperf help <command>`, or `<command> --help` for the complete
-option set for the installed build.
-
 ## Contributing
 
-Bug reports, reproducible ETL fixtures, hardware validation, documentation
-fixes, and code contributions are welcome. Start with
-[CONTRIBUTING.md](CONTRIBUTING.md) and the open items in
-[docs/TODO.md](docs/TODO.md). Hardware-dependent claims need reproducible
-evidence; skipped or unsupported runs are not treated as passes.
+Contributions are welcome across code, documentation, replay fixtures, decoder
+tests, and hardware validation. Good entry points:
+
+- add a sanitized ETL fixture or regression case;
+- test a CPU/Windows/VBS combination;
+- improve symbolization or output diagnostics;
+- implement an item from [docs/TODO.md](docs/TODO.md);
+- improve examples and troubleshooting.
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) and
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). If wperf saves you time, a star helps
+other Windows performance engineers find the project.
 
 ## License
 
-wperf is released under the MIT License. See [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

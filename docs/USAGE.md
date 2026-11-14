@@ -13,6 +13,34 @@ This guide describes the stable workflows exposed by the current wperf CLI. Run
 - JSON and CSV are intended for scripts. Diagnostics go to stderr unless
   `--quiet` is used.
 
+## Choose a workflow
+
+| Goal | Start here |
+|---|---|
+| Find slow CPU functions | `record` → `report` |
+| See live hot functions | `top` |
+| Diagnose stalls / waiting | `record --profile sched` → `report --off-cpu` |
+| Inspect scheduling or syscalls | `trace` |
+| Compare two builds | `diff` |
+| Inspect instruction heat | `annotate` |
+| Reproduce symbols later | `archive` |
+| Inspect hardware counters / LBR | `record --pmc-source`, `--lbr`, `--context-registers` |
+
+## First successful profile
+
+```powershell
+# Use the built-in CPU workload to verify the install.
+wperf record --elevate --duration 5000 -o cpu.etl -- .\build\Release\wperf_cpu_burn.exe 5000 2
+
+# Print the hottest functions and stacks.
+wperf report -i cpu.etl --symbol-path .\build\Release --call-graph
+```
+
+Check the exit code, lost-event counters, resolved modules, and missing-stack
+counters first. Use `--verbose` for the complete quality metadata. If symbols
+are missing, pass the matching PDB directory with `--symbol-path`. If capture
+fails to start, run `wperf doctor`.
+
 ## Capture with `record`
 
 ```text
@@ -143,6 +171,17 @@ the current CLI.
 wperf report -i FILE [options]
 ```
 
+| Need | Flag |
+|---|---|
+| Human table | default |
+| Call tree | `--call-graph callee` or `caller` |
+| FlameGraph input | `--folded` / `--collapsed` |
+| Scripts | `--json` or `--csv` |
+| Quality object | `--json --metadata` |
+| Blocked/ready wait time | `--off-cpu` |
+| I/O summary | `--kind io` |
+| PMC snapshot deltas | `--kind pmc --json --metadata` |
+
 ### Flat CPU profile
 
 ```powershell
@@ -180,18 +219,24 @@ perl flamegraph.pl stacks.folded > flamegraph.svg
 to JSON output. Use `--verbose` for every quality counter or `--quiet` for clean
 pipelines.
 
-Important quality concepts:
+Quality fields answer different questions:
 
-- stack quality: exact, approximate, ambiguous, missing;
-- lost events and lost buffers;
-- ring/correlation eviction;
-- decode errors and unattributed samples;
-- estimated versus exact values.
+| Field | Meaning |
+|---|---|
+| `exact_stacks` | stack matched the same sample time/thread/CPU |
+| `approximate_stacks` | stack matched a bounded nearby event |
+| `missing_stacks` | no safe stack could be assigned |
+| `lost_events` / `lost_buffers` | ETW itself lost data |
+| `ring_dropped` | wperf live capture dropped records |
+| `decode_errors` | a record did not match its expected schema |
+| `incomplete` | the result must not be treated as a clean total |
+| `exact:false` | the value is estimated or derived |
 
 `--strict-quality` fails on malformed, lost, or incomplete data.
 `--max-lost-events N` and `--max-missing-stacks N` apply configurable gates.
 Unresolved stack gaps are visible rather than silently assigned to another
 thread or time.
+
 ### Off-CPU analysis
 
 Scheduler-stack capture is requested by `record --profile sched`,
@@ -362,6 +407,46 @@ wperf recover --all-stale
 
 Exit codes are part of the automation contract. Treat a changed code as a
 compatibility change and add a regression test.
+
+## Copy-paste recipes
+
+### Show hotspots above 1%
+
+```powershell
+wperf report -i app.etl --symbol-path .\symbols --percent-limit 1
+```
+
+### Profile only a process tree
+
+```powershell
+wperf report -i app.etl --pid 1234 --include-children --call-graph
+```
+
+### Compare before and after
+
+```powershell
+wperf diff -1 before.etl -2 after.etl --calltree --json
+```
+
+### Export machine-readable samples
+
+```powershell
+wperf script -i app.etl --csv -F timestamp,cpu,pid,tid,ip,comm,dso,symbol,period
+```
+
+### Verify symbols and archive identity
+
+```powershell
+wperf buildid-list -i app.etl
+wperf archive -i app.etl -o archive --symbol-path .\symbols
+```
+
+### Check a hardware capability
+
+```powershell
+wperf list
+wperf doctor
+```
 
 ## Troubleshooting
 

@@ -4,6 +4,35 @@ This guide is for contributors working on wperf itself. User-facing command
 behavior is documented in [USAGE.md](USAGE.md); system design is in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Choose a contribution
+
+| If you want to... | Start here |
+|---|---|
+| Fix a capture/replay bug | `src/etl_reader.cpp`, `src/etw_decode.cpp`, regression tests |
+| Add a command or option | `src/commands/`, `CMakeLists.txt`, USAGE |
+| Improve symbolization | `src/symbolizer.cpp`, fixture tests |
+| Work on live top/trace | `src/live_top.cpp`, `src/live_data.cpp`, live IPC tests |
+| Improve reports | `src/cpu_report.cpp`, `src/off_cpu_report.cpp`, `src/analysis.cpp` |
+| Improve documentation | README, USAGE, DEVELOPMENT, ARCHITECTURE, TODO |
+| Validate hardware | hardware issue template + `HARDWARE_VALIDATION.md` |
+
+## First 30 minutes
+
+1. Build and run the normal test suite.
+2. Run `wperf doctor` and `wperf --version` from the build directory.
+3. Read [ARCHITECTURE.md](ARCHITECTURE.md) for the controller/worker/guard model.
+4. Pick a small item from [TODO.md](TODO.md) or a good-first issue.
+5. Add a focused test before changing behavior.
+6. Run the normal tests and, if capture changed, the elevated live tests.
+
+## Architecture in 60 seconds
+
+`wperf` starts an ETW session in an elevated worker, transfers bounded raw
+events to a normal-integrity controller, and decodes them into one `TraceData`
+model. Offline ETL replay uses the same model. Reports, scripts, annotation,
+diff, and live views consume that model; symbolization and PDB handling stay
+in the controller. The elevated worker never performs arbitrary file parsing.
+
 ## Prerequisites
 
 - Windows 10 21H2+ or Windows 11, x64.
@@ -216,7 +245,7 @@ Versions are four-part numeric values: `MAJOR.MINOR.PATCH.BUILD`.
 - `wperf.pdb`
 - `manifest.json`
 - `SHA256SUMS.txt`
-- README, changelog, notices, and durable docs
+- README, changelog, LICENSE, contributing/security guides, notices, and durable docs
 
 The GitHub workflow triggers on `vMAJOR.MINOR.PATCH` tags and publishes a
 release with the GitHub run number as the fourth component. A full four-part
@@ -242,6 +271,34 @@ Durable documentation is intentionally small:
 Do not add historical review transcripts, issue-by-issue acceptance diaries, or
 milestone process logs. Put completed behavior in the changelog, unresolved work
 in TODO, and durable technical rationale in the architecture guide.
+
+## Where help is needed
+
+The highest-value contribution areas are tracked in [TODO.md](TODO.md):
+
+- platform coverage: Windows 10, AMD, VBS/HVCI, WOW64, multi-group;
+- real cached-stack and scheduler-stack traces from more Windows builds;
+- sanitized replay fixtures and decoder boundary tests;
+- hardware validation reports for PMC/LBR/context-register behavior;
+- soak, fault-injection, and sampling-overhead measurements;
+- documentation examples and troubleshooting.
+
+## Definition of done
+
+- [ ] The behavior and its limitations are described.
+- [ ] A focused test or hardware evidence exists.
+- [ ] Normal CTest passes.
+- [ ] Elevated live tests pass when capture behavior changed.
+- [ ] JSON/CSV/exit-code compatibility is considered.
+- [ ] Relevant durable docs are updated.
+- [ ] No sensitive evidence or machine-specific paths are committed.
+
+## Review standards
+
+Reviewers should block changes that hide data loss, merge incompatible
+process/thread lifetimes, bypass the controller/worker boundary, change
+machine-readable semantics without documentation, or claim hardware support
+without reproducible evidence.
 
 ## Contribution workflow
 
