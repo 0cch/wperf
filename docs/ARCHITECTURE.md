@@ -45,7 +45,7 @@ unbounded aggregation stay outside the elevated process.
 | ETL replay/model | `src/etl_reader.cpp`, `src/trace_model.cpp`, `src/trace_events.cpp` |
 | Live capture | `src/live_top.cpp`, `src/live_data.cpp`, `src/commands/live_worker.cpp` |
 | Analysis | `src/analysis.cpp`, `src/cpu_report.cpp`, `src/off_cpu_report.cpp` |
-| Symbols and archives | `src/symbolizer.cpp`, `src/archive.cpp` |
+| Symbols and archives | `src/symbolizer.cpp`, `src/dbghelp_loader.cpp`, `src/archive.cpp` |
 | Disassembly | `src/disassembler.cpp` |
 | Rendering/output | `src/top_renderer.cpp`, `src/output.h` |
 | Tests | `tests/`, `tests/data/`, `tests/workloads/` |

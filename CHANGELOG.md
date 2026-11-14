@@ -1,6 +1,8 @@
 # wperf Changelog
 
 ## Unreleased
+- Fixed system-module symbol resolution by making device-path normalization case-insensitive and delay-loading a symsrv-capable DbgHelp from `WPERF_DBGHELP_PATH`, the Windows SDK Debugging Tools, or the application directory.
+- Added `_NT_SYMBOL_PATH`/symbol-server validation on Intel hardware, including downloaded public PDBs and real `ntdll`/`kernel32` symbols.
 - Added a CLI11-backed command catalog used for option validation, aliases, text help, generated Markdown reference, and consistent option-value normalization.
 - Added exhaustive CLI unit tests for every public option plus checked-in command-reference conformance testing.
 - Documented attached short values, `--name=value`, target forwarding with `--`, and the command-reference regeneration workflow.

@@ -351,6 +351,20 @@ Symbol resolution uses DbgHelp, local PDBs, optional symbol-server settings,
 and the project's identity-aware `.symcache`. Module timestamp/checksum/PDB
 identity mismatches are rejected rather than merged.
 
+For public Microsoft symbols, configure a local cache and server in
+`_NT_SYMBOL_PATH`:
+
+```powershell
+$env:_NT_SYMBOL_PATH = 'srv*D:\Symbols*https://msdl.microsoft.com/download/symbols'
+wperf report -i cpu.etl --call-graph --verbose
+```
+
+wperf delay-loads a symsrv-capable DbgHelp from `WPERF_DBGHELP_PATH`, the
+application directory, or Windows SDK Debugging Tools before using the system
+copy. Set `WPERF_DBGHELP_PATH` to a full DLL path or an installation directory
+when multiple DbgHelp versions are installed. A fresh symbol server may take
+time; further report runs use the local cache.
+
 ## Instruction heat and disassembly
 
 ```powershell

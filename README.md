@@ -115,13 +115,17 @@ wperf trace -i captured-with-context.etl -e context --json
 - Windows 11 or Windows 10 21H2+ x64.
 - Visual Studio 2022 with the Desktop C++ workload.
 - Windows SDK 10 and CMake 3.24+.
+- Windows SDK Debugging Tools optional for public-symbol downloads from a symbol server.
 - PowerShell 7 recommended for development and release scripts.
 - Elevation for system capture; offline replay runs at normal integrity.
 
-The release executable uses Windows system DLLs only. Zydis is statically linked.
-The first CMake configure fetches pinned CLI11, Zydis, and Zycore revisions;
-CLI11 is always required and Zydis can be disabled with
-`-DWPERF_ENABLE_DISASM=OFF`.
+The release package does not bundle DbgHelp or symsrv. wperf prefers a
+compatible `dbghelp.dll` from `WPERF_DBGHELP_PATH`, the application directory,
+or Windows SDK Debugging Tools, then falls back to the system copy. With a
+symsrv-capable DbgHelp and `_NT_SYMBOL_PATH`, public system symbols can be
+downloaded into a local cache. Zydis is statically linked. The first CMake
+configure fetches pinned CLI11, Zydis, and Zycore revisions; CLI11 is always
+required and Zydis can be disabled with `-DWPERF_ENABLE_DISASM=OFF`.
 
 ## Design principles
 

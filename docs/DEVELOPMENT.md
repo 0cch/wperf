@@ -131,6 +131,7 @@ redaction before adding new fixtures.
 - `src/analysis.cpp`, `src/cpu_report.cpp`, `src/off_cpu_report.cpp` — analysis
   and report shaping.
 - `src/symbolizer.cpp` — DbgHelp sessions, PDB identity, inline frames, cache.
+- `src/dbghelp_loader.cpp` — delay-load selection of a symsrv-capable DbgHelp.
 - `src/live_top.cpp`, `src/live_data.cpp`, `src/commands/live_worker.cpp` —
   live capture and IPC.
 - `src/elevation.cpp`, `src/ipc.cpp`, `src/session_guard.cpp` — privilege and

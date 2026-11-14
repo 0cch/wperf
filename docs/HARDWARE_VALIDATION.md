@@ -1,6 +1,6 @@
 # Hardware Validation Evidence
 
-Updated: 2026-11-13.
+Updated: 2026-11-14.
 
 This document records Intel hardware validation for LBR, PMC sampling/snapshots,
 and AMD64 context registers. Raw traces remain local and are not
@@ -201,6 +201,27 @@ The same live tests passed when rerun explicitly through the elevated path:
 live_integration          Passed
 live_top_controller_smoke Passed
 ```
+
+## CLI11 and symbol-server regression run
+
+A fresh Intel regression run was executed on 2026-11-14 after the CLI11
+command-catalog refactor and the DbgHelp symbol-server loader fix.
+
+| Check | Result |
+|---|---|
+| Release CTest | 48/48 passed under an elevated shell; live ETW tests included |
+| No-Zydis CTest | 48/48 passed at normal integrity; two live tests skipped as expected |
+| LBR payload smoke | 1,000 checked events, all with non-zero source/target addresses |
+| Context payload smoke | 1,000 checked events, all with non-zero RIP and RSP |
+| PMC snapshots | 6,044 rows, all marked estimated and `event-snapshot-derived` |
+| Real off-CPU trace | 14,056 blocked and 18,755 ready intervals; 0 lost events and 0 decode errors |
+| Public symbols | `ntdll!RtlUserThreadStart`, `kernel32!BaseThreadInitThunk`, and `wperf_cpu_burn!Burn` resolved |
+| Symbol cache | Public PDBs downloaded through `_NT_SYMBOL_PATH` into `D:\Symbols` |
+
+The run also validated live scheduler trace, live top, normal and PMC stat,
+Zydis annotation, doctor bundle generation, stale-session recovery, and argument
+forwarding. Raw ETLs and logs remain under the local `build/validation-*`
+directory and are not committed because they contain machine/process metadata.
 
 ## Conclusion
 

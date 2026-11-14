@@ -109,6 +109,7 @@ endif()
 
 add_executable(wperf
     src/main.cpp
+    src/dbghelp_loader.cpp
     src/commands.cpp
     src/cli.cpp
     src/commands/advanced.cpp
@@ -117,7 +118,8 @@ add_executable(wperf
     src/commands/top.cpp
 )
 target_compile_options(wperf PRIVATE /W4 /permissive- /utf-8 /EHsc)
-target_link_libraries(wperf PRIVATE wperf_core CLI11::CLI11)
+target_link_options(wperf PRIVATE /DELAYLOAD:dbghelp.dll)
+target_link_libraries(wperf PRIVATE wperf_core CLI11::CLI11 delayimp)
 add_custom_target(generate-command-reference
     COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_command_reference.ps1
             -Wperf $<TARGET_FILE:wperf>
@@ -130,7 +132,7 @@ target_compile_options(wperf_cpu_burn PRIVATE /W4 /permissive- /utf-8 /EHsc)
 
 enable_testing()
 
-add_executable(wperf_unit_tests tests/unit_tests.cpp)
+add_executable(wperf_unit_tests tests/unit_tests.cpp src/dbghelp_loader.cpp)
 target_compile_options(wperf_unit_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_compile_definitions(wperf_unit_tests PRIVATE
     WPERF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")

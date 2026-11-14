@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 #include <limits>
 #include <vector>
 
@@ -18,6 +19,11 @@ namespace {
 
 // Every DbgHelp entry point is single-threaded, including distinct sessions.
 std::mutex g_dbghelp_mutex;
+
+bool StartsWithIgnoreCase(std::wstring_view value, std::wstring_view prefix) {
+    return value.size() >= prefix.size() &&
+           _wcsnicmp(value.data(), prefix.data(), prefix.size()) == 0;
+}
 
 struct SectionRange {
     DWORD virtual_address = 0;
@@ -257,7 +263,7 @@ bool Symbolizer::Initialize(std::wstring symbol_path, std::wstring* error, std::
 
 std::wstring NormalizeModulePath(const std::wstring& path) {
     std::wstring value = path;
-    if (value.rfind(L"\\SystemRoot\\", 0) == 0) {
+    if (StartsWithIgnoreCase(value, L"\\SystemRoot\\")) {
         const DWORD required = GetEnvironmentVariableW(L"SystemRoot", nullptr, 0);
         if (required > 0) {
             std::wstring system_root(required, L'\0');
@@ -269,10 +275,10 @@ std::wstring NormalizeModulePath(const std::wstring& path) {
             }
         }
     }
-    if (value.rfind(L"\\??\\", 0) == 0) {
+    if (StartsWithIgnoreCase(value, L"\\??\\")) {
         value.erase(0, 4);
     }
-    if (value.rfind(L"\\Device\\", 0) == 0) {
+    if (StartsWithIgnoreCase(value, L"\\Device\\")) {
         for (wchar_t drive = L'C'; drive <= L'Z'; ++drive) {
             const std::wstring drive_name{drive, L':'};
             wchar_t target[1024]{};
@@ -281,7 +287,7 @@ std::wstring NormalizeModulePath(const std::wstring& path) {
                 continue;
             }
             const std::wstring device(target);
-            if (value.rfind(device + L"\\", 0) == 0) {
+            if (StartsWithIgnoreCase(value, device + L"\\")) {
                 value = drive_name + value.substr(device.size());
                 break;
             }

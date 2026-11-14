@@ -1,6 +1,7 @@
 #include "common.h"
 #include "commands/live_control.h"
 #include "cpu_report.h"
+#include "dbghelp_loader.h"
 #include "disassembler.h"
 #include "elevation.h"
 #include "etl_reader.h"
@@ -8,8 +9,11 @@
 #include "ipc.h"
 #include "lbr.h"
 #include "state.h"
+#include "symbolizer.h"
 #include "trace_events.h"
 
+#include <algorithm>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -341,6 +345,66 @@ void TestThreadAndProcessIntervals() {
           L"unknown process id has a stable display name");
     Check(wperf::ProcessDisplayName(trace, 42) == L"second.exe",
           L"process display name resolves the current lifetime");
+}
+
+void TestDbgHelpDiscovery() {
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() / (L"wperf-dbghelp-" + wperf::NewId());
+    std::wstring error;
+    Check(wperf::EnsureDirectory(directory, &error), L"create DbgHelp test directory");
+    const auto dll = directory / L"dbghelp.dll";
+    {
+        std::ofstream stream(dll, std::ios::binary);
+        stream << "test";
+    }
+    const DWORD required = GetEnvironmentVariableW(L"WPERF_DBGHELP_PATH", nullptr, 0);
+    std::wstring original(required, L'\0');
+    if (required > 0) {
+        const DWORD written = GetEnvironmentVariableW(
+            L"WPERF_DBGHELP_PATH", original.data(), required);
+        original.resize(written);
+    }
+    _wputenv_s(L"WPERF_DBGHELP_PATH", directory.c_str());
+    Check(wperf::FindPreferredDbgHelpPath() == dll,
+          L"WPERF_DBGHELP_PATH directory selects dbghelp.dll");
+    _wputenv_s(L"WPERF_DBGHELP_PATH", dll.c_str());
+    Check(wperf::FindPreferredDbgHelpPath() == dll,
+          L"WPERF_DBGHELP_PATH file selects dbghelp.dll");
+    _wputenv_s(L"WPERF_DBGHELP_PATH", original.c_str());
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+}
+
+void TestModulePathNormalization() {
+    const std::wstring executable = wperf::GetExecutablePath();
+    const std::wstring drive = std::filesystem::path(executable).root_name().wstring();
+    wchar_t device[1024]{};
+    Check(!drive.empty() &&
+              QueryDosDeviceW(drive.c_str(), device, static_cast<DWORD>(std::size(device))) != 0,
+          L"query DOS device for module path normalization");
+    if (!drive.empty() && device[0] != L'\0') {
+        std::wstring device_path = std::wstring(device) + LR"(\windows\system32\ntdll.dll)";
+        std::transform(device_path.begin(), device_path.end(), device_path.begin(),
+                       [](wchar_t character) { return std::towlower(character); });
+        const std::wstring normalized = wperf::NormalizeModulePath(device_path);
+        const std::wstring expected = drive + LR"(\windows\system32\ntdll.dll)";
+        Check(_wcsicmp(normalized.c_str(), expected.c_str()) == 0,
+              L"lowercase device path is normalized to a drive path");
+    }
+
+    const DWORD required = GetEnvironmentVariableW(L"SystemRoot", nullptr, 0);
+    Check(required > 0, L"read SystemRoot for module path normalization");
+    if (required > 0) {
+        std::wstring system_root(required, L'\0');
+        const DWORD written = GetEnvironmentVariableW(
+            L"SystemRoot", system_root.data(), required);
+        system_root.resize(written);
+        const std::wstring normalized =
+            wperf::NormalizeModulePath(LR"(\systemroot\System32\ntdll.dll)");
+        const std::wstring expected = system_root + LR"(\System32\ntdll.dll)";
+        Check(_wcsicmp(normalized.c_str(), expected.c_str()) == 0,
+              L"case-insensitive SystemRoot path is normalized");
+    }
 }
 
 void TestSymbolizerPdbIdentity() {
@@ -713,6 +777,8 @@ int wmain() {
     RunTest(L"LbrDecode", TestLbrDecode);
     RunTest(L"PmcQueries", TestPmcQueries);
     RunTest(L"TraceEventCorrelation", TestTraceEventCorrelation);
+    RunTest(L"DbgHelpDiscovery", TestDbgHelpDiscovery);
+    RunTest(L"ModulePathNormalization", TestModulePathNormalization);
     RunTest(L"SymbolizerPdbIdentity", TestSymbolizerPdbIdentity);
     RunTest(L"LiveTraceFlags", TestLiveTraceFlags);
     RunTest(L"LiveWorkerControlPlane", TestLiveWorkerControlPlane);

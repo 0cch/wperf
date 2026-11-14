@@ -121,7 +121,7 @@ limitations are all recorded.
 
 - [ ] Native FlameGraph SVG/HTML output, or a supported external workflow.
 - [ ] Richer call-tree aggregation for multi-process traces.
-- [ ] Better symbol-server configuration and cache diagnostics.
+- [ ] Better symbol-server proxy configuration, cache diagnostics, and partial-download recovery.
 - [ ] Additional provider-schema rendering beyond raw ETW capture.
 
 ## Contribution entry points
