@@ -1,3 +1,5 @@
+wperf itself is licensed under the MIT License; see `LICENSE`.
+
 # Third-party notices
 
 ## Zydis

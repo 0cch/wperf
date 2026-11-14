@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host 'R2 soak requires an elevated PowerShell terminal.'
+    Write-Host 'wperf top soak requires an elevated PowerShell terminal.'
     exit 2
 }
 if (-not (Test-Path $Wperf)) {
@@ -18,7 +18,7 @@ if (-not (Test-Path $Wperf)) {
 
 $iterations = [int][Math]::Max(1, $DurationMinutes * 60 * 1000 / $IntervalMs)
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$outputDir = Join-Path $PSScriptRoot "..\artifacts\r2-soak-$stamp"
+$outputDir = Join-Path $PSScriptRoot "..\artifacts\soak-top-$stamp"
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 $stdout = Join-Path $outputDir 'top.stdout.txt'
 $stderr = Join-Path $outputDir 'top.stderr.txt'
@@ -73,4 +73,4 @@ $summary | ConvertTo-Json
 if ($exitCode -ne 0 -or $leftover) {
     exit 1
 }
-Write-Output 'R2 soak: PASS'
+Write-Output 'wperf top soak: PASS'

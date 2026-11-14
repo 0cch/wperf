@@ -183,6 +183,12 @@ add_test(NAME cli_provider_bad_guid COMMAND wperf record --provider not-a-guid)
 add_test(NAME replay_contract COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/replay_contract.ps1
          -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl
          -SymbolPath $<TARGET_FILE_DIR:wperf>)
+add_test(NAME json_contract_test
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/json_contract_test.ps1
+         -Wperf $<TARGET_FILE:wperf>
+         -FixtureDirectory ${CMAKE_CURRENT_SOURCE_DIR}/tests/data
+         -SchemaDirectory ${CMAKE_CURRENT_SOURCE_DIR}/docs/schemas)
+set_tests_properties(json_contract_test PROPERTIES TIMEOUT 60)
 add_test(NAME cli_pmc_frequency_rejected COMMAND wperf record --pmc-source 19 -F 999)
 add_test(NAME cli_report_nan_rejected COMMAND wperf report --percent-limit nan)
 add_test(NAME cli_negative_limit_rejected COMMAND wperf script --limit -1)

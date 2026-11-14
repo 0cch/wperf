@@ -3,6 +3,8 @@
 ## 0.8.0.0
 - Hardware-validated timer/PMC LBR, ETW PMC source/period/snapshot semantics and AMD64 context-register decoding on Intel Core i5-14600K; added the legacy LBR API fallback required by that platform.
 - Fixed elevated PMC source parsing, profile-source restore, ETL header lifetime, PMC snapshot source metadata, zero-valued legacy LBR timestamps, and added `trace -e context` AMD64 register output.
+- Added MIT licensing, public compatibility policy, JSON schemas with CTest validation, and GitHub issue/PR templates for open-source contributions.
+- Reorganized the durable documentation for open-source contributors, added contributing/security guides, and removed obsolete milestone and review-status documents.
 - Preserved confirmed blocked time and reused-TID ready intervals; retained separate wakeup identities/stacks and original stack capture times in off-CPU reports.
 - Made live renderer drain deadlines and exceptions fail with incomplete-output diagnostics; field truncation now marks live windows incomplete.
 - Fixed CSwitch incoming/outgoing attribution, off-CPU instance/module-aware aggregation, truncated-boundary accounting, capture-relative interval cropping, and off-CPU quality gates found in review-4392026.

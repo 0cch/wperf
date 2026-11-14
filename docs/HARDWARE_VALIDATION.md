@@ -2,18 +2,17 @@
 
 Updated: 2026-11-13.
 
-This document records the first Intel hardware validation run for HW-01, HW-02,
-and HW-03. Raw traces remain under the local `evidence/` directory and are not
+This document records Intel hardware validation for LBR, PMC sampling/snapshots,
+and AMD64 context registers. Raw traces remain local and are not
 committed because they contain machine and process metadata.
 
 ## Result summary
 
 | Area | Result | Scope |
 |---|---|---|
-| HW-01 Intel LBR | PASS | Timer- and PMC-triggered capture, payload fields, depth, ordering and module ranges |
-| HW-02 PMC calibration | PASS | ETW source IDs, periods, per-CPU samples, source switch/restore and CSwitch snapshot semantics |
-| HW-03 context registers | PASS (AMD64) | Real payloads, validated field layout, decoding and PMC/LBR coexistence |
-| Issue #5 | CLOSED | Intel LBR, PMC semantics and AMD64 context-register validation completed |
+| Intel LBR | PASS | Timer- and PMC-triggered capture, payload fields, depth, ordering and module ranges |
+| PMC sampling and snapshots | PASS | ETW source IDs, periods, per-CPU samples, source switch/restore and CSwitch snapshot semantics |
+| AMD64 context registers | PASS | Real payloads, validated field layout, decoding and PMC/LBR coexistence |
 
 PMC values remain ETW sample-derived. This run validates wperf's stated
 source/period/snapshot semantics; it does not claim exact Linux
@@ -46,7 +45,7 @@ windows.
 ```powershell
 .\build-intel\Release\wperf_cpu_burn.exe 2000 2
 ```
-## HW-01: Intel LBR
+## Intel LBR
 
 The Windows 11 build exposes `TraceConfigureLastBranchRecord`, but both the
 callstack and raw configuration calls return `ERROR_NOT_SUPPORTED (50)` on this
@@ -91,7 +90,7 @@ wperf record --elevate --pmc-source 19 --period 1000000 --duration 2000 `
 wperf trace -i lbr-pmc.etl -e lbr --json --max 200000
 ```
 
-## HW-02: PMC sampling and snapshots
+## PMC Sampling and Snapshots
 
 | Capture | Source | Period | Samples | CPUs | Lost events | Decode errors |
 |---|---:|---:|---:|---:|---:|---:|
@@ -137,7 +136,7 @@ wperf report -i pmc-snapshots.etl --kind pmc --json --metadata
 All 18 profile sources enumerated by Windows were reported as supported on this
 platform; no separate unsupported-source hardware case was available to test.
 That distinct inventory item remains open.
-## HW-03: Context registers
+## Context Registers
 
 `--context-registers` enabled `TraceContextRegisterInfo` with control and
 integer register requests. The resulting trace contains PerfInfo opcode `0x7a`
@@ -205,7 +204,7 @@ live_top_controller_smoke Passed
 
 ## Conclusion
 
-HW-01, HW-02 and AMD64 HW-03 are accepted for this Intel platform and Windows
+LBR, PMC sampling/snapshots and AMD64 context-register decoding are accepted
 build. The context-register decoder uses the WMI event type 122 field order and
 the independently published 144-byte AMD64 layout, and is exposed through
 `wperf trace -e context`. ARM64 context-register payload decoding is not claimed.

@@ -39,7 +39,10 @@ Examples:
   wperf record --elevate -F 999 -g --duration 5000 -o cpu.etl
   wperf record --elevate -g -o child.etl -- .\app.exe --input data.txt
 
-For sched, cpu-sched and all profiles, wperf also requests CSwitch/ReadyThread\nstack tracing and reports scheduler-stack=... status.\n\nSystem capture requires administrator rights. --elevate keeps the controller
+For sched, cpu-sched and all profiles, wperf also requests CSwitch/ReadyThread
+stack tracing and reports scheduler-stack=... status.
+
+System capture requires administrator rights. --elevate keeps the controller
 at normal integrity and launches one hidden elevated worker.
 )";
 
@@ -80,7 +83,7 @@ Options:
   --verbose                 Print complete quality counters to stderr.
   --csv                     Print CSV rows.
   --json                    Print JSON rows.
-  --kind cpu|io             Select a CPU profile or I/O summary.
+  --kind cpu|io|pmc         Select a CPU, I/O, or PMC snapshot report.
   -h, --help                Show this help.
 
 Flame graph workflow (SVG rendering is external for now):

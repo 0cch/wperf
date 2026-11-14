@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/report-off-cpu.schema.json",
+  "title": "wperf off-CPU report",
+  "type": "object",
+  "required": ["quality", "rows"],
+  "properties": {
+    "quality": {
+      "type": "object",
+      "required": ["samples", "samples_dropped", "lost_events", "lost_buffers", "off_cpu_blocked_intervals", "off_cpu_ready_intervals", "off_cpu_inferred_intervals", "off_cpu_evicted", "stacks_loaded", "incomplete"],
+      "properties": {
+        "samples": { "type": "integer", "minimum": 0 },
+        "samples_dropped": { "type": "integer", "minimum": 0 },
+        "lost_events": { "type": "integer", "minimum": 0 },
+        "lost_buffers": { "type": "integer", "minimum": 0 },
+        "off_cpu_blocked_intervals": { "type": "integer", "minimum": 0 },
+        "off_cpu_ready_intervals": { "type": "integer", "minimum": 0 },
+        "off_cpu_inferred_intervals": { "type": "integer", "minimum": 0 },
+        "off_cpu_evicted": { "type": "integer", "minimum": 0 },
+        "stacks_loaded": { "type": "boolean" },
+        "incomplete": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "pid", "process_start_ns", "tid", "thread_start_ns", "comm", "duration_ns", "confirmed_duration_ns", "inferred_duration_ns", "intervals", "inferred_intervals", "boundary", "boundary_inferred", "overhead", "stack_quality", "stack_missing", "stack_ambiguous", "stack", "stack_frames", "wakeup_pid", "wakeup_tid", "wakeup_stack", "wakeup_stack_frames"],
+        "properties": {
+          "kind": { "enum": ["blocked", "ready"] },
+          "pid": { "type": "integer", "minimum": 0 },
+          "process_start_ns": { "type": "integer", "minimum": 0 },
+          "tid": { "type": "integer", "minimum": 0 },
+          "thread_start_ns": { "type": "integer", "minimum": 0 },
+          "comm": { "type": "string" },
+          "duration_ns": { "type": "integer", "minimum": 0 },
+          "confirmed_duration_ns": { "type": "integer", "minimum": 0 },
+          "inferred_duration_ns": { "type": "integer", "minimum": 0 },
+          "intervals": { "type": "integer", "minimum": 0 },
+          "inferred_intervals": { "type": "integer", "minimum": 0 },
+          "boundary": { "type": "string" },
+          "boundary_inferred": { "type": "boolean" },
+          "overhead": { "type": "number" },
+          "wait_reason": { "type": "integer", "minimum": 0 },
+          "wait_reason_name": { "type": "string" },
+          "stack_quality": { "type": "string" },
+          "stack_missing": { "type": "boolean" },
+          "stack_ambiguous": { "type": "boolean" },
+          "stack": { "type": "array", "items": { "type": "integer" } },
+          "stack_frames": { "type": "array", "items": { "type": "object", "required": ["address", "module", "module_identity", "rva", "symbol"], "properties": { "address": { "type": "integer" }, "module": { "type": "string" }, "module_identity": { "type": "string" }, "rva": { "type": "integer", "minimum": 0 }, "symbol": { "type": "string" } }, "additionalProperties": true } },
+          "wakeup_pid": { "type": "integer", "minimum": 0 },
+          "wakeup_tid": { "type": "integer", "minimum": 0 },
+          "wakeup_process_start_ns": { "type": "integer", "minimum": 0 },
+          "wakeup_thread_start_ns": { "type": "integer", "minimum": 0 },
+          "wakeup_stack": { "type": "array", "items": { "type": "integer" } },
+          "wakeup_stack_frames": { "type": "array", "items": { "type": "object", "required": ["address", "module", "module_identity", "rva", "symbol"], "properties": { "address": { "type": "integer" }, "module": { "type": "string" }, "module_identity": { "type": "string" }, "rva": { "type": "integer", "minimum": 0 }, "symbol": { "type": "string" } }, "additionalProperties": true } }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

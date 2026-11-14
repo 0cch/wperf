@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible wperf defect
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach raw ETLs, crash dumps, credentials, or unredacted paths.
+        Use the private security advisory flow for vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: wperf version
+      description: Output of `wperf --version`
+      placeholder: "0.8.0.1"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows and CPU
+      description: Windows build, CPU model, and whether capture was elevated
+      placeholder: "Windows 11 26300; Intel i5-14600K; elevated capture"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Reproduction command
+      description: Use redacted paths and a minimal workload if possible
+      render: powershell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include exit code, quality counters, and relevant stderr
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Additional evidence
+      description: Summarize ETL counts/quality; do not upload sensitive traces publicly

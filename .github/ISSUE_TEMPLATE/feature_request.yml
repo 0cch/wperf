@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a new workflow, report, provider, or hardware capability
+title: "[feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What profiling question should wperf answer?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the CLI surface and expected output
+    validations:
+      required: true
+  - type: textarea
+    id: etw
+    attributes:
+      label: ETW/Windows capability
+      description: Which provider, event, or API can supply the data? Note privilege or hardware requirements.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and limitations
+      description: Explain what cannot be represented or why an external tool may be better

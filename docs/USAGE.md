@@ -1,220 +1,399 @@
 # Usage
 
-## Capture
+This guide describes the stable workflows exposed by the current wperf CLI. Run
+`wperf help <command>` for the option set of an installed build.
 
-```powershell
-wperf record [--elevate] [-F HZ] [-e EVENT] [-g] [-p PID] [--duration MS] [-o FILE]
-             [--profile cpu|cpu-sched|sched|syscall|vm|io|kernel|all|pmu]
-             [--pmc-source ID] [--period N] [--lbr] [--context-registers]
-             [--provider GUID] [--] [command...]
+## Conventions
+
+- `wperf` means `wperf.exe` from the build or release directory.
+- Input traces are ETW `.etl` files.
+- Paths in examples are relative to the repository root.
+- System capture requires an elevated worker. `--elevate` starts that worker
+  without raising the interactive controller.
+- JSON and CSV are intended for scripts. Diagnostics go to stderr unless
+  `--quiet` is used.
+
+## Capture with `record`
+
+```text
+wperf record [options] [--] [command [arguments...]]
 ```
 
-`record` captures a system ETW session by default. `--provider GUID` switches
-to a private provider session. `--elevate` launches one hidden elevated worker
-and keeps the interactive controller at the current integrity level.
+Common examples:
 
-The controller waits for capture READY before launching a target. CPU sampling
-uses `-F HZ`; PMC sampling uses a source-specific event count with `--period N`.
-Combining PMC selection with `-F` is rejected. A requested PMC/LBR capture that
-produces no corresponding events returns unavailable (exit 5).
+```powershell
+# CPU samples for the whole system.
+wperf record --elevate --duration 5000 -o cpu.etl
+
+# CPU samples at 999 Hz.
+wperf record --elevate -F 999 --duration 5000 -o cpu-999.etl
+
+# Attach to an existing process.
+wperf record --elevate -p 1234 --duration 5000 -o attached.etl
+
+# Launch and profile a child process.
+wperf record --elevate --duration 10000 -o child.etl `
+  -- .\app.exe --input data.txt
+```
+
+`record` waits for the elevated side to report READY before launching a child.
+When the child exits, capture stops automatically.
+
+### Profiles and events
+
+`--profile` enables common event groups:
+
+| Profile | Purpose |
+|---|---|
+| `cpu` | Timer/CPU sampling, default |
+| `cpu-sched` | CPU samples plus scheduler events and stacks |
+| `sched` | Scheduler events, CSwitch/ReadyThread stacks |
+| `syscall` | Syscall enter/exit events |
+| `vm` | Page-fault events |
+| `io` | File and disk I/O events |
+| `kernel` | Kernel event set |
+| `all` | Broad system trace set |
+| `pmu` | ETW PMC interrupt sampling |
+
+`-e NAME|ID` accepts a CPU profile name, an ETW profile-source name, or a
+numeric source ID. Use `wperf list` to inspect available profile sources.
+
+### Stacks and stack cache
+
+System ETW call stacks are enabled by default. Disable them with
+`--no-call-graph`; `-g` is accepted for perf-style compatibility.
+
+`--stack-cache` requests modern StackWalkDef/Ref records when the Windows
+version and trace provider support them. Offline replay can consume both direct
+StackWalk events and cached-stack references.
+
+### Sampling frequency and periods
+
+CPU sampling uses `-F HZ` (1-100000, default 1000). PMC sampling uses a
+source-specific event count with `--period N`. Do not combine `-F` with PMC
+selection.
+
+```powershell
+wperf record --elevate --pmc-source TotalCycles --period 1000000 `
+  --duration 3000 -o pmc.etl
+```
+
+A requested PMC or LBR capture that produces no corresponding records exits
+with an unavailable-result status instead of silently producing an empty profile.
+
+### CSwitch PMC snapshots
+
+`--pmc-counters IDS` samples the listed counters on context switches rather than
+creating PMC interrupts:
+
+```powershell
+wperf record --elevate --pmc-counters 19,26 --duration 3000 `
+  -o snapshots.etl
+wperf report -i snapshots.etl --kind pmc --json --metadata
+```
+
+These values are per-CPU/old-thread deltas derived from event snapshots. They
+are always marked `exact:false` and `event-snapshot-derived`; they are not exact
+hardware totals.
+
+### Intel LBR
+
+`--lbr` requests Last Branch Record capture on supported Intel hardware.
+wperf first tries the current Windows API and falls back to the legacy ETW LBR
+configuration sequence where required.
+
+```powershell
+wperf record --elevate -F 99 --duration 3000 --lbr --no-call-graph `
+  -o lbr.etl
+wperf trace -i lbr.etl -e lbr --json
+```
+
+LBR usefulness depends on the CPU, Windows build, privilege, and available LBR
+depth. It is not Intel Processor Trace.
+
+### AMD64 context registers
+
+`--context-registers` requests context-register events for configured kernel
+events. Offline trace output decodes the validated AMD64 payload fields:
+
+```powershell
+wperf record --elevate --context-registers --duration 2000 `
+  --no-call-graph -o context.etl
+wperf trace -i context.etl -e context --json
+```
+
+The JSON `context_registers` object contains RIP, RSP, and the validated GPR
+order. ARM64 context payload decoding is not implemented.
+
+### Private ETW providers
+
+```powershell
+wperf record --elevate --provider {PROVIDER-GUID} --duration 3000 `
+  -o provider.etl
+wperf list providers --max 20
+```
+
+Private-provider capture produces a normal ETL for wperf, WPA, PerfView, or
+other ETW consumers. TDH rendering of arbitrary provider payloads is outside
+the current CLI.
 
 ## Reports
 
-```powershell
-wperf report -i FILE [-o FILE] [--kind cpu|io] [-p PID] [-t TID]
-             [--comm TEXT] [--dso TEXT] [--symbol TEXT]
-             [--percent-limit N] [-s FIELD]
-             [-g [caller|callee]] [--folded|--collapsed] [--off-cpu]
-             [--off-cpu-include-inferred] [--include-children] [--cpu N]
-             [--time-start MS] [--time-end MS] [--scope all|user|kernel]
-             [--stdio|--csv|--json] [--quiet|--verbose]
-             [--exact-stacks] [--metadata] [--strict-quality]
-             [--max-lost-events N] [--max-missing-stacks N]
-```
-
-A concise quality summary is written to stderr. Use `--verbose` for the complete
-counter set or `--quiet` for clean machine-readable pipelines. Stack quality
-distinguishes exact, approximate, ambiguous and missing records. ETW samples
-with the `UINT32_MAX` sentinel PID are displayed as `[unattributed]`.
-
-`--json --metadata` wraps rows with machine-readable quality information.
-`--strict-quality` fails on lost, dropped or malformed data; missing stacks
-alone do not cause failure. `--exact-stacks` excludes uncertain stacks.
-`--max-lost-events` and `--max-missing-stacks` apply to every report form,
-including off-CPU. For off-CPU, missing stacks are counted as affected
-intervals. Malformed, lost, or otherwise incomplete trace data returns exit 6
-after writing the selected report output.
-
-## Flame graphs
-
-`--folded` is the current FlameGraph interface. It emits the standard collapsed
-format, with the process name as the root frame:
-
 ```text
-command;module!caller;module!symbol 123
+wperf report -i FILE [options]
 ```
 
-The reference implementation is external and requires Perl:
+### Flat CPU profile
 
 ```powershell
-git clone --depth 1 https://github.com/brendangregg/FlameGraph.git artifacts\FlameGraph
+wperf report -i cpu.etl --symbol-path .\build\Release
+wperf report -i cpu.etl --sort symbol --percent-limit 1
+wperf report -i cpu.etl --json --metadata
 ```
 
-Generate collapsed stacks and render them with an external FlameGraph tool:
+Useful selectors include `--pid`, `--tid`, `--comm`, `--dso`, `--symbol`,
+`--cpu`, `--time-start`, `--time-end`, `--scope`, and `--include-children`.
+`--exact-stacks` excludes approximate or ambiguous stack correlations.
+
+### Call tree and folded stacks
 
 ```powershell
-wperf report -i cpu.etl `
-  --symbol-path .\build\Release `
-  --pid 1234 `
-  --folded --percent-limit 0.5 --quiet `
-  -o stacks.folded
+wperf report -i cpu.etl --symbol-path .\build\Release --call-graph callee
+wperf report -i cpu.etl --symbol-path .\build\Release --call-graph caller
+wperf report -i cpu.etl --symbol-path .\build\Release `
+  --folded --quiet -o stacks.folded
+```
 
+Folded output is the standard collapsed-stack format, rooted at the process
+name. Counts are sample counts for CPU profiles and nanoseconds for off-CPU
+profiles. `-o` writes UTF-8 without BOM and LF line endings.
+
+Render with an external FlameGraph implementation:
+
+```powershell
 perl flamegraph.pl stacks.folded > flamegraph.svg
 ```
 
-`report -o` writes UTF-8 without BOM and LF line endings directly. This avoids
-CRLF being included in the sample-count field by Perl implementations on
-Windows, without a wrapper script.
+### JSON, CSV, and quality gates
 
-`--collapsed` is an alias for `--folded`. `--percent-limit` applies to folded
-stacks as well as table, CSV and JSON reports. Use `--pid` to isolate a process
-before rendering a multi-process trace. Native SVG/HTML output is intentionally
-not part of this stage.
+`--json` and `--csv` are mutually exclusive. `--metadata` adds quality metadata
+to JSON output. Use `--verbose` for every quality counter or `--quiet` for clean
+pipelines.
 
-## Off-CPU analysis
+Important quality concepts:
 
-Schedule-stack capture is requested automatically for `record --profile sched`,
-`cpu-sched` and `all`. `report --off-cpu` consumes the correlated blocked/ready
-intervals:
+- stack quality: exact, approximate, ambiguous, missing;
+- lost events and lost buffers;
+- ring/correlation eviction;
+- decode errors and unattributed samples;
+- estimated versus exact values.
+
+`--strict-quality` fails on malformed, lost, or incomplete data.
+`--max-lost-events N` and `--max-missing-stacks N` apply configurable gates.
+Unresolved stack gaps are visible rather than silently assigned to another
+thread or time.
+### Off-CPU analysis
+
+Scheduler-stack capture is requested by `record --profile sched`,
+`--profile cpu-sched`, and `--profile all`.
 
 ```powershell
+wperf record --elevate --profile sched --duration 5000 -o sched.etl
 wperf report -i sched.etl --off-cpu --symbol-path .\build\Release
-wperf report -i sched.etl --off-cpu --json
+wperf report -i sched.etl --off-cpu --json --metadata
 wperf report -i sched.etl --off-cpu --folded --quiet -o offcpu.folded
-wperf report -i sched.etl --off-cpu --metadata --json
-wperf report -i sched.etl --off-cpu --off-cpu-include-inferred --csv
 ```
 
-Folded counts are wait duration in nanoseconds. Render with:
+The off-CPU report separates:
+
+- blocked intervals from `Wait`;
+- preempted/ready-but-not-running intervals;
+- wakeup source identity;
+- the waiting thread's stack and the waking thread's stack.
+
+Intervals closed only by the end of capture are marked as truncated. They are
+excluded from exact totals by default. Use `--off-cpu-include-inferred` to
+include them. Folded off-CPU counts are wait duration in nanoseconds.
+
+## Live sampling: `top`
 
 ```powershell
-flamegraph.pl --countname ns offcpu.folded > offcpu.svg
+wperf top --elevate --interval 1000
+wperf top --elevate -p 1234 --iterations 10
+wperf top --elevate -e TotalCycles --symbol-path .\symbols
 ```
 
-Blocked intervals require a context switch from `Wait`. Normal preemption and
-ready-but-not-running time are reported separately. ETW `CSwitch` uses
-`tid=incoming` and `related_tid=outgoing`; `previous_state` belongs to the
-outgoing thread. Wakeup stacks are retained separately and are not assigned as
-the blocked thread's stack.
+A live window reports `unattributed`, `unknown_events`, and `ring_dropped`.
+PDB parsing and symbolization run in the normal-permission controller, not in
+the elevated worker.
 
-JSON/CSV rows separate wakeup sources by PID/TID, process/thread lifetime and
-stack identity. `wakeup_pid`, `wakeup_tid`, `wakeup_process_start_ns` and
-`wakeup_thread_start_ns` describe that source; JSON `wakeup_stack_frames` and
-CSV `wakeup_stack` resolve its frames in the waking process. Folded output
-remains weighted by the waiting thread's stack, so a FlameGraph can combine
-waiting paths across wakeup sources without mixing their call stacks.
-
-Intervals closed only by the end of capture are marked `boundary=truncated` and
-the confirmed blocked portion remains available when only the ready tail is
-unfinished. Truncated intervals
-are excluded from exact totals by default. Use `--off-cpu-include-inferred` to
-include them; folded output then appends `[truncated-boundary]`. JSON and CSV
-always expose `confirmed_duration_ns`, `inferred_duration_ns`, and boundary
-status. Aggregation keeps process instances, thread instances, module identity,
-and module-relative addresses separate, avoiding PID/TID reuse merges.
-
-`--time-start` and `--time-end` are capture-relative milliseconds and crop
-intervals crossing the selected bounds. `--include-children` and
-`--scope user|kernel` are supported by the off-CPU path.
-
-## Command help
+## Live tracing: `trace --live`
 
 ```powershell
-wperf help
-wperf help report
-wperf report --help
+wperf trace --live --elevate -e sched --duration 5000
+wperf trace --live --elevate -e syscall --json --max 100
+wperf trace --live --elevate -e lbr --duration 2000
 ```
 
-`-g` on `record` is accepted for perf compatibility; system ETW stack capture is
-enabled by default and can be disabled with `--no-call-graph`. `--stdio` is
-accepted by `report` for scripts that pass perf-style text output options.
+Live tracing is supported for scheduler, syscall, page-fault, I/O, and LBR
+events. Context-register decoding is currently available for offline ETLs:
+`trace -i FILE -e context`.
 
-## Live views
+## Offline event inspection
 
 ```powershell
-wperf top [-p PID] [-e cpu|SOURCE] [--interval MS] [--iterations N]
-          [--sort FIELD] [--symbol-path DIR] [--archive DIR]
-          [--percent-limit N] [--elevate]
-
-wperf trace --live [-e sched|syscall|pagefault|io|lbr] [-p PID]
-             [--duration MS] [--max N] [--json] [--elevate]
+wperf trace -i trace.etl -e sched --max 20
+wperf trace -i trace.etl -e syscall --json
+wperf trace -i trace.etl -e pagefault
+wperf trace -i trace.etl -e io
+wperf trace -i trace.etl -e lbr --max 100
+wperf trace -i trace.etl -e context --json
 ```
 
-`top --symbol-path DIR` supplies additional PDB locations to the elevated live
-worker. Its summary reports `unattributed`, `unknown_events` and
-`ring_dropped` so incomplete attribution is visible.
+Event filters:
 
-Bounded rings cap samples/events at 200000 entries. `ring_dropped` reports
-overflow instead of silently growing memory.
+| Filter | Records |
+|---|---|
+| `sched` | CSwitch and ReadyThread |
+| `syscall` | Syscall enter/exit |
+| `pagefault` | Page-fault events |
+| `io` | File and disk I/O |
+| `lbr` | LBR branch records |
+| `context` | AMD64 context-register records |
 
-Thread/image metadata and symbol caches also have limits; ended metadata is
-retained briefly for delayed events. ETW loss and correlation eviction are
-reported separately. Pending correlations expire after 60 seconds.
+## Sample scripting
 
-## Offline trace and scheduling
+`script` exports one line per sample.
 
 ```powershell
-wperf script -i FILE [-p PID] [-F LIST] [--symbol-path DIR] [--limit N] [--csv]
-wperf trace -i FILE [-e sched|syscall|pagefault|io|lbr|context] [--pid PID] [--max N] [--json]
-wperf sched -i FILE
-wperf report -i FILE --kind io [--json]
+wperf script -i cpu.etl --limit 20
+wperf script -i cpu.etl `
+  -F timestamp,cpu,pid,tid,ip,comm,dso,symbol,source,period,stack_quality `
+  --csv
 ```
 
-The script fields `source`, `period` and `stack_quality` expose sample provenance.
-CPU period is in nanoseconds; PMC period is a source-specific count; zero means
-unavailable. Diff uses CPU sample periods and falls back to the trace-level
-interval when a sample period is unknown; late metadata handling remains a
-follow-up. It does not assign sampling gaps or PMC counts as execution time.
+The text format is wperf-specific and is not intended as input to
+`stackcollapse-perf.pl`. Use `report --folded` for FlameGraph input.
 
-`trace -e context` emits decoded AMD64 context-register events from an offline ETL. The JSON object includes RIP, RSP, and RAX/RBX/RCX/RDX/RSI/RDI/RBP/R8-R15; ARM64 payloads are not decoded.
+## Scheduler summary and `stat`
 
-`script` text is wperf-specific and is not intended as input to
-`stackcollapse-perf.pl`. Use `report --folded` for FlameGraph.
+```powershell
+wperf sched -i sched.etl
+wperf stat -p 1234 --duration 2000
+wperf stat --per-thread -p 1234
+wperf stat --pmu -e TotalCycles -- .\app.exe
+```
+
+`stat` reports observed process/thread counters. PMC mode is ETW-derived and
+should not be treated as a hardware counter programming API.
 
 ## Symbols
 
 ```powershell
-wperf report -i FILE --symbol-path DIR
-wperf buildid-list -i FILE
-wperf annotate -i FILE [--pid PID] [--limit N] [--disasm] [--stdio|--json|--csv]
+wperf report -i cpu.etl --symbol-path .\build\Release
+wperf buildid-list -i cpu.etl
 ```
 
-`annotate --disasm` shows instruction bytes and Zydis Intel-syntax disassembly.
-With `-DWPERF_ENABLE_DISASM=OFF`, it falls back to address heat with a warning.
+Symbol resolution uses DbgHelp, local PDBs, optional symbol-server settings,
+and the project's identity-aware `.symcache`. Module timestamp/checksum/PDB
+identity mismatches are rejected rather than merged.
 
-## Diff and archive
+## Instruction heat and disassembly
 
 ```powershell
-wperf diff -1 BEFORE.etl -2 AFTER.etl [--pid PID] [--dso TEXT]
-           [--calltree] [--json|--csv]
-
-wperf archive -i FILE -o DIRECTORY [-p PID] [--symbol-path DIR]
-              [--max-size-mb N]
+wperf annotate -i cpu.etl --symbol-path .\build\Release --limit 20
+wperf annotate -i cpu.etl --symbol-path .\build\Release --disasm --json
 ```
 
-Archive writes `manifest.json`, `manifest.csv` and `manifest.txt` with PE/PDB
-identity, SHA256, copy status and size-limit decisions.
+`annotate --disasm` uses Zydis and Intel syntax when the build enables
+disassembly. With `-DWPERF_ENABLE_DISASM=OFF`, the command falls back to
+address heat with a warning.
 
-Referenced local binaries must match the trace identity. Binaries are stored
-under `modules/<SHA256>` and matching PDBs in a `symbols` symbol-store layout.
-Manifests contain relative paths; the ETL itself is not copied.
-
-## Providers
+## Diff
 
 ```powershell
-wperf list providers [--max N]
-wperf record --elevate --provider GUID --duration 3000 -o provider.etl
+wperf diff -1 before.etl -2 after.etl
+wperf diff -1 before.etl -2 after.etl --calltree --json
+wperf diff -1 before.etl -2 after.etl --pid 1234 --dso app.exe --csv
 ```
 
-Private-provider capture produces ETL for wperf, WPA and PerfView. Field-level
-TDH rendering is outside the current CLI.
+The default diff is weighted by CPU sample period. Known-period coverage and
+normalized shares are retained so unknown periods are not presented as exact
+execution time.
+
+## Reproducible archives
+
+```powershell
+wperf archive -i cpu.etl -o archive --symbol-path .\symbols
+wperf report -i cpu.etl --archive archive
+```
+
+Archives contain manifests with module/PDB identity, SHA256, copy status, and
+size-limit decisions. Modules are stored by SHA256 in `modules/`; matching PDBs
+use a symbol-store layout. The ETL itself is not copied.
+
+## Environment, providers, and recovery
+
+```powershell
+wperf doctor
+wperf doctor --bundle .\bundle
+wperf list
+wperf list providers --max 20
+wperf test
+wperf recover --all-stale
+```
+
+- `doctor` reports elevation, profile sources, PMC capabilities, state, and
+  recent runs.
+- `doctor --bundle` writes a redacted diagnostic bundle; crash dumps require
+  `--include-dumps`.
+- `recover` stops stale wperf-owned ETW sessions and requires elevation.
+- `test` runs a lightweight non-invasive self-test.
+
+## Common exit statuses
+
+| Code | Meaning |
+|---:|---|
+| `0` | Success |
+| `2` | Invalid CLI arguments or incompatible options |
+| `4` | Capture/start/cleanup failure |
+| `5` | Requested PMC/LBR capability produced no data |
+| `6` | Invalid trace or failed replay quality gate |
+
+Exit codes are part of the automation contract. Treat a changed code as a
+compatibility change and add a regression test.
+
+## Troubleshooting
+
+### Capture did not become ready
+
+Run:
+
+```powershell
+wperf doctor
+wperf list
+```
+
+Check that `--elevate` was used, no stale wperf-owned session remains, and the
+requested hardware source is supported. Use `wperf recover --all-stale` from an
+elevated terminal for a stale wperf session.
+
+### Symbols are missing
+
+- pass one or more `--symbol-path` directories;
+- ensure the PDB matches the module timestamp/checksum;
+- use `buildid-list` to inspect identity;
+- use an archive when the original binaries are unavailable.
+
+### PMC/LBR is unavailable
+
+`record` returns unavailable when the requested source or trigger produces no
+records. Check the CPU/Windows build, privilege, existing ETW PMC ownership, and
+the source IDs reported by `wperf list`. Unsupported hardware is not a successful
+capture.
+
+### JSON contains missing or approximate stacks
+
+That is intentional. Inspect quality metadata and use `--strict-quality`,
+`--exact-stacks`, or a narrower PID/time window when exact attribution is
+required.

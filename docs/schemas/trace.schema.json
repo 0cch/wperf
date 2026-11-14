@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/trace.schema.json",
+  "title": "wperf trace events",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["ts", "cpu", "pid", "tid", "event", "value1", "value2", "related_tid", "related_pid", "status", "has_status", "duration_ns", "has_duration", "size", "offset", "correlation_id", "wait_reason", "previous_state", "flags", "file_path", "detail", "comm"],
+    "properties": {
+      "ts": { "type": "integer", "minimum": 0 },
+      "cpu": { "type": "integer", "minimum": 0 },
+      "pid": { "type": "integer", "minimum": 0 },
+      "tid": { "type": "integer", "minimum": 0 },
+      "event": { "type": "string" },
+      "value1": { "type": "integer" },
+      "value2": { "type": "integer" },
+      "related_tid": { "type": "integer", "minimum": 0 },
+      "related_pid": { "type": "integer", "minimum": 0 },
+      "status": { "type": "integer" },
+      "has_status": { "type": "boolean" },
+      "duration_ns": { "type": "integer", "minimum": 0 },
+      "has_duration": { "type": "boolean" },
+      "size": { "type": "integer", "minimum": 0 },
+      "offset": { "type": "integer" },
+      "correlation_id": { "type": "integer" },
+      "wait_reason": { "type": "integer", "minimum": 0 },
+      "previous_state": { "type": "integer", "minimum": 0 },
+      "flags": { "type": "integer", "minimum": 0 },
+      "file_path": { "type": "string" },
+      "detail": { "type": "string" },
+      "comm": { "type": "string" },
+      "context_registers": {
+        "type": "object",
+        "required": ["rip", "rsp", "rax", "rcx", "rdx", "rbx", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"],
+        "properties": {
+          "rip": { "type": "integer" },
+          "rsp": { "type": "integer" },
+          "rax": { "type": "integer" },
+          "rcx": { "type": "integer" },
+          "rdx": { "type": "integer" },
+          "rbx": { "type": "integer" },
+          "rbp": { "type": "integer" },
+          "rsi": { "type": "integer" },
+          "rdi": { "type": "integer" },
+          "r8": { "type": "integer" },
+          "r9": { "type": "integer" },
+          "r10": { "type": "integer" },
+          "r11": { "type": "integer" },
+          "r12": { "type": "integer" },
+          "r13": { "type": "integer" },
+          "r14": { "type": "integer" },
+          "r15": { "type": "integer" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  }
+}

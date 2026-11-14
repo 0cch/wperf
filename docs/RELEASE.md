@@ -1,32 +1,96 @@
-# Release
+# Release Process
+
+## Versioning
+
+wperf uses four numeric components:
+
+```text
+MAJOR.MINOR.PATCH.BUILD
+```
+
+The CMake defaults define the first three. GitHub release workflows derive the
+fourth component from `GITHUB_RUN_NUMBER` unless a four-part tag explicitly
+provides it.
+
+Examples:
+
+- tag `v0.8.0` on run 42 produces release `0.8.0.42`;
+- tag `v0.8.0.42` produces release `0.8.0.42` directly.
+
+Release tags are immutable once published. Do not reuse or force-move a tag.
+
+## Local release build
 
 ```powershell
 pwsh -NoProfile -File .\scripts\build_release.ps1
 ```
 
-The release directory contains:
+The script configures/builds the Release x64 target, runs CTest, and writes the
+release directory to `dist/` by default.
+
+Override the output or version when needed:
+
+```powershell
+pwsh -NoProfile -File .\scripts\build_release.ps1 `
+  -OutputDirectory artifacts\release `
+  -VersionMajor 0 -VersionMinor 8 -VersionPatch 1 -BuildNumber 0
+```
+
+## Release contents
+
+Published GitHub Release assets:
 
 - `wperf.exe`
 - `wperf.pdb`
-- `README.md`, `CHANGELOG.md`, notices and final docs
-- `manifest.json` with version, git commit, file sizes and SHA256 values
-- `COMPATIBILITY.md`
-- `RELEASE.txt`
-- Zydis/Zycore notices when disassembly is enabled
+- `manifest.json`
+- `SHA256SUMS.txt`
 
-The executable depends only on Windows system DLLs and does not require
-WPA/WPR. Zydis is statically linked. The PDB is optional for execution and is
-provided for crash diagnostics.
+The release package also contains:
 
-FlameGraph folded data is written directly by `wperf report --folded -o FILE`;
-SVG rendering uses the external `flamegraph.pl` and Perl.
+- `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, and third-party notices;
+- `docs/COMPATIBILITY.md`, `docs/USAGE.md`, `docs/ARCHITECTURE.md`,
+  `docs/DEVELOPMENT.md`, `docs/PUBLIC_CONTRACT.md`, `docs/RELEASE.md`,
+  `docs/HARDWARE_VALIDATION.md`, and `docs/schemas/`;
+- `RELEASE.txt` with version/commit/build metadata.
 
-## Tag releases
+## Tag-triggered GitHub release
 
-Pushing a tag matching `vMAJOR.MINOR.PATCH` builds and publishes
-`vMAJOR.MINOR.PATCH.GITHUB_RUN_NUMBER`. For example, tag `v1.2.3` produces
-release version `v1.2.3.42` when the workflow run number is 42. A full
-four-part tag such as `v1.2.3.42` is also accepted as an explicit override.
+The workflow is `.github/workflows/release.yml` and triggers on tags matching
+`v*`.
 
-The release workflow publishes the EXE, PDB, manifest and SHA256 checksums to
-GitHub Releases.
+```powershell
+git tag -a v0.8.1 -m "wperf 0.8.1"
+git push origin v0.8.1
+```
+
+The workflow:
+
+1. validates the tag and derives the release version;
+2. builds and tests Release x64;
+3. generates SHA256 checksums for exe, PDB, and manifest;
+4. uploads the workflow artifact;
+5. creates a non-draft, non-prerelease GitHub Release.
+
+The live integration tests are required by the workflow. A skipped or
+unsupported hardware step must not be treated as a pass.
+
+## Pre-release checklist
+
+- [ ] Changelog updated and version values reviewed.
+- [ ] Normal CTest passes.
+- [ ] Elevated live tests pass with `WPERF_REQUIRE_LIVE_TESTS=1`.
+- [ ] Hardware-dependent claims have evidence in `docs/HARDWARE_VALIDATION.md`.
+- [ ] README/USAGE/COMPATIBILITY reflect current behavior.
+- [ ] No raw ETLs, dumps, secrets, or machine-specific paths are committed.
+- [ ] Release notes identify known limitations and unverified platforms.
+- [ ] `LICENSE` exists before the repository is made public.
+
+## Post-release verification
+
+```powershell
+gh release view v0.8.1
+gh run list --workflow release.yml --limit 5
+```
+
+Confirm the release is non-draft, required assets exist, and the manifest
+records the expected commit and version.

@@ -51,7 +51,8 @@ $sourcePdb = Join-Path $build "$Configuration\wperf.pdb"
 if (Test-Path $sourcePdb) {
     Copy-Item -LiteralPath $sourcePdb -Destination (Join-Path $OutputDirectory "wperf.pdb") -Force
 }
-foreach ($doc in @("README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md")) {
+foreach ($doc in @("README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
+                  "CONTRIBUTING.md", "SECURITY.md")) {
     $source = Join-Path $repo $doc
     if (Test-Path $source) {
         Copy-Item -LiteralPath $source -Destination (Join-Path $OutputDirectory $doc) -Force
@@ -59,8 +60,8 @@ foreach ($doc in @("README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.
 }
 $docsOutput = Join-Path $OutputDirectory "docs"
 New-Item -ItemType Directory -Force -Path $docsOutput | Out-Null
-foreach ($doc in @("USAGE.md", "ARCHITECTURE.md", "SECURITY.md", "COMPATIBILITY.md",
-                  "DEVELOPMENT.md", "RELEASE.md", "DISASSEMBLY.md",
+foreach ($doc in @("USAGE.md", "ARCHITECTURE.md", "COMPATIBILITY.md",
+                  "DEVELOPMENT.md", "PUBLIC_CONTRACT.md", "RELEASE.md",
                   "HARDWARE_VALIDATION.md")) {
     $source = Join-Path $repo (Join-Path "docs" $doc)
     if (Test-Path $source) {
@@ -68,22 +69,16 @@ foreach ($doc in @("USAGE.md", "ARCHITECTURE.md", "SECURITY.md", "COMPATIBILITY.
     }
 }
 
+$schemaSource = Join-Path $repo "docs\schemas"
+if (Test-Path $schemaSource) {
+    Copy-Item -LiteralPath $schemaSource -Destination (Join-Path $docsOutput "schemas") -Recurse -Force
+}
+
 $versionOutput = (& $outputExe --version) -join " "
 $version = $versionOutput -replace '^wperf\s+', ''
 $commit = (git -C $repo rev-parse HEAD).Trim()
 $builtAt = (Get-Date).ToString('o')
 
-$compatibility = @"
-# wperf compatibility
-
-- Target: Windows 10 21H2+ and Windows 11 x64.
-- Capture: ETW system logger and private provider sessions.
-- Symbols: DbgHelp, local PDB, and optionally configured symbol server.
-- PMU/LBR/context-register availability is platform and privilege dependent.
-- Unsupported hardware features are reported explicitly; they are not synthesized.
-- The release is a single CLI executable plus optional PDB/docs; no WPA/WPR runtime is required.
-"@
-Set-Content -LiteralPath (Join-Path $OutputDirectory "COMPATIBILITY.md") -Value $compatibility -Encoding utf8
 
 @(
     "wperf release",
@@ -92,7 +87,7 @@ Set-Content -LiteralPath (Join-Path $OutputDirectory "COMPATIBILITY.md") -Value 
     "git_commit=$commit",
     "built_at=$builtAt",
     "manifest=manifest.json",
-    "compatibility=COMPATIBILITY.md"
+    "compatibility=docs/COMPATIBILITY.md"
 ) | Set-Content -LiteralPath (Join-Path $OutputDirectory "RELEASE.txt") -Encoding utf8
 
 $files = @()

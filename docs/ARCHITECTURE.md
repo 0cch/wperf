@@ -1,86 +1,164 @@
 # Architecture
 
-## Components
+wperf is a Windows ETW consumer with a deliberately small trust boundary. The
+implementation is organized around one raw trace model, one replay path, and
+multiple report/live consumers.
 
-- `etw.*`: ETW session lifecycle, profile sources, PMC ownership, providers and
-  context-register capability configuration.
-- `etl_reader.*`: replay, classic event decoding, sample/stack correlation and
-  module image lifecycle.
-- `etw_decode.*`: shared CPU/PMC sample, period and processor-index decoding.
-- `trace_events.*`: scheduler/syscall/I/O correlation and quality accounting.
-  One bounded incremental state machine serves replay and live snapshots.
-- `lbr.*`: last-branch payload decoding.
-- `symbolizer.*`: PE/RSDS identity validation, DbgHelp, synthetic module bases,
-  source line and in-memory symbol cache.
-- `live_top.*`: real-time ETW consumer and bounded sample/event rings.
-- `live_data.*`: versioned, size-bounded structured IPC windows for low-privilege controller-side analysis.
-- `top_renderer.*`: bounded asynchronous rendering, drain deadlines, and error propagation.
-- `off_cpu_report.*`: blocked/ready interval aggregation and folded report output.
-- `commands/`: CLI controllers, live worker protocol, reports and analysis.
-- `zydis`: optional static disassembly engine.
+## Process model
+
+```text
++-----------------------------+         authenticated pipe
+| normal-integrity controller | <----------------------------+
+| CLI, replay, symbols,       |                              |
+| aggregation, JSON/CSV, UI   |                              |
++-----------------------------+                              |
+                                                             v
+                                              +-----------------------------+
+                                              | hidden elevated worker      |
+                                              | StartTrace/ProcessTrace     |
+                                              | raw ETW windows, STOP       |
+                                              +-----------------------------+
+                                                             |
+                                                             v
+                                              +-----------------------------+
+                                              | session guard               |
+                                              | orphan cleanup + restore    |
+                                              +-----------------------------+
+```
+
+The controller never needs to run elevated. The worker receives a nonce,
+controller PID, session parameters, and a bounded output path. It starts or
+stops ETW, enforces a stop deadline, and returns status/quality counters. The
+guard owns cleanup if the worker disappears unexpectedly.
+
+This boundary is central: arbitrary file parsing, DbgHelp, PDB lookup, and
+unbounded aggregation stay outside the elevated process.
+
+## Source layout
+
+| Area | Files |
+|---|---|
+| CLI entry and dispatch | `src/main.cpp`, `src/commands.cpp`, `src/commands/` |
+| ETW session and recovery | `src/etw.cpp`, `src/session_guard.cpp`, `src/state.cpp` |
+| Elevated launch and IPC | `src/elevation.cpp`, `src/ipc.cpp` |
+| Raw ETW decoding | `src/etw_decode.cpp`, `src/lbr.cpp` |
+| ETL replay/model | `src/etl_reader.cpp`, `src/trace_model.cpp`, `src/trace_events.cpp` |
+| Live capture | `src/live_top.cpp`, `src/live_data.cpp`, `src/commands/live_worker.cpp` |
+| Analysis | `src/analysis.cpp`, `src/cpu_report.cpp`, `src/off_cpu_report.cpp` |
+| Symbols and archives | `src/symbolizer.cpp`, `src/archive.cpp` |
+| Disassembly | `src/disassembler.cpp` |
+| Rendering/output | `src/top_renderer.cpp`, `src/output.h` |
+| Tests | `tests/`, `tests/data/`, `tests/workloads/` |
+
+## Capture pipeline
+
+1. The controller validates options and creates a run-state record.
+2. `--elevate` launches one worker and authenticates a named pipe.
+3. The worker configures the profile interval/PMC source, starts an ETW session,
+   and enables the requested kernel providers.
+4. The controller waits for READY before launching a child process.
+5. The worker drains real-time buffers or writes a sequential ETL.
+6. STOP is bounded; the worker reports lost buffers/events and restores global
+   sampling state.
+7. The guard stops orphaned sessions and restores configuration if the worker
+   exits unexpectedly.
+
+The system logger may independently report buffer loss. Successful process
+exit alone is not proof of a complete trace; quality counters are part of the
+result.
 
 ## Replay pipeline
 
-1. Open ETL with raw timestamps.
-2. Reconstruct process, thread and image lifetimes.
-3. Decode samples, scheduler, syscall, page-fault, I/O and LBR records.
-4. Validate payload lengths before reads.
-5. Correlate samples to stacks using raw QPC + TID + CPU; use leaf IP only to
-   disambiguate multiple stacks at the same key.
-6. Correlate syscall/I/O/ready transitions and account for orphans.
-7. Symbolize module-relative addresses and aggregate the requested report.
+`ReadEtwFile` uses `OpenTraceW` + `ProcessTrace` event callbacks. The replay
+context performs four jobs:
 
-## Live pipeline
+1. decode kernel/classic events into a common model;
+2. correlate process, thread, image, stack, and I/O identities;
+3. resolve StackWalk and cached-stack references with lifetime-aware keys;
+4. accumulate quality counters and finish derived analyses.
 
-- Elevated hidden worker owns one real-time ETW session.
-- Callback decodes payloads into bounded sample/event rings and lifecycle metadata.
-- Snapshot exchanges ring buffers under a short lock, then correlates outside it.
-- Controller and worker communicate through a nonce-authenticated named pipe.
-- The worker validates the named-pipe server PID against the expected controller.
-- DbgHelp and formatting run outside the ETW callback and outside the controller receive loop.
-- A bounded asynchronous renderer consumes completed windows, so symbol lookup and output cannot block STOP processing.
-- A normal renderer drain timeout marks output incomplete and fails the command;
-  active and queued unfinished windows are counted. Rendering exceptions are
-  returned as errors. Shared render resources remain alive if cancellation or
-  the drain deadline lets capture cleanup finish before rendering returns.
-- Ctrl-C sends STOP, keeps draining control messages, waits for worker exit and cleans stale sessions if needed.
-- The elevated worker sends raw trace windows and metadata; the normal-integrity
-  controller owns DbgHelp, PDB lookup, archive resolution, symbol caches,
-  aggregation, and formatting.
-- Live IPC uses a bounded, versioned line protocol. String and U64 payloads are
-  truncated below the pipe receive limit, and truncation increments explicit
-  metadata quality counters. The worker checks the control pipe between
-  messages, and client pipe handles use overlapped I/O with bounded write
-  deadlines. STOP remains responsive and a stalled reader cannot block the
-  worker indefinitely.
-- Live and record workers have a session guard for abnormal exit and conditional
-  sampling-configuration recovery.
+The same model drives reports, scripts, annotation, diff, and archive manifests.
+Adding a new report should reuse this model instead of opening an ETL with a
+second parser.
 
-## Data integrity
+### Raw records versus derived data
 
-- Exact stack matches are separated from approximate matches.
-- Unknown, lost, ambiguous, key-mismatched, metadata-dropped and ring-dropped data is counted.
-- Scheduler-event stacks are correlated separately from sample stacks.
-- Off-CPU blocked intervals require a switch from Wait; ready intervals and
-  preemption are represented separately. End-of-capture closures retain a
-  truncated boundary flag and are excluded from exact totals by default.
-- Off-CPU grouping uses process/thread instance starts plus module identity and
-  RVA, and resolves waiter stacks at their actual capture timestamp. Wakeup
-  process/thread lifetimes and wakeup-frame identity split distinct sources;
-  wakeup frames resolve in the waking process at the wakeup timestamp.
-- ReadyThread checks pending lifetimes before updating state. A confirmed
-  blocked endpoint is independent of an unfinished ready tail.
-- PE timestamp/checksum and RSDS PDB GUID/age are validated before symbols are
-  trusted.
-- PMC values are labeled sample-derived and are not presented as exact totals.
-- DbgHelp API calls are globally serialized; each Symbolizer owns a unique
-  session key. Indexed address lookup precedes the bounded symbol cache.
-- Unsupported LBR/context-register capabilities are never synthesized.
+The model keeps the raw value and its provenance where they differ:
 
-## Dependency boundary
+- CPU sample `period` is nanoseconds;
+- PMC sample `period` is a source-specific event count;
+- CSwitch counter snapshots are estimated deltas;
+- LBR entries are branch edges, not call-stack frames;
+- context-register payloads are decoded only for validated AMD64 fields;
+- sample weights are not fabricated from adjacent timestamps.
 
-- No custom driver.
-- No MSR access.
-- No kernel modification.
-- No WPA/WPR runtime requirement.
-- Zydis is the only optional third-party runtime feature, statically linked.
+## Correlation and identity
+
+- Process and thread lifetime records disambiguate PID/TID reuse.
+- Images carry timestamp, checksum, size, path, and resolved path.
+- Symbol aggregation keys include process instance, thread instance, module
+  identity, and module-relative address where the report needs them.
+- StackWalkRef/Def keys are lifetime-aware; stale references are rejected or
+  counted as ambiguous.
+- Wakeup stacks are stored separately from the waiting thread's stack.
+
+When identity is insufficient, the report preserves `missing`, `ambiguous`, or
+`unattributed` rather than assigning a plausible but unsafe owner.
+
+## Off-CPU state
+
+The offline scheduler model follows CSwitch and ReadyThread events:
+
+```text
+running --Wait--> blocked --ReadyThread--> ready --scheduled--> running
+running --preemption--> ready --scheduled--> running
+```
+
+A blocked interval requires a switching-out `Wait`. The outgoing thread is
+`related_tid`; `previous_state` belongs to that outgoing thread. Intervals that
+cross the end of capture are marked truncated, not treated as confirmed
+observations.
+
+Reports expose confirmed and inferred duration separately. Folded output uses
+nanoseconds as its weight.
+
+## Live path
+
+`LiveTopCapture` consumes events through a ProcessTrace thread. It owns bounded
+deques for samples/events and bounded metadata indexes. A snapshot transfers a
+window through the versioned `TOP2` IPC format to the controller.
+
+The controller receives windows, drains the pipe while rendering, symbolizes
+outside the receive lock, and reports unfinished/dropped windows. A stalled
+renderer must not block STOP.
+
+## Hardware features
+
+### PMC
+
+PMC interrupts use ETW profile sources. Source IDs and intervals are treated as
+machine-global configuration. CSwitch snapshots use a separate ETW counter-list
+configuration and produce estimated deltas.
+
+### LBR
+
+LBR is enabled through the current Windows LBR API when available and a legacy
+ETW configuration sequence on platforms where the current API returns
+not-supported. LBR events are decoded into from/to branch edges. Depth is
+finite and hardware-dependent.
+
+### Context registers
+
+AMD64 context events use the validated Windows WMI `ContextRegistersAMD64`
+field order: a QPC timestamp followed by RIP, RSP, and the general-purpose
+registers in the documented order. The trace command exposes those fields only
+for the validated architecture. ARM64 payload decoding is not claimed.
+
+## Output and compatibility
+
+Text output is for humans. JSON/CSV and exit codes are the automation contract.
+Quality metadata is intentionally verbose in JSON so callers can decide whether
+a result is usable.
+
+See [USAGE.md](USAGE.md) for command behavior and [COMPATIBILITY.md](COMPATIBILITY.md)
+for platform and semantic limits.

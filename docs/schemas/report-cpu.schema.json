@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/report-cpu.schema.json",
+  "title": "wperf CPU report",
+  "type": "object",
+  "required": ["quality", "rows"],
+  "properties": {
+    "quality": { "$ref": "#/$defs/quality" },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["overhead", "samples", "comm", "dso", "symbol", "pid", "process_start_ns", "module_identity", "module_path"],
+        "properties": {
+          "overhead": { "type": "number" },
+          "samples": { "type": "integer", "minimum": 0 },
+          "comm": { "type": "string" },
+          "dso": { "type": "string" },
+          "symbol": { "type": "string" },
+          "pid": { "type": "integer", "minimum": 0 },
+          "process_start_ns": { "type": "integer", "minimum": 0 },
+          "module_identity": { "type": "string" },
+          "module_path": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "quality": {
+      "type": "object",
+      "required": ["samples", "samples_dropped", "pmc_samples", "exact_stacks", "approximate_stacks", "missing_stacks", "lost_events", "lost_buffers", "ring_dropped", "metadata_dropped", "context_register_events", "decode_errors", "correlation_evicted", "syscall_orphaned", "unknown_events", "profile_interval_ns", "stacks_loaded", "incomplete"],
+      "properties": {
+        "samples": { "type": "integer", "minimum": 0 },
+        "samples_dropped": { "type": "integer", "minimum": 0 },
+        "pmc_samples": { "type": "integer", "minimum": 0 },
+        "exact_stacks": { "type": "integer", "minimum": 0 },
+        "approximate_stacks": { "type": "integer", "minimum": 0 },
+        "missing_stacks": { "type": "integer", "minimum": 0 },
+        "lost_events": { "type": "integer", "minimum": 0 },
+        "lost_buffers": { "type": "integer", "minimum": 0 },
+        "ring_dropped": { "type": "integer", "minimum": 0 },
+        "metadata_dropped": { "type": "integer", "minimum": 0 },
+        "context_register_events": { "type": "integer", "minimum": 0 },
+        "off_cpu_blocked_intervals": { "type": "integer", "minimum": 0 },
+        "off_cpu_ready_intervals": { "type": "integer", "minimum": 0 },
+        "off_cpu_exact_stacks": { "type": "integer", "minimum": 0 },
+        "off_cpu_approximate_stacks": { "type": "integer", "minimum": 0 },
+        "off_cpu_ambiguous_stacks": { "type": "integer", "minimum": 0 },
+        "off_cpu_missing_stacks": { "type": "integer", "minimum": 0 },
+        "off_cpu_preemptions": { "type": "integer", "minimum": 0 },
+        "off_cpu_duplicate_ready": { "type": "integer", "minimum": 0 },
+        "off_cpu_unclosed": { "type": "integer", "minimum": 0 },
+        "off_cpu_inferred_intervals": { "type": "integer", "minimum": 0 },
+        "off_cpu_evicted": { "type": "integer", "minimum": 0 },
+        "event_stack_exact": { "type": "integer", "minimum": 0 },
+        "event_stack_approximate": { "type": "integer", "minimum": 0 },
+        "event_stack_ambiguous": { "type": "integer", "minimum": 0 },
+        "event_stack_missing": { "type": "integer", "minimum": 0 },
+        "decode_errors": { "type": "integer", "minimum": 0 },
+        "correlation_evicted": { "type": "integer", "minimum": 0 },
+        "syscall_orphaned": { "type": "integer", "minimum": 0 },
+        "unknown_events": { "type": "integer", "minimum": 0 },
+        "profile_interval_ns": { "type": "integer", "minimum": 0 },
+        "stacks_loaded": { "type": "boolean" },
+        "incomplete": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

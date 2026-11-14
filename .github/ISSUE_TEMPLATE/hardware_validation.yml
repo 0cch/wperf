@@ -1,0 +1,45 @@
+name: Hardware validation report
+description: Share reproducible results for CPU, ETW, PMC, LBR, or context-register capability
+title: "[hardware] "
+body:
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows build, CPU, topology/groups, firmware, VBS/HVCI, elevation
+    validations:
+      required: true
+  - type: dropdown
+    id: feature
+    attributes:
+      label: Capability
+      options:
+        - CPU sampling / stacks
+        - Scheduler or off-CPU
+        - PMC sampling
+        - PMC CSwitch snapshots
+        - Intel LBR
+        - AMD64 context registers
+        - ARM64 context registers
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Capture and report commands
+      render: powershell
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: Include PASS/FAIL/UNSUPPORTED, counts, periods, depths, loss counters, and quality metadata
+    validations:
+      required: true
+  - type: textarea
+    id: limitations
+    attributes:
+      label: Limitations
+      description: Note unverified fields, unsupported sources, or interference from other profilers
