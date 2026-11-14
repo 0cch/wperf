@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 set(WPERF_VERSION_MAJOR 0 CACHE STRING "wperf major version")
 set(WPERF_VERSION_MINOR 8 CACHE STRING "wperf minor version")
-set(WPERF_VERSION_PATCH 0 CACHE STRING "wperf patch version")
+set(WPERF_VERSION_PATCH 1 CACHE STRING "wperf patch version")
 set(WPERF_BUILD_NUMBER 0 CACHE STRING "wperf build number")
 foreach(part WPERF_VERSION_MAJOR WPERF_VERSION_MINOR WPERF_VERSION_PATCH WPERF_BUILD_NUMBER)
     set(version_value "${${part}}")

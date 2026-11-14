@@ -9,6 +9,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 
 namespace wperf {
 namespace {
@@ -19,6 +20,63 @@ struct ResolvedFrame {
     std::wstring module;
     std::wstring module_identity;
     std::wstring symbol;
+};
+
+struct FrameKey {
+    uint32_t module_id = 0;
+    uint64_t rva = 0;
+    bool operator==(const FrameKey&) const = default;
+};
+
+struct OffCpuKey {
+    uint32_t kind = 0;
+    uint32_t pid = 0;
+    uint64_t process_start_ns = 0;
+    uint32_t tid = 0;
+    uint64_t thread_start_ns = 0;
+    uint32_t wait_reason = 0;
+    bool boundary_inferred = false;
+    std::vector<FrameKey> stack;
+    uint32_t wakeup_pid = UINT32_MAX;
+    uint64_t wakeup_process_start_ns = 0;
+    uint32_t wakeup_tid = 0;
+    uint64_t wakeup_thread_start_ns = 0;
+    std::vector<FrameKey> wakeup_stack;
+    bool operator==(const OffCpuKey&) const = default;
+};
+
+size_t MixHash(size_t hash, uint64_t value) {
+    constexpr uint64_t salt = 0x9e3779b97f4a7c15ull;
+    hash ^= static_cast<size_t>(value + salt + (hash << 6) + (hash >> 2));
+    return hash;
+}
+
+struct OffCpuKeyHash {
+    size_t operator()(const OffCpuKey& key) const noexcept {
+        size_t hash = 0;
+        hash = MixHash(hash, key.kind);
+        hash = MixHash(hash, key.pid);
+        hash = MixHash(hash, key.process_start_ns);
+        hash = MixHash(hash, key.tid);
+        hash = MixHash(hash, key.thread_start_ns);
+        hash = MixHash(hash, key.wait_reason);
+        hash = MixHash(hash, key.boundary_inferred ? 1 : 0);
+        hash = MixHash(hash, key.stack.size());
+        for (const FrameKey& frame : key.stack) {
+            hash = MixHash(hash, frame.module_id);
+            hash = MixHash(hash, frame.rva);
+        }
+        hash = MixHash(hash, key.wakeup_pid);
+        hash = MixHash(hash, key.wakeup_process_start_ns);
+        hash = MixHash(hash, key.wakeup_tid);
+        hash = MixHash(hash, key.wakeup_thread_start_ns);
+        hash = MixHash(hash, key.wakeup_stack.size());
+        for (const FrameKey& frame : key.wakeup_stack) {
+            hash = MixHash(hash, frame.module_id);
+            hash = MixHash(hash, frame.rva);
+        }
+        return hash;
+    }
 };
 
 struct OffCpuRow {
@@ -171,12 +229,6 @@ ResolvedFrame DescribeFrame(const TraceData& trace, Symbolizer& symbolizer,
     frame.module_identity = resolved.module_identity;
     frame.rva = resolved.rva;
     frame.symbol = resolved.symbol;
-    if (frame.module_identity.empty()) {
-        if (const ImageRecord* image = FindImage(trace, pid, address, timestamp_ns)) {
-            frame.module_identity = ModuleIdentityKey(*image);
-            frame.rva = address - image->base;
-        }
-    }
     if (frame.module.empty() && !frame.module_identity.empty()) {
         const auto separator = frame.module_identity.find(L'|');
         frame.module = frame.module_identity.substr(0, separator);
@@ -240,34 +292,55 @@ bool Matches(const TraceData& trace, const OffCpuInterval& interval,
     return true;
 }
 
-void AppendKeyPart(std::wostringstream& key, const std::wstring& value) {
-    key << value.size() << L':' << value << L'|';
+uint32_t InternModuleId(const std::wstring& identity,
+                                  std::unordered_map<std::wstring, uint32_t>& ids,
+                                  uint32_t& next_id) {
+    if (identity.empty()) return 0;
+    const auto [entry, inserted] = ids.try_emplace(identity, next_id);
+    if (inserted) ++next_id;
+    return entry->second;
 }
 
-std::wstring RowKey(const OffCpuInterval& interval,
-                    const std::vector<ResolvedFrame>& stack,
-                    const std::vector<ResolvedFrame>& wakeup_stack) {
-    std::wostringstream key;
-    key << static_cast<uint32_t>(interval.kind) << L'|' << interval.pid << L'|'
-        << interval.process_start_ns << L'|' << interval.tid << L'|'
-        << interval.thread_start_ns << L'|' << interval.wait_reason << L'|'
-        << (interval.boundary_inferred ? 1 : 0) << L'|' << stack.size() << L'|';
-    for (const ResolvedFrame& frame : stack) {
-        AppendKeyPart(key, frame.module_identity.empty()
-                               ? HexAddress(frame.address)
-                               : frame.module_identity);
-        key << std::hex << frame.rva << std::dec << L'|';
+FrameKey MakeFrameKey(const ResolvedFrame& frame,
+                      std::unordered_map<std::wstring, uint32_t>& module_ids,
+                      uint32_t& next_module_id) {
+    if (frame.module_identity.empty()) return FrameKey{0, frame.address};
+    return FrameKey{InternModuleId(frame.module_identity, module_ids, next_module_id),
+                    frame.rva};
+}
+
+std::vector<FrameKey> MakeFrameKeys(
+    const std::vector<ResolvedFrame>& frames,
+    std::unordered_map<std::wstring, uint32_t>& module_ids,
+    uint32_t& next_module_id) {
+    std::vector<FrameKey> keys;
+    keys.reserve(frames.size());
+    for (const ResolvedFrame& frame : frames) {
+        keys.push_back(MakeFrameKey(frame, module_ids, next_module_id));
     }
-    key << interval.wakeup_pid << L'|' << interval.wakeup_process_start_ns << L'|'
-        << interval.wakeup_tid << L'|' << interval.wakeup_thread_start_ns << L'|'
-        << wakeup_stack.size() << L'|';
-    for (const ResolvedFrame& frame : wakeup_stack) {
-        AppendKeyPart(key, frame.module_identity.empty()
-                               ? HexAddress(frame.address)
-                               : frame.module_identity);
-        key << std::hex << frame.rva << std::dec << L'|';
-    }
-    return key.str();
+    return keys;
+}
+
+OffCpuKey RowKey(const OffCpuInterval& interval,
+                 const std::vector<ResolvedFrame>& stack,
+                 const std::vector<ResolvedFrame>& wakeup_stack,
+                 std::unordered_map<std::wstring, uint32_t>& module_ids,
+                 uint32_t& next_module_id) {
+    OffCpuKey key;
+    key.kind = static_cast<uint32_t>(interval.kind);
+    key.pid = interval.pid;
+    key.process_start_ns = interval.process_start_ns;
+    key.tid = interval.tid;
+    key.thread_start_ns = interval.thread_start_ns;
+    key.wait_reason = interval.wait_reason;
+    key.boundary_inferred = interval.boundary_inferred;
+    key.stack = MakeFrameKeys(stack, module_ids, next_module_id);
+    key.wakeup_pid = interval.wakeup_pid;
+    key.wakeup_process_start_ns = interval.wakeup_process_start_ns;
+    key.wakeup_tid = interval.wakeup_tid;
+    key.wakeup_thread_start_ns = interval.wakeup_thread_start_ns;
+    key.wakeup_stack = MakeFrameKeys(wakeup_stack, module_ids, next_module_id);
+    return key;
 }
 
 std::wstring StackText(const std::vector<ResolvedFrame>& frames) {
@@ -308,7 +381,12 @@ const wchar_t* StackQualityName(StackQuality quality) {
 
 void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                        const CpuReportOptions& options, std::wostream& output) {
-    std::map<std::wstring, OffCpuRow> grouped;
+    std::unordered_map<OffCpuKey, OffCpuRow, OffCpuKeyHash> grouped;
+    grouped.reserve(trace.off_cpu_intervals.size());
+    std::unordered_map<std::wstring, uint32_t> module_ids;
+    module_ids.reserve(trace.images.size());
+    uint32_t next_module_id = 1;
+    ProcessNameIndex process_names(trace);
     uint64_t total_ns = 0;
     uint64_t excluded_inferred = 0;
     for (const OffCpuInterval& interval : trace.off_cpu_intervals) {
@@ -332,8 +410,7 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
             stack.empty()
                 ? DescribeFrame(trace, symbolizer, interval.pid, 0, interval.start_ns)
                 : stack.front();
-        const std::wstring comm =
-            ProcessDisplayName(trace, interval.pid, interval.start_ns);
+        const std::wstring comm = process_names.Name(interval.pid, interval.start_ns);
         if (!Matches(trace, interval, options, comm, leaf)) continue;
 
         std::vector<ResolvedFrame> wakeup_stack;
@@ -347,8 +424,10 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                 DescribeFrame(trace, symbolizer, interval.wakeup_pid, address, wakeup_time));
         }
 
-        const std::wstring key = RowKey(interval, stack, wakeup_stack);
-        auto& row = grouped[key];
+        OffCpuKey key = RowKey(interval, stack, wakeup_stack, module_ids,
+                                 next_module_id);
+        auto [entry, inserted] = grouped.try_emplace(std::move(key));
+        auto& row = entry->second;
         row.kind = interval.kind;
         row.pid = interval.pid;
         row.tid = interval.tid;
@@ -367,9 +446,11 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
         row.stack_missing = row.stack_missing || interval.stack_missing;
         row.stack_ambiguous = row.stack_ambiguous || interval.stack_ambiguous;
         row.boundary_inferred = interval.boundary_inferred;
-        row.comm = comm;
-        row.stack = std::move(stack);
-        row.wakeup_stack = std::move(wakeup_stack);
+        if (inserted) {
+            row.comm = comm;
+            row.stack = std::move(stack);
+            row.wakeup_stack = std::move(wakeup_stack);
+        }
         total_ns += duration_ns;
     }
 

@@ -22,6 +22,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <unordered_map>
 #include <vector>
 
 namespace wperf {
@@ -386,7 +387,10 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         uint64_t function_size=0;
         std::map<uint64_t,uint64_t> instruction_samples;
     };
-    std::map<std::wstring, Heat> heat;
+    std::unordered_map<std::wstring, Heat> heat;
+    heat.reserve(trace.samples.size());
+    ImageIndex image_index;
+    image_index.Build(trace);
     for (const auto& sample : trace.samples) {
         if (pid.has_value() && sample.pid != *pid) {
             continue;
@@ -398,8 +402,8 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         value.module = symbol.module;
         value.symbol = symbol.symbol;
         value.source_file = symbol.source_file;
-        value.image = FindImage(trace, sample.pid, sample.instruction_pointer,
-                                sample.timestamp_ns);
+        value.image = image_index.Find(sample.pid, sample.instruction_pointer,
+                                        sample.timestamp_ns);
         value.address=value.image ? value.image->base+symbol.function_rva : sample.instruction_pointer;
         value.function_size=symbol.function_size;
         ++value.instruction_samples[sample.instruction_pointer];
@@ -413,7 +417,10 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         rows.push_back(value);
     }
     std::sort(rows.begin(), rows.end(), [](const Heat& a, const Heat& b) {
-        return a.samples > b.samples;
+        if (a.samples != b.samples) return a.samples > b.samples;
+        if (a.symbol != b.symbol) return a.symbol < b.symbol;
+        if (a.module != b.module) return a.module < b.module;
+        return a.address < b.address;
     });
     bool disassembly_failed = false;
     if (disasm) {

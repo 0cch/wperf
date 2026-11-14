@@ -379,6 +379,8 @@ void TestAddressSpacesAndNames() {
     wperf::ProcessNameIndex names(trace);
     Check(names.Name(100,150) == L"before.exe" && names.Name(100,350) == L"after.exe",
           "PID reuse keeps time-specific command name");
+    Check(names.InstanceStart(100,150) == 100 && names.InstanceStart(100,350) == 300,
+          "PID reuse keeps time-specific process instance starts");
     Check(wperf::ProcessDisplayName(trace,100,150) == L"before.exe", "public name lookup respects time");
 }
 
@@ -1023,7 +1025,9 @@ void TestOffCpuReportIdentityBoundariesAndFilters() {
     module_first.stack_quality = wperf::StackQuality::Exact; module_first.stack_missing = false;
     wperf::OffCpuInterval module_second = module_first;
     module_second.start_ns = 30; module_second.end_ns = 40; module_second.duration_ns = 10;
-    module_trace.off_cpu_intervals = {module_first, module_second};
+    wperf::OffCpuInterval module_repeat = module_first;
+    module_repeat.start_ns = 20; module_repeat.end_ns = 30; module_repeat.duration_ns = 10;
+    module_trace.off_cpu_intervals = {module_first, module_repeat, module_second};
 
     wperf::Symbolizer symbolizer;
     wperf::CpuReportOptions options;
@@ -1039,6 +1043,12 @@ void TestOffCpuReportIdentityBoundariesAndFilters() {
     wperf::WriteOffCpuReport(module_trace, symbolizer, options, module_rows);
     Check(count_text(module_rows.str(), L"\"kind\":") == 2,
           "off-CPU aggregation keys frames by module identity and RVA");
+    Check(module_rows.str().find(L"first.dll") != std::wstring::npos &&
+              module_rows.str().find(L"\"module_identity\":\"c:\\\\modules\\\\first.dll") != std::wstring::npos &&
+              module_rows.str().find(L"\"rva\":16") != std::wstring::npos,
+          "off-CPU unresolved symbols retain module identity and RVA");
+    Check(module_rows.str().find(L"\"duration_ns\":20") != std::wstring::npos,
+          "off-CPU identical module/RVA frames aggregate into one row");
 
 
     options.off_cpu_include_inferred = true;

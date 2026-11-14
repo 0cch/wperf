@@ -1,6 +1,9 @@
 # wperf Changelog
 
-## Unreleased
+## 0.8.1.0
+- Optimized off-CPU report generation from 1.880 s to 0.657 s on the validation workload (64.8% less time, 2.84x throughput) by removing repeated linear image scans, interning module identities, using structured aggregation keys, and switching to reserved unordered maps.
+- Reused indexed image/process lookups in annotate and off-CPU reporting, with deterministic tie-breaking preserved for equal sample counts.
+- Added regression coverage for off-CPU module identity/RVA retention, identical-frame aggregation, and PID-reuse process instance starts.
 - Fixed system-module symbol resolution by making device-path normalization case-insensitive and delay-loading a symsrv-capable DbgHelp from `WPERF_DBGHELP_PATH`, the Windows SDK Debugging Tools, or the application directory.
 - Added `_NT_SYMBOL_PATH`/symbol-server validation on Intel hardware, including downloaded public PDBs and real `ntdll`/`kernel32` symbols.
 - Added a CLI11-backed command catalog used for option validation, aliases, text help, generated Markdown reference, and consistent option-value normalization.
