@@ -12,7 +12,7 @@ wperf itself is licensed under the MIT License; see `LICENSE`.
 ## Zycore
 
 - Project: https://github.com/zyantific/zycore-c
-- Revision: 0b2432ced0884fd152b471d97ecf0258ff4d859f
+- Version: v1.5.2
 - License: MIT
 - Use: dependency of Zydis.
 
@@ -24,3 +24,10 @@ Source and license text are available from the pinned upstream repositories.
 - Version: v2.7.2
 - License: BSD-3-Clause
 - Use: command-line parsing, subcommands, aliases, and option validation.
+
+## nlohmann/json
+
+- Project: https://github.com/nlohmann/json
+- Version: v3.12.0
+- License: MIT
+- Use: JSON parsing and serialization for public output, schemas, state, and logs.

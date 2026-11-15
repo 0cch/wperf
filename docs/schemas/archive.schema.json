@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/archive.schema.json",
+  "title": "wperf archive manifest",
+  "type": "object",
+  "required": ["trace", "symbol_path", "max_size_mb", "entries"],
+  "properties": {
+    "trace": { "type": "string" },
+    "symbol_path": { "type": "string" },
+    "max_size_mb": { "type": "integer", "minimum": 0 },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "archived", "copied", "reason", "size", "sha256", "pe_timestamp", "pe_checksum", "pe_size_of_image", "machine", "pdb_guid", "pdb_age", "pdb_source", "pdb_archived", "pdb_copied", "pdb_sha256"],
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

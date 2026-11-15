@@ -309,6 +309,7 @@ TraceData LiveTopCapture::Snapshot() {
         trace.quality.metadata_dropped)
         correlation_.Reset();
     correlation_.Enrich(trace);
+    FinalizeTraceQuality(trace);
     return trace;
 }
 

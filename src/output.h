@@ -1,31 +1,16 @@
 #pragma once
 
+#include <nlohmann/json.hpp>
+
+#include <ostream>
 #include <string>
 #include <string_view>
-#include <ostream>
+
+#include "common.h"
 #include "trace_model.h"
 
 namespace wperf {
-inline std::wstring EscapeJson(std::wstring_view value) {
-    std::wstring result;
-    for (wchar_t ch : value) {
-        switch (ch) {
-            case L'"': result += L"\\\""; break;
-            case L'\\': result += L"\\\\"; break;
-            case L'\n': result += L"\\n"; break;
-            case L'\r': result += L"\\r"; break;
-            case L'\t': result += L"\\t"; break;
-            default:
-                if (ch < 0x20) {
-                    constexpr wchar_t hex[] = L"0123456789abcdef";
-                    result += L"\\u00";
-                    result += hex[(ch >> 4) & 15];
-                    result += hex[ch & 15];
-                } else result += ch;
-        }
-    }
-    return result;
-}
+
 inline std::wstring EscapeCsv(std::wstring_view value) {
     std::wstring result = L"\"";
     for (wchar_t ch : value) {
@@ -34,39 +19,69 @@ inline std::wstring EscapeCsv(std::wstring_view value) {
     }
     return result + L'"';
 }
-inline void WriteQualityJson(const TraceData& trace, std::wostream& output) {
+
+inline nlohmann::ordered_json QualityJson(const TraceData& trace) {
     const auto& q = trace.quality;
-    output << L"{\"samples\":" << q.samples_total
-           << L",\"samples_dropped\":" << q.samples_dropped
-           << L",\"pmc_samples\":" << q.pmc_samples
-           << L",\"exact_stacks\":" << q.stack_exact_total
-           << L",\"approximate_stacks\":" << q.stack_approximate_total
-           << L",\"missing_stacks\":" << q.samples_without_stack
-           << L",\"lost_events\":" << q.lost_events << L",\"lost_buffers\":" << q.lost_buffers
-           << L",\"ring_dropped\":" << q.ring_dropped
-           << L",\"metadata_dropped\":" << q.metadata_dropped
-           << L",\"context_register_events\":" << q.context_register_events
-           << L",\"off_cpu_blocked_intervals\":" << q.off_cpu_blocked_intervals
-           << L",\"off_cpu_ready_intervals\":" << q.off_cpu_ready_intervals
-           << L",\"off_cpu_exact_stacks\":" << q.off_cpu_stack_exact
-           << L",\"off_cpu_approximate_stacks\":" << q.off_cpu_stack_approximate
-           << L",\"off_cpu_ambiguous_stacks\":" << q.off_cpu_stack_ambiguous
-           << L",\"off_cpu_missing_stacks\":" << q.off_cpu_stack_missing
-           << L",\"off_cpu_preemptions\":" << q.off_cpu_preemptions
-           << L",\"off_cpu_duplicate_ready\":" << q.off_cpu_duplicate_ready
-           << L",\"off_cpu_unclosed\":" << q.off_cpu_unclosed
-           << L",\"off_cpu_inferred_intervals\":" << q.off_cpu_inferred_intervals
-           << L",\"off_cpu_evicted\":" << q.off_cpu_evicted
-           << L",\"event_stack_exact\":" << q.event_stack_exact
-           << L",\"event_stack_approximate\":" << q.event_stack_approximate
-           << L",\"event_stack_ambiguous\":" << q.event_stack_ambiguous
-           << L",\"event_stack_missing\":" << q.event_stack_missing
-           << L",\"decode_errors\":" << q.decode_errors
-           << L",\"correlation_evicted\":" << q.correlation_evicted
-           << L",\"syscall_orphaned\":" << q.syscall_orphaned
-           << L",\"unknown_events\":" << q.unknown_events
-           << L",\"profile_interval_ns\":" << trace.profile_interval_ns
-           << L",\"stacks_loaded\":" << (trace.stacks_loaded?L"true":L"false")
-           << L",\"incomplete\":" << (q.incomplete ? L"true" : L"false") << L"}";
+    nlohmann::ordered_json value;
+    value["events_total"] = q.events_total;
+    value["samples"] = q.samples_total;
+    value["samples_dropped"] = q.samples_dropped;
+    value["pmc_samples"] = q.pmc_samples;
+    value["stack_events_total"] = q.stack_events_total;
+    value["stack_ref_events_total"] = q.stack_ref_events_total;
+    value["stack_def_events_total"] = q.stack_def_events_total;
+    value["stack_key_mismatch"] = q.stack_key_mismatch;
+    value["exact_stacks"] = q.stack_exact_total;
+    value["approximate_stacks"] = q.stack_approximate_total;
+    value["missing_stacks"] = q.samples_without_stack;
+    value["lost_events"] = q.lost_events;
+    value["lost_buffers"] = q.lost_buffers;
+    value["ring_dropped"] = q.ring_dropped;
+    value["metadata_dropped"] = q.metadata_dropped;
+    value["context_register_events"] = q.context_register_events;
+    value["off_cpu_blocked_intervals"] = q.off_cpu_blocked_intervals;
+    value["off_cpu_ready_intervals"] = q.off_cpu_ready_intervals;
+    value["off_cpu_exact_stacks"] = q.off_cpu_stack_exact;
+    value["off_cpu_approximate_stacks"] = q.off_cpu_stack_approximate;
+    value["off_cpu_ambiguous_stacks"] = q.off_cpu_stack_ambiguous;
+    value["off_cpu_missing_stacks"] = q.off_cpu_stack_missing;
+    value["off_cpu_preemptions"] = q.off_cpu_preemptions;
+    value["off_cpu_duplicate_ready"] = q.off_cpu_duplicate_ready;
+    value["off_cpu_unclosed"] = q.off_cpu_unclosed;
+    value["off_cpu_inferred_intervals"] = q.off_cpu_inferred_intervals;
+    value["off_cpu_evicted"] = q.off_cpu_evicted;
+    value["event_stack_exact"] = q.event_stack_exact;
+    value["event_stack_approximate"] = q.event_stack_approximate;
+    value["event_stack_ambiguous"] = q.event_stack_ambiguous;
+    value["event_stack_missing"] = q.event_stack_missing;
+    value["pmc_counter_events"] = q.pmc_counter_events;
+    value["pmc_counter_resets"] = q.pmc_counter_resets;
+    value["lbr_events"] = q.lbr_events;
+    value["lbr_branches"] = q.lbr_branches;
+    value["sched_unknown_pid"] = q.sched_unknown_pid;
+    value["io_init_events"] = q.io_init_events;
+    value["io_complete_events"] = q.io_complete_events;
+    value["io_orphaned"] = q.io_orphaned;
+    value["decode_errors"] = q.decode_errors;
+    value["correlation_evicted"] = q.correlation_evicted;
+    value["syscall_orphaned"] = q.syscall_orphaned;
+    value["unknown_events"] = q.unknown_events;
+    nlohmann::ordered_json unknown = nlohmann::ordered_json::object();
+    for (const auto& [key, count] : trace.unknown_event_keys) {
+        unknown[ToUtf8(key)] = count;
+    }
+    value["unknown_event_keys"] = std::move(unknown);
+    value["profile_interval_ns"] = trace.profile_interval_ns;
+    value["budget_limit_bytes"] = q.budget_limit_bytes;
+    value["budget_estimated_bytes"] = q.budget_estimated_bytes;
+    value["budget_exceeded"] = q.budget_exceeded;
+    value["stacks_loaded"] = trace.stacks_loaded;
+    value["incomplete"] = q.incomplete;
+    return value;
 }
+
+inline void WriteQualityJson(const TraceData& trace, std::wostream& output) {
+    output << ToUtf16(QualityJson(trace).dump());
 }
+
+}  // namespace wperf

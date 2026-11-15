@@ -1,6 +1,6 @@
 # Development Guide
 
-This guide is for contributors working on wperf itself. User-facing command
+This guide is for contributors working on wperf itself. All contributions must follow [CODING_STANDARDS.md](CODING_STANDARDS.md). User-facing command
 behavior is documented in [USAGE.md](USAGE.md); system design is in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -43,14 +43,19 @@ in the controller. The elevated worker never performs arbitrary file parsing.
   inspection.
 - Optional: Debugging Tools for Windows (`cdb`) for crash investigation.
 
-The first configure with disassembly enabled fetches pinned Zydis/Zycore
-revisions from GitHub. To work fully offline, provide a pre-populated CMake
-FetchContent cache or build with `-DWPERF_ENABLE_DISASM=OFF`.
+Dependencies are managed by the repository vcpkg manifest (`vcpkg.json`). The
+project uses the `x64-windows-static-md` triplet so release binaries do not
+carry non-system runtime DLLs. Set `VCPKG_ROOT` to the vcpkg checkout (for
+example `D:\Codes\vcpkg`).
 
 ## Build and test
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=D:/Codes/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+  -DVCPKG_MANIFEST_MODE=ON `
+  -DWPERF_WARNINGS_AS_ERRORS=ON
 cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
@@ -58,20 +63,22 @@ ctest --test-dir build -C Release --output-on-failure
 No-disassembly build:
 
 ```powershell
-cmake -S . -B build-off `
-  -G "Visual Studio 17 2022" -A x64 `
+cmake -S . -B build-off -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=D:/Codes/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+  -DVCPKG_MANIFEST_MODE=ON `
   -DWPERF_ENABLE_DISASM=OFF
 cmake --build build-off --config Release --parallel
 ctest --test-dir build-off -C Release --output-on-failure
 ```
 
-The normal CTest run skips the two live ETW tests when the current process is not
-elevated. To require and run them:
+The normal CTest run skips live ETW tests when the current process is not
+elevated. To require and run the integration label:
 
 ```powershell
 $env:WPERF_REQUIRE_LIVE_TESTS = "1"
 ctest --test-dir build -C Release `
-  -R "live_integration|live_top_controller_smoke" `
+  -L integration `
   --output-on-failure
 ```
 
@@ -83,11 +90,13 @@ an access-denied or empty capture cannot be mistaken for a pass.
 | Layer | Location | Purpose |
 |---|---|---|
 | Unit | `tests/unit_tests.cpp` | Decoders, aggregation, symbol/cache primitives |
+| Decoder fuzz smoke | `tests/decoder_fuzz_smoke.cpp` | Deterministic malformed payload and length coverage |
 | Regression | `tests/regression_tests.cpp` | Raw event replay, quality gates, IPC, report contracts |
 | CLI parser | `tests/cli_unit_tests.cpp` | Every public command/option, aliases, arity, conflicts, and target forwarding |
 | CLI conformance | `tests/cli_conformance_test.ps1` | Process-level help consistency and checked-in generated reference |
 | CLI fixtures | `CMakeLists.txt` `add_test` entries | Option validation and checked-in ETL workflows |
 | Live integration | `tests/live_integration_tests.cpp` | Real ETW capture, STOP, orphan cleanup |
+| Live JSON | `tests/live_trace_json_smoke.ps1`, `tests/live_pmc_json_smoke.ps1` | Streaming trace and PMC JSON contracts |
 | Live controller smoke | `tests/live_top_smoke.ps1` | Worker/controller decode and rendering |
 | Replay contract | `scripts/replay_contract.ps1` | Stable report/JSON contract on fixture data |
 

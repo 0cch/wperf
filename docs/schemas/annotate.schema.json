@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/annotate.schema.json",
+  "title": "wperf annotate report",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["samples", "module", "symbol", "displacement", "source_file", "source_text", "line", "function_rva", "disassembly", "instruction_rows"],
+    "properties": {
+      "samples": { "type": "integer", "minimum": 0 },
+      "module": { "type": "string" },
+      "symbol": { "type": "string" },
+      "displacement": { "type": "integer", "minimum": 0 },
+      "source_file": { "type": "string" },
+      "source_text": { "type": "string" },
+      "line": { "type": "integer", "minimum": 0 },
+      "function_rva": { "type": "integer", "minimum": 0 },
+      "disassembly": { "type": "string" },
+      "instruction_rows": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["instruction_rva", "bytes", "text", "samples", "overhead"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  }
+}

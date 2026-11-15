@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/list.schema.json",
+  "title": "wperf list output",
+  "type": "object",
+  "oneOf": [
+    {
+      "required": ["profile_source_count", "profile_sources", "active_sessions", "session_query_error"],
+      "properties": {
+        "profile_source_count": { "type": "integer", "minimum": 0 },
+        "profile_sources": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+        "active_sessions": { "type": "array", "items": { "type": "string" } },
+        "session_query_error": { "type": "string" }
+      }
+    },
+    {
+      "required": ["provider_count", "providers"],
+      "properties": {
+        "provider_count": { "type": "integer", "minimum": 0 },
+        "providers": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+      }
+    }
+  ],
+  "additionalProperties": true
+}

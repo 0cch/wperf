@@ -7,6 +7,7 @@
 #include "archive.h"
 #include "analysis.h"
 #include "output.h"
+#include "json_writer.h"
 #include "cpu_report.h"
 #include "elevation.h"
 #include "etl_reader.h"
@@ -31,61 +32,14 @@
 namespace wperf {
 using namespace commands;
 
-int RunScript(const std::vector<std::wstring>& arguments) {
-    std::filesystem::path input;
-    std::optional<uint32_t> pid;
-    std::wstring fields = L"timestamp,cpu,pid,tid,ip,comm,dso,symbol";
-    std::wstring symbol_path;
-    std::filesystem::path archive_directory;
-    uint64_t limit = 0;
-    bool csv = false;
-    for (size_t index = 0; index < arguments.size(); ++index) {
-        const std::wstring& argument = arguments[index];
-        if (argument == L"-i" || argument == L"--input") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--input requires a trace file");
-                return 2;
-            }
-            input = arguments[++index];
-        } else if (argument == L"-p" || argument == L"--pid") {
-            uint32_t value = 0;
-            if (index + 1 >= arguments.size() ||
-                !ParseUint32(arguments[++index], value)) {
-                PrintError(L"--pid requires a process id");
-                return 2;
-            }
-            pid = value;
-        } else if (argument == L"-F" || argument == L"--fields") {
-            if (index + 1 >= arguments.size() || arguments[index + 1].empty()) {
-                PrintError(L"--fields requires a comma-separated field list");
-                return 2;
-            }
-            fields = arguments[++index];
-        } else if (argument == L"--limit") {
-            if (index + 1 >= arguments.size() ||
-                !ParseUnsigned(arguments[++index], limit)) {
-                PrintError(L"--limit requires a non-negative sample count");
-                return 2;
-            }
-        } else if (argument == L"--archive") {
-            if(index+1>=arguments.size())return 2;
-            archive_directory=arguments[++index];
-        } else if (argument == L"--symbol-path") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--symbol-path requires a directory");
-                return 2;
-            }
-            symbol_path = arguments[++index];
-        } else if (argument == L"--csv") {
-            csv = true;
-        } else if (argument == L"--help" || argument == L"-h") {
-            PrintCommandHelp(L"script");
-            return 0;
-        } else {
-            PrintError(L"unknown script option: " + argument);
-            return 2;
-        }
-    }
+int RunScript(const ScriptRequest& request) {
+    std::filesystem::path input = request.input;
+    std::optional<uint32_t> pid = request.pid;
+    std::wstring fields = request.fields;
+    std::wstring symbol_path = request.symbol_path;
+    std::filesystem::path archive_directory = request.archive;
+    uint64_t limit = request.limit;
+    bool csv = request.csv;
     if (input.empty()) {
         PrintError(L"script requires -i FILE");
         return 2;
@@ -118,7 +72,7 @@ int RunScript(const std::vector<std::wstring>& arguments) {
 
     TraceData trace;
     std::wstring error;
-    if (!ReadEtwFile(input, trace, &error)) {
+    if (!ReadEtwFile(input, trace, &error, false)) {
         PrintError(error);
         return 6;
     }
@@ -241,6 +195,7 @@ int RunLiveTrace(const std::wstring& filter, const std::wstring& pid_text,
     int exit_code = 0;
     bool finished = false;
     bool stop_sent = false;
+    std::unique_ptr<JsonStreamWriter> live_json;
     while (!finished) {
         if (g_live_trace_interrupted.load() && !stop_sent) {
             worker.SendStop(nullptr);
@@ -267,12 +222,26 @@ int RunLiveTrace(const std::wstring& filter, const std::wstring& pid_text,
             exit_code = 5;
             break;
         }
-        if (line == L"JSON_BEGIN") {
-            std::wcout << L"[\n";
-        } else if (line == L"JSON_END") {
-            std::wcout << L"\n]\n";
+        if (line == L"JSON_BEGIN" && json) {
+            live_json = std::make_unique<JsonStreamWriter>(std::wcout);
+            live_json->BeginArray();
+        } else if (line == L"JSON_END" && live_json) {
+            live_json->EndArray();
+            std::wcout << L"\n";
+            live_json.reset();
         } else if (line.rfind(L"OUT ", 0) == 0) {
-            std::wcout << line.substr(4) << L"\n";
+            const std::wstring payload = line.substr(4);
+            if (live_json) {
+                const auto item = nlohmann::ordered_json::parse(ToUtf8(payload), nullptr, false);
+                if (item.is_discarded()) {
+                    PrintError(L"live worker emitted invalid JSON");
+                    exit_code = 5;
+                    break;
+                }
+                live_json->Item(item);
+            } else {
+                std::wcout << payload << L"\n";
+            }
             std::wcout.flush();
         } else if (line.rfind(L"WARN ", 0) == 0) {
             std::wcerr << L"wperf: warning: " << line.substr(5) << L"\n";
@@ -288,7 +257,6 @@ int RunLiveTrace(const std::wstring& filter, const std::wstring& pid_text,
     worker.Close();
     return exit_code;
 }
-
 bool MatchesEventFilter(const TraceEvent& event, const std::wstring& filter) {
     if (filter.empty() || filter == L"all") {
         return true;
@@ -393,134 +361,110 @@ std::wstring EventDetail(const TraceData& trace, const TraceEvent& event) {
     return detail.str();
 }
 
-int RunTrace(const std::vector<std::wstring>& arguments) {
-    std::filesystem::path input;
-    std::wstring filter = L"all";
-    std::wstring pid_text;
-    std::wstring max_text = L"500";
-    std::wstring duration_text = L"0";
-    bool duration_explicit = false;
-    bool json = false;
-    bool live = false;
-    bool elevate = false;
-    for (size_t index = 0; index < arguments.size(); ++index) {
-        const std::wstring& argument = arguments[index];
-        if (argument == L"-i" || argument == L"--input") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--input requires a trace file");
-                return 2;
-            }
-            input = arguments[++index];
-        } else if (argument == L"-e" || argument == L"--event") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--event requires sched, syscall, pagefault, io, lbr, or context");
-                return 2;
-            }
-            filter = arguments[++index];
-        } else if (argument == L"-p" || argument == L"--pid") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--pid requires a process id");
-                return 2;
-            }
-            pid_text = arguments[++index];
-        } else if (argument == L"--max") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--max requires an event count");
-                return 2;
-            }
-            max_text = arguments[++index];
-        } else if (argument == L"--duration") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--duration requires milliseconds");
-                return 2;
-            }
-            duration_text = arguments[++index];
-            duration_explicit = true;
-        } else if (argument == L"--json") {
-            json = true;
-        } else if (argument == L"--live") {
-            live = true;
-        } else if (argument == L"--elevate") {
-            elevate = true;
-        } else if (argument == L"--help" || argument == L"-h") {
-            PrintCommandHelp(L"trace");
-            return 0;
-        } else {
-            PrintError(L"unknown trace option: " + argument);
-            return 2;
-        }
-    }
+int RunTrace(const TraceRequest& request) {
+    std::filesystem::path input = request.input;
+    std::wstring filter = request.event;
+    const bool json = request.json;
+    const bool metadata = request.metadata;
+    const bool live = request.live;
+    const bool elevate = request.elevate;
+    std::optional<uint32_t> pid = request.pid;
+    std::wstring pid_text = pid ? std::to_wstring(*pid) : L"";
+    const uint64_t max_events = request.max_events;
+    const std::wstring max_text = std::to_wstring(max_events);
+    const std::wstring duration_text = request.duration_ms ? std::to_wstring(*request.duration_ms) : L"0";
+    const bool duration_explicit = request.duration_ms.has_value();
     if (filter != L"all" && filter != L"sched" && filter != L"syscall" &&
         filter != L"pagefault" && filter != L"io" && filter != L"lbr" &&
         filter != L"context" && filter != L"context-register" &&
         filter != L"context-registers") {
         PrintError(L"unsupported trace event: " + filter);
-        return 2;
+        return ExitStatus(ExitCode::InvalidArguments);
     }
-    std::optional<uint32_t> pid;
-    if (!pid_text.empty()) {
-        uint32_t value = 0;
-        if (!ParseUint32(pid_text, value)) {
-            PrintError(L"--pid requires a process id");
-            return 2;
-        }
-        pid = value;
-        pid_text = std::to_wstring(value);
+    if (metadata && !json) {
+        PrintError(L"--metadata requires --json");
+        return ExitStatus(ExitCode::InvalidArguments);
     }
-    uint64_t max_events = 500;
-    if (!ParseUnsigned(max_text, max_events)) {
-        PrintError(L"--max requires a non-negative event count");
-        return 2;
-    }
-    if (duration_explicit) {
-        uint64_t duration_ms = 0;
-        if (!ParseUnsigned(duration_text, duration_ms)) {
-            PrintError(L"--duration requires milliseconds");
-            return 2;
-        }
+    if (live && metadata) {
+        PrintError(L"--metadata is only supported for offline trace replay");
+        return ExitStatus(ExitCode::InvalidArguments);
     }
     if (live) {
         if (!input.empty()) {
             PrintError(L"trace --live cannot be combined with -i FILE");
-            return 2;
+            return ExitStatus(ExitCode::InvalidArguments);
         }
         if (filter == L"context" || filter == L"context-register" ||
             filter == L"context-registers") {
             PrintError(L"context register tracing is currently supported for offline ETL traces");
-            return 2;
+            return ExitStatus(ExitCode::InvalidArguments);
         }
         return RunLiveTrace(filter, pid_text, max_text, duration_text, json, elevate);
     }
     if (duration_explicit) {
         PrintError(L"--duration is only valid with trace --live");
-        return 2;
+        return ExitStatus(ExitCode::InvalidArguments);
     }
     if (elevate) {
         PrintError(L"--elevate is only valid with trace --live");
-        return 2;
+        return ExitStatus(ExitCode::InvalidArguments);
     }
     if (input.empty()) {
         PrintError(L"trace requires -i FILE for offline mode or --live");
-        return 2;
+        return ExitStatus(ExitCode::InvalidArguments);
     }
-
     TraceData trace;
     std::wstring error;
-    if (!ReadEtwFile(input, trace, &error)) {
+    if (!ReadEtwFile(input, trace, &error, false)) {
         PrintError(error);
         return 6;
     }
 
     uint64_t first_timestamp = UINT64_MAX;
     size_t emitted = 0;
+    bool truncated = false;
+    std::unique_ptr<JsonStreamWriter> json_writer;
     if (json) {
-        std::wcout << L"[\n";
+        json_writer = std::make_unique<JsonStreamWriter>(std::wcout);
+        if (metadata) {
+            json_writer->BeginObject();
+            json_writer->Key(L"events");
+        }
+        json_writer->BeginArray();
     } else {
         std::wcout << L"timestamp_ns cpu pid tid event value1 value2 "
                       L"related_tid related_pid detail comm\n";
     }
-    bool first_json = true;
-    for (const auto& event : trace.events) {
+    std::vector<TraceEvent> lbr_events;
+    if (filter == L"lbr" || filter == L"all") {
+        for (const auto& sample : trace.lbr_samples) {
+            for (size_t index = 0; index < sample.branches.size(); ++index) {
+                TraceEvent event;
+                event.timestamp_ns = sample.timestamp_ns;
+                event.cpu = sample.cpu;
+                event.pid = sample.pid;
+                event.tid = sample.tid;
+                event.kind = TraceEventKind::LastBranchRecord;
+                event.value1 = sample.branches[index].from_address;
+                event.value2 = sample.branches[index].to_address;
+                event.flags = sample.filters;
+                event.event_id = sample.event_id;
+                event.lbr_group_id = sample.group_id;
+                event.lbr_branch_index = static_cast<uint32_t>(index);
+                lbr_events.push_back(std::move(event));
+            }
+        }
+    }
+    std::vector<const TraceEvent*> ordered_events;
+    ordered_events.reserve(trace.events.size() + lbr_events.size());
+    for (const auto& event : trace.events) ordered_events.push_back(&event);
+    for (const auto& event : lbr_events) ordered_events.push_back(&event);
+    std::stable_sort(ordered_events.begin(), ordered_events.end(),
+                     [](const TraceEvent* left, const TraceEvent* right) {
+                         return left->timestamp_ns < right->timestamp_ns;
+                     });
+    for (const TraceEvent* event_ptr : ordered_events) {
+        const TraceEvent& event = *event_ptr;
         uint32_t display_pid = event.pid;
         uint32_t display_tid = event.tid;
         if (event.kind == TraceEventKind::ReadyThread) {
@@ -541,7 +485,8 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
         if (!MatchesEventFilter(event, filter)) {
             continue;
         }
-        if (emitted++ >= max_events) {
+        if (max_events != 0 && emitted >= max_events) {
+            truncated = true;
             break;
         }
         if (first_timestamp == UINT64_MAX) {
@@ -552,52 +497,57 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
                                                   : 0;
         const std::wstring comm = ProcessDisplayName(trace, display_pid, event.timestamp_ns);
         const std::wstring detail = EventDetail(trace, event);
-        if (json) {
-            if (!first_json) {
-                std::wcout << L",\n";
-            }
-            first_json = false;
-            std::wcout << L"{\"ts\":" << relative << L",\"cpu\":" << event.cpu
-                       << L",\"pid\":" << display_pid << L",\"tid\":" << display_tid
-                       << L",\"event\":\"" << TraceEventKindName(event.kind)
-                       << L"\",\"value1\":" << event.value1
-                       << L",\"value2\":" << event.value2
-                       << L",\"related_tid\":" << event.related_tid
-                       << L",\"related_pid\":" << event.related_pid
-                       << L",\"status\":" << event.status
-                       << L",\"has_status\":" << (event.has_status ? L"true" : L"false")
-                       << L",\"duration_ns\":" << event.duration_ns
-                       << L",\"has_duration\":" << (event.has_duration ? L"true" : L"false")
-                       << L",\"size\":" << event.size
-                       << L",\"offset\":" << event.offset
-                       << L",\"correlation_id\":" << event.correlation_id
-                       << L",\"wait_reason\":" << event.wait_reason
-                       << L",\"previous_state\":" << event.previous_state
-                       << L",\"flags\":" << event.flags
-                       << L",\"file_path\":\"" << EscapeJson(event.file_path) << L"\"";
+        if (json_writer) {
+            nlohmann::ordered_json item;
+            item["ts"] = relative;
+            item["cpu"] = event.cpu;
+            item["pid"] = display_pid;
+            item["tid"] = display_tid;
+            item["event"] = ToUtf8(TraceEventKindName(event.kind));
+            item["value1"] = event.value1;
+            item["value2"] = event.value2;
+            item["related_tid"] = event.related_tid;
+            item["related_pid"] = event.related_pid;
+            item["status"] = event.status;
+            item["has_status"] = event.has_status;
+            item["duration_ns"] = event.duration_ns;
+            item["has_duration"] = event.has_duration;
+            item["size"] = event.size;
+            item["offset"] = event.offset;
+            item["correlation_id"] = event.correlation_id;
+            item["wait_reason"] = event.wait_reason;
+            item["previous_state"] = event.previous_state;
+            item["flags"] = event.flags;
+            item["file_path"] = ToUtf8(event.file_path);
+            item["event_id"] = event.event_id;
+            item["operation_id"] = event.operation_id;
+            item["file_key"] = event.file_key;
+            item["file_object"] = event.file_object;
+            item["lbr_group_id"] = event.lbr_group_id;
+            item["lbr_branch_index"] = event.lbr_branch_index;
+            item["stack"] = event.stack.View();
+            item["stack_quality"] = event.stack_quality == StackQuality::Exact ? "exact" :
+                (event.stack_quality == StackQuality::Approximate ? "approximate" : "missing");
+            item["stack_missing"] = event.stack_missing;
+            item["stack_ambiguous"] = event.stack_ambiguous;
+            item["pmc_counters"] = event.pmc_counters;
             if (event.kind == TraceEventKind::ContextRegister &&
                 event.context_register_index < trace.context_registers.size()) {
                 const auto& registers = trace.context_registers[event.context_register_index];
-                std::wcout << L",\"context_registers\":{\"rip\":" << registers.rip
-                           << L",\"rsp\":" << registers.rsp
-                           << L",\"rax\":" << registers.rax
-                           << L",\"rcx\":" << registers.rcx
-                           << L",\"rdx\":" << registers.rdx
-                           << L",\"rbx\":" << registers.rbx
-                           << L",\"rbp\":" << registers.rbp
-                           << L",\"rsi\":" << registers.rsi
-                           << L",\"rdi\":" << registers.rdi
-                           << L",\"r8\":" << registers.r8
-                           << L",\"r9\":" << registers.r9
-                           << L",\"r10\":" << registers.r10
-                           << L",\"r11\":" << registers.r11
-                           << L",\"r12\":" << registers.r12
-                           << L",\"r13\":" << registers.r13
-                           << L",\"r14\":" << registers.r14
-                           << L",\"r15\":" << registers.r15 << L"}";
+                item["context_registers"] = nlohmann::ordered_json{
+                    {"rip", registers.rip}, {"rsp", registers.rsp},
+                    {"rax", registers.rax}, {"rcx", registers.rcx},
+                    {"rdx", registers.rdx}, {"rbx", registers.rbx},
+                    {"rbp", registers.rbp}, {"rsi", registers.rsi},
+                    {"rdi", registers.rdi}, {"r8", registers.r8},
+                    {"r9", registers.r9}, {"r10", registers.r10},
+                    {"r11", registers.r11}, {"r12", registers.r12},
+                    {"r13", registers.r13}, {"r14", registers.r14},
+                    {"r15", registers.r15}};
             }
-            std::wcout << L",\"detail\":\"" << detail
-                       << L"\",\"comm\":\"" << comm << L"\"}";
+            item["detail"] = ToUtf8(detail);
+            item["comm"] = ToUtf8(comm);
+            json_writer->Item(item);
         } else {
             std::wcout << relative << L" " << event.cpu << L" " << display_pid << L" "
                        << display_tid << L" " << TraceEventKindName(event.kind) << L" "
@@ -605,42 +555,45 @@ int RunTrace(const std::vector<std::wstring>& arguments) {
                        << event.related_tid << L" " << event.related_pid << L" "
                        << detail << L" " << comm << L"\n";
         }
+        ++emitted;
     }
-    if (json) {
-        std::wcout << L"\n]\n";
+    if (json_writer) {
+        json_writer->EndArray();
+        if (metadata) {
+            json_writer->Key(L"truncated");
+            json_writer->Bool(truncated);
+            json_writer->Key(L"quality");
+            json_writer->Item(QualityJson(trace));
+            json_writer->EndObject();
+        }
+        std::wcout << L"\n";
     }
-    return 0;
+    if (truncated) {
+        std::wcerr << L"wperf: trace output truncated at " << max_events << L" events\n";
+    }
+    return ExitStatus(ExitCode::Success);
 }
 
-int RunSched(const std::vector<std::wstring>& arguments) {
-    std::filesystem::path input;
-    for (size_t index = 0; index < arguments.size(); ++index) {
-        if (arguments[index] == L"-i" || arguments[index] == L"--input") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--input requires a trace file");
-                return 2;
-            }
-            input = arguments[++index];
-        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            PrintCommandHelp(L"sched");
-            return 0;
-        } else {
-            PrintError(L"unknown sched option: " + arguments[index]);
-            return 2;
-        }
-    }
+int RunSched(const SchedRequest& request) {
+    std::filesystem::path input = request.input;
+    bool json = request.json;
+    bool csv = request.csv;
     if (input.empty()) {
         PrintError(L"sched requires -i FILE");
-        return 2;
+        return ExitStatus(ExitCode::InvalidArguments);
+    }
+    if (json && csv) {
+        PrintError(L"--json and --csv are mutually exclusive");
+        return ExitStatus(ExitCode::InvalidArguments);
     }
     TraceData trace;
     std::wstring error;
-    if (!ReadEtwFile(input, trace, &error)) {
+    if (!ReadEtwFile(input, trace, &error, false)) {
         PrintError(error);
-        return 6;
+        return ExitStatus(ExitCode::ReplayOrQualityFailure);
     }
 
-    const auto timing=AnalyzeScheduler(trace);
+    const auto timing = AnalyzeScheduler(trace);
     struct Counts {
         uint64_t running = 0;
         uint64_t ready = 0;
@@ -654,9 +607,7 @@ int RunSched(const std::vector<std::wstring>& arguments) {
     for (const auto& event : trace.events) {
         if (event.kind == TraceEventKind::ContextSwitch) {
             uint32_t pid = event.pid;
-            if (pid == 0 || pid == UINT32_MAX) {
-                pid = event.related_pid;
-            }
+            if (pid == 0 || pid == UINT32_MAX) pid = event.related_pid;
             ++counts[pid].running;
             if (event.related_pid != 0 && event.related_pid != UINT32_MAX) {
                 if (event.previous_state == 5) {
@@ -670,22 +621,30 @@ int RunSched(const std::vector<std::wstring>& arguments) {
                 Counts& target = counts[pid];
                 ++target.wakeups;
                 target.wakeup_total_ns += event.duration_ns;
-                target.wakeup_max_ns =
-                    std::max(target.wakeup_max_ns, event.duration_ns);
+                target.wakeup_max_ns = std::max(target.wakeup_max_ns, event.duration_ns);
             }
         } else if (event.kind == TraceEventKind::ReadyThread) {
             const uint32_t pid = event.related_pid;
-            if (pid != 0 && pid != UINT32_MAX) {
-                ++counts[pid].ready;
-            }
+            if (pid != 0 && pid != UINT32_MAX) ++counts[pid].ready;
         }
     }
-    std::wcout << std::left << std::setw(8) << L"PID" << std::setw(26)
-               << L"Command" << std::right << std::setw(9) << L"Running"
-               << std::setw(9) << L"Ready" << std::setw(9) << L"Blocked"
-               << std::setw(9) << L"Wakeups" << std::setw(13)
-               << L"WakeupAvgUs" << std::setw(13) << L"WakeupMaxUs"
-               << L"  TopWaitReason  RunningMs ReadyMs BlockedMs P50Us P95Us P99Us\n";
+
+    struct Row {
+        uint32_t pid = 0;
+        std::wstring comm;
+        uint64_t running_ms = 0;
+        uint64_t ready_ms = 0;
+        uint64_t blocked_ms = 0;
+        uint64_t wakeups = 0;
+        uint64_t wakeup_avg_us = 0;
+        uint64_t wakeup_max_us = 0;
+        uint64_t p50_us = 0;
+        uint64_t p95_us = 0;
+        uint64_t p99_us = 0;
+        std::wstring top_wait_reason;
+    };
+    std::vector<Row> rows;
+    rows.reserve(counts.size());
     for (const auto& [pid, value] : counts) {
         uint32_t top_reason = 0;
         uint64_t top_reason_count = 0;
@@ -698,27 +657,87 @@ int RunSched(const std::vector<std::wstring>& arguments) {
                 }
             }
         }
-        const uint64_t average_ns =
-            value.wakeups == 0 ? 0 : value.wakeup_total_ns / value.wakeups;
-        std::wcout << std::left << std::setw(8) << pid << std::setw(26)
-                   << ClampText(ProcessDisplayName(trace, pid), 24) << std::right
-                   << std::setw(9) << value.running << std::setw(9)
-                   << value.ready << std::setw(9) << value.blocked
-                   << std::setw(9) << value.wakeups << std::setw(13)
-                   << average_ns / 1000 << std::setw(13)
-                   << value.wakeup_max_ns / 1000 << L"  "
-                   << (top_reason_count == 0 ? L"-"
-                                              : TraceWaitReasonName(top_reason));
-        const auto measured=timing.find(pid);
+        const auto measured = timing.find(pid);
         const SchedulerRow empty{};
-        const auto& durations=measured==timing.end()?empty:measured->second;
-        std::wcout<<L" "<<durations.running_ns/1000000<<L" "<<durations.ready_ns/1000000<<L" "<<durations.blocked_ns/1000000
-                  <<L" "<<Percentile(durations.wakeup_ns,0.5)/1000<<L" "<<Percentile(durations.wakeup_ns,0.95)/1000
-                  <<L" "<<Percentile(durations.wakeup_ns,0.99)/1000<<L"\n";
+        const auto& durations = measured == timing.end() ? empty : measured->second;
+        Row row;
+        row.pid = pid;
+        row.comm = ProcessDisplayName(trace, pid);
+        row.running_ms = durations.running_ns / 1000000;
+        row.ready_ms = durations.ready_ns / 1000000;
+        row.blocked_ms = durations.blocked_ns / 1000000;
+        row.wakeups = value.wakeups;
+        row.wakeup_avg_us = (value.wakeups == 0 ? 0 : value.wakeup_total_ns / value.wakeups) / 1000;
+        row.wakeup_max_us = value.wakeup_max_ns / 1000;
+        row.p50_us = Percentile(durations.wakeup_ns, 0.5) / 1000;
+        row.p95_us = Percentile(durations.wakeup_ns, 0.95) / 1000;
+        row.p99_us = Percentile(durations.wakeup_ns, 0.99) / 1000;
+        row.top_wait_reason = top_reason_count == 0 ? L"-" : TraceWaitReasonName(top_reason);
+        rows.push_back(std::move(row));
     }
-    return 0;
+
+    if (json) {
+        JsonStreamWriter writer(std::wcout);
+        writer.BeginObject();
+        writer.Key(L"quality");
+        writer.Item(QualityJson(trace));
+        writer.Key(L"rows");
+        writer.BeginArray();
+        for (const auto& row : rows) {
+            nlohmann::ordered_json item;
+            item["pid"] = row.pid;
+            item["comm"] = ToUtf8(row.comm);
+            item["running_ms"] = row.running_ms;
+            item["ready_ms"] = row.ready_ms;
+            item["blocked_ms"] = row.blocked_ms;
+            item["wakeups"] = row.wakeups;
+            item["wakeup_avg_us"] = row.wakeup_avg_us;
+            item["wakeup_max_us"] = row.wakeup_max_us;
+            item["p50_us"] = row.p50_us;
+            item["p95_us"] = row.p95_us;
+            item["p99_us"] = row.p99_us;
+            item["top_wait_reason"] = ToUtf8(row.top_wait_reason);
+            writer.Item(item);
+        }
+        writer.EndArray();
+        writer.EndObject();
+        std::wcout << L"\n";
+        return ExitStatus(ExitCode::Success);
+    }
+    if (csv) {
+        std::wcout << L"pid,comm,running_ms,ready_ms,blocked_ms,wakeups,wakeup_avg_us,wakeup_max_us,p50_us,p95_us,p99_us,top_wait_reason\n";
+        for (const auto& row : rows) {
+            std::wcout << row.pid << L',' << EscapeCsv(row.comm) << L','
+                       << row.running_ms << L',' << row.ready_ms << L','
+                       << row.blocked_ms << L',' << row.wakeups << L','
+                       << row.wakeup_avg_us << L',' << row.wakeup_max_us << L','
+                       << row.p50_us << L',' << row.p95_us << L',' << row.p99_us << L','
+                       << EscapeCsv(row.top_wait_reason) << L"\n";
+        }
+        return ExitStatus(ExitCode::Success);
+    }
+
+    std::wcout << std::left << std::setw(8) << L"PID" << std::setw(26)
+               << L"Command" << std::right << std::setw(9) << L"Running"
+               << std::setw(9) << L"Ready" << std::setw(9) << L"Blocked"
+               << std::setw(9) << L"Wakeups" << std::setw(13)
+               << L"WakeupAvgUs" << std::setw(13) << L"WakeupMaxUs"
+               << L"  TopWaitReason  RunningMs ReadyMs BlockedMs P50Us P95Us P99Us\n";
+    for (const auto& row : rows) {
+        const auto& counts_row = counts.at(row.pid);
+        std::wcout << std::left << std::setw(8) << row.pid << std::setw(26)
+                   << ClampText(row.comm, 24) << std::right
+                   << std::setw(9) << counts_row.running << std::setw(9)
+                   << counts_row.ready << std::setw(9) << counts_row.blocked
+                   << std::setw(9) << row.wakeups << std::setw(13) << row.wakeup_avg_us
+                   << std::setw(13) << row.wakeup_max_us << L"  " << row.top_wait_reason
+                   << L" " << row.running_ms << L" " << row.ready_ms << L" "
+                   << row.blocked_ms << L" " << row.p50_us << L" " << row.p95_us
+                   << L" " << row.p99_us << L"\n";
+    }
+    return ExitStatus(ExitCode::Success);
 }
-void WriteIoSummary(const TraceData& trace, bool json) {
+void WriteIoSummary(const TraceData& trace, bool json, JsonStreamWriter* shared_writer = nullptr) {
     uint64_t file_io = 0;
     uint64_t disk_io = 0;
     uint64_t file_duration_total_ns = 0;
@@ -755,27 +774,36 @@ void WriteIoSummary(const TraceData& trace, bool json) {
     }
 
     if (json) {
-        std::wcout << L"{\"file_io\":" << file_io
-                   << L",\"disk_io\":" << disk_io
-                   << L",\"init\":" << trace.quality.io_init_events
-                   << L",\"complete\":" << trace.quality.io_complete_events
-                   << L",\"orphan\":" << trace.quality.io_orphaned
-                   << L",\"file_duration_count\":" << file_duration_count
-                   << L",\"file_duration_total_ns\":" << file_duration_total_ns
-                   << L",\"file_duration_max_ns\":" << file_duration_max_ns
-                   << L",\"disk_duration_count\":" << disk_duration_count
-                   << L",\"disk_duration_total_ns\":" << disk_duration_total_ns
-                   << L",\"disk_duration_max_ns\":" << disk_duration_max_ns
-                   << L",\"files\":[";
-        bool first=true;
-        for(const auto& [key,row]:files) {
-            if(!first)std::wcout<<L","; first=false;
-            std::wcout<<L"{\"path\":\""<<EscapeJson(key.first)<<L"\",\"operation\":"<<key.second
-                      <<L",\"operations\":"<<row.operations<<L",\"bytes\":"<<row.bytes
-                      <<L",\"p50_ns\":"<<Percentile(row.durations,0.5)<<L",\"p95_ns\":"<<Percentile(row.durations,0.95)
-                      <<L",\"p99_ns\":"<<Percentile(row.durations,0.99)<<L"}";
+        JsonStreamWriter local_writer(std::wcout);
+        JsonStreamWriter& writer = shared_writer == nullptr ? local_writer : *shared_writer;
+        writer.BeginObject();
+        writer.Key(L"file_io"); writer.Unsigned(file_io);
+        writer.Key(L"disk_io"); writer.Unsigned(disk_io);
+        writer.Key(L"init"); writer.Unsigned(trace.quality.io_init_events);
+        writer.Key(L"complete"); writer.Unsigned(trace.quality.io_complete_events);
+        writer.Key(L"orphan"); writer.Unsigned(trace.quality.io_orphaned);
+        writer.Key(L"file_duration_count"); writer.Unsigned(file_duration_count);
+        writer.Key(L"file_duration_total_ns"); writer.Unsigned(file_duration_total_ns);
+        writer.Key(L"file_duration_max_ns"); writer.Unsigned(file_duration_max_ns);
+        writer.Key(L"disk_duration_count"); writer.Unsigned(disk_duration_count);
+        writer.Key(L"disk_duration_total_ns"); writer.Unsigned(disk_duration_total_ns);
+        writer.Key(L"disk_duration_max_ns"); writer.Unsigned(disk_duration_max_ns);
+        writer.Key(L"files");
+        writer.BeginArray();
+        for (const auto& [key,row] : files) {
+            nlohmann::ordered_json item;
+            item["path"] = ToUtf8(key.first);
+            item["operation"] = key.second;
+            item["operations"] = row.operations;
+            item["bytes"] = row.bytes;
+            item["p50_ns"] = Percentile(row.durations,0.5);
+            item["p95_ns"] = Percentile(row.durations,0.95);
+            item["p99_ns"] = Percentile(row.durations,0.99);
+            writer.Item(item);
         }
-        std::wcout<<L"]}\n";
+        writer.EndArray();
+        writer.EndObject();
+        std::wcout << L"\n";
         return;
     }
 
@@ -824,190 +852,48 @@ bool WriteReportFile(const std::filesystem::path& path, const std::wstring& text
     return true;
 }
 
-int RunReport(const std::vector<std::wstring>& arguments) {
-    std::filesystem::path input;
-    std::filesystem::path output_path;
-    std::wstring symbol_path;
-    std::filesystem::path archive_directory;
-    std::wstring kind;
+int RunReport(const ReportRequest& request) {
+    std::filesystem::path input = request.input;
+    std::filesystem::path output_path = request.output;
+    std::wstring symbol_path = request.symbol_path;
+    std::filesystem::path archive_directory = request.archive;
+    std::wstring kind = request.kind;
     CpuReportOptions report_options;
-    bool stdio_output = false;
-    bool quiet = false;
-    bool verbose = false;
-    bool metadata = false;
-    bool stream = false;
-    bool off_cpu = false;
-    bool strict_quality = false;
-    std::optional<uint64_t> maximum_lost,maximum_missing;
-    for (size_t index = 0; index < arguments.size(); ++index) {
-        const std::wstring& argument = arguments[index];
-        if (argument == L"-i" || argument == L"--input") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--input requires a trace file");
-                return 2;
-            }
-            input = arguments[++index];
-        } else if (argument == L"-o" || argument == L"--output") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--output requires a path");
-                return 2;
-            }
-            output_path = arguments[++index];
-        } else if(argument==L"--include-children") {
-            report_options.include_children=true;
-        } else if(argument==L"--cpu") {
-            uint32_t cpu=0; if(index+1>=arguments.size()||!ParseUint32(arguments[++index],cpu))return 2;
-            report_options.cpu=cpu;
-        } else if(argument==L"--time-start"||argument==L"--time-end") {
-            uint64_t value=0; if(index+1>=arguments.size()||!ParseUnsigned(arguments[++index],value)||value>UINT64_MAX/1000000)return 2;
-            if(argument==L"--time-start")report_options.start_offset_ns=value*1000000;
-            else report_options.end_offset_ns=value*1000000;
-        } else if(argument==L"--scope") {
-            if(index+1>=arguments.size())return 2;
-            const auto value=arguments[++index];
-            if(value==L"user")report_options.scope=CpuReportOptions::Scope::User;
-            else if(value==L"kernel")report_options.scope=CpuReportOptions::Scope::Kernel;
-            else if(value==L"all")report_options.scope=CpuReportOptions::Scope::All;
-            else return 2;
-        } else if (argument == L"--off-cpu") {
-            off_cpu = true;
-        } else if (argument == L"--off-cpu-include-inferred") {
-            report_options.off_cpu_include_inferred = true;
-        } else if (argument == L"--kind") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--kind requires cpu or io");
-                return 2;
-            }
-            kind = arguments[++index];
-        } else if (argument.rfind(L"--kind=", 0) == 0) {
-            kind = argument.substr(7);
-        } else if (argument == L"-p" || argument == L"--pid") {
-            uint32_t pid = 0;
-            if (index + 1 >= arguments.size() ||
-                !ParseUint32(arguments[++index], pid)) {
-                PrintError(L"--pid requires a process id");
-                return 2;
-            }
-            report_options.pid = pid;
-        } else if (argument == L"-t" || argument == L"--tid") {
-            uint32_t tid = 0;
-            if (index + 1 >= arguments.size() ||
-                !ParseUint32(arguments[++index], tid)) {
-                PrintError(L"--tid requires a thread id");
-                return 2;
-            }
-            report_options.tid = tid;
-        } else if (argument == L"--comm") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--comm requires text");
-                return 2;
-            }
-            report_options.comm_filter = arguments[++index];
-        } else if (argument == L"--dso") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--dso requires text");
-                return 2;
-            }
-            report_options.dso_filter = arguments[++index];
-        } else if (argument == L"--symbol") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--symbol requires text");
-                return 2;
-            }
-            report_options.symbol_filter = arguments[++index];
-        } else if (argument == L"--archive") {
-            if(index+1>=arguments.size())return 2;
-            archive_directory=arguments[++index];
-        } else if (argument == L"--symbol-path") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--symbol-path requires a directory");
-                return 2;
-            }
-            symbol_path = arguments[++index];
-        } else if (argument == L"--percent-limit") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--percent-limit requires a number");
-                return 2;
-            }
-            const std::wstring value = arguments[++index];
-            wchar_t* parse_end = nullptr;
-            report_options.percent_limit = wcstod(value.c_str(), &parse_end);
-            if (parse_end == nullptr || *parse_end != L'\0' ||
-                !std::isfinite(report_options.percent_limit) || report_options.percent_limit < 0.0 ||
-                report_options.percent_limit > 100.0) {
-                PrintError(L"--percent-limit requires a number from 0 to 100");
-                return 2;
-            }
-        } else if(argument==L"--stream") {
-            stream=true;
-        } else if (argument == L"--metadata") {
-            metadata = true;
-        } else if(argument==L"--max-lost-events"||argument==L"--max-missing-stacks") {
-            uint64_t value=0; if(index+1>=arguments.size()||!ParseUnsigned(arguments[++index],value))return 2;
-            if(argument==L"--max-lost-events")maximum_lost=value; else maximum_missing=value;
-        } else if (argument == L"--strict-quality") {
-            strict_quality = true;
-        } else if (argument == L"--exact-stacks") {
-            report_options.exact_stacks_only = true;
-        } else if (argument == L"--folded" || argument == L"--collapsed") {
-            report_options.folded = true;
-        } else if (argument == L"-g" || argument == L"--call-graph") {
-            report_options.call_tree = true;
-            if (index + 1 < arguments.size() &&
-                (arguments[index + 1] == L"caller" ||
-                 arguments[index + 1] == L"callee")) {
-                report_options.call_tree_caller =
-                    arguments[++index] == L"caller";
-            } else if (index + 1 < arguments.size() &&
-                       arguments[index + 1] == L"both") {
-                PrintError(L"--call-graph both is not supported; use caller or callee");
-                return 2;
-            }
-        } else if (argument == L"--stdio") {
-            stdio_output = true;
-        } else if (argument == L"--quiet") {
-            quiet = true;
-        } else if (argument == L"--verbose") {
-            verbose = true;
-        } else if (argument == L"--csv") {
-            report_options.csv = true;
-        } else if (argument == L"--json") {
-            report_options.json = true;
-        } else if (argument == L"-s" || argument == L"--sort") {
-            if (index + 1 >= arguments.size()) {
-                PrintError(L"--sort requires one or more fields");
-                return 2;
-            }
-            const std::wstring value = arguments[++index];
-            size_t start = 0;
-            while (start <= value.size()) {
-                const size_t comma = value.find(L',', start);
-                const std::wstring field = value.substr(
-                    start, comma == std::wstring::npos ? std::wstring::npos
-                                                       : comma - start);
-                if (field != L"samples" && field != L"comm" && field != L"dso" &&
-                    field != L"symbol") {
-                    PrintError(L"unsupported report sort field: " + field);
-                    return 2;
-                }
-                report_options.sort_fields.push_back(field);
-                if (comma == std::wstring::npos) {
-                    break;
-                }
-                start = comma + 1;
-            }
-        } else if (argument == L"--fields") {
-            PrintError(L"report --fields is not supported; use script -F");
-            return 2;
-        } else if (argument == L"--help" || argument == L"-h") {
-            PrintCommandHelp(L"report");
-            return 0;
-        } else {
-            PrintError(L"unknown report option: " + argument);
-            return 2;
-        }
+    report_options.pid = request.pid;
+    report_options.tid = request.tid;
+    report_options.comm_filter = request.comm;
+    report_options.dso_filter = request.dso;
+    report_options.symbol_filter = request.symbol;
+    report_options.percent_limit = request.percent_limit.value_or(0.0);
+    report_options.sort_fields = request.sort_fields;
+    report_options.exact_stacks_only = request.exact_stacks;
+    report_options.include_children = request.include_children;
+    report_options.cpu = request.cpu;
+    if (request.time_start_ms) report_options.start_offset_ns = *request.time_start_ms * 1000000;
+    if (request.time_end_ms) report_options.end_offset_ns = *request.time_end_ms * 1000000;
+    if (request.scope == L"user") report_options.scope = CpuReportOptions::Scope::User;
+    else if (request.scope == L"kernel") report_options.scope = CpuReportOptions::Scope::Kernel;
+    else if (request.scope == L"all") report_options.scope = CpuReportOptions::Scope::All;
+    else { PrintError(L"unsupported report scope"); return ExitStatus(ExitCode::InvalidArguments); }
+    report_options.folded = request.folded;
+    report_options.off_cpu_include_inferred = request.off_cpu_include_inferred;
+    report_options.csv = request.csv;
+    report_options.json = request.json;
+    if (request.call_graph) {
+        report_options.call_tree = true;
+        if (*request.call_graph == L"caller") report_options.call_tree_caller = true;
+        else if (*request.call_graph == L"callee") report_options.call_tree_caller = false;
+        else if (*request.call_graph == L"both") { PrintError(L"--call-graph both is not supported; use caller or callee"); return ExitStatus(ExitCode::InvalidArguments); }
     }
-
+    const bool stdio_output = request.stdio_output;
+    const bool quiet = request.quiet;
+    const bool verbose = request.verbose;
+    const bool metadata = request.metadata;
+    const bool stream = request.stream;
+    const bool off_cpu = request.off_cpu;
+    const bool strict_quality = request.strict_quality;
+    const std::optional<uint64_t> maximum_lost = request.max_lost_events;
+    const std::optional<uint64_t> maximum_missing = request.max_missing_stacks;
     if (report_options.folded && report_options.call_tree) {
         PrintError(L"--folded and --call-graph are mutually exclusive");
         return 2;
@@ -1067,42 +953,71 @@ int RunReport(const std::vector<std::wstring>& arguments) {
     if(stream&&(kind==L"io"||kind==L"pmc"||report_options.call_tree||report_options.folded||report_options.exact_stacks_only)) {
         PrintError(L"--stream supports CPU tables without stack expansion"); return 2;
     }
-    if (!(stream ? ReadEtwMetadata(input,trace,&error) : ReadEtwFile(input, trace, &error))) {
+    if (!(stream ? ReadEtwMetadata(input,trace,&error) : ReadEtwFile(input, trace, &error, off_cpu))) {
         PrintError(error);
         return 6;
     }
     if (metadata && !report_options.json) { PrintError(L"--metadata requires --json"); return 2; }
-    if (metadata && !stream && !off_cpu) {
-        std::wcout << L"{\"quality\":";
-        WriteQualityJson(trace, std::wcout);
-        std::wcout << L",\"rows\":";
+    std::unique_ptr<JsonStreamWriter> envelope;
+    if (metadata && output_path.empty()) {
+        envelope = std::make_unique<JsonStreamWriter>(std::wcout);
+        envelope->BeginObject();
+        envelope->Key(L"quality");
+        envelope->Item(QualityJson(trace));
+        envelope->Key(L"rows");
     }
-    if(kind==L"pmc") {
-        const auto rows=AggregatePmcCounters(trace);
-        if(trace.pmc_counter_sources.empty()) { PrintError(L"counter-source metadata unavailable"); return 5; }
-        if(report_options.json)std::wcout<<L"[";
-        else std::wcout<<L"PMC event snapshots: estimated per-CPU/old-thread deltas, no multiplex scaling\nCPU Source PID TID Delta Intervals\n";
-        bool first=true; uint64_t emitted=0;
-        for(const auto& row:rows) {
-            if(report_options.pid&&row.pid!=*report_options.pid)continue;
-            if(report_options.tid&&row.tid!=*report_options.tid)continue;
-            ++emitted;
-            if(report_options.json) {
-                if(!first)std::wcout<<L","; first=false;
-                std::wcout<<L"{\"cpu\":"<<row.cpu<<L",\"source\":"<<row.source<<L",\"pid\":"<<row.pid
-                    <<L",\"tid\":"<<row.tid<<L",\"delta\":"<<row.delta<<L",\"intervals\":"<<row.intervals
-                    <<L",\"exact\":false,\"semantics\":\"event-snapshot-derived\"}";
-            } else std::wcout<<row.cpu<<L" "<<row.source<<L" "<<row.pid<<L" "<<row.tid<<L" "<<row.delta<<L" "<<row.intervals<<L"\n";
+    const auto close_envelope = [&]() {
+        if (envelope) {
+            envelope->EndObject();
+            std::wcout << L"\n";
         }
-        if(report_options.json)std::wcout<<L"]\n";
-        if(metadata)std::wcout<<L"}\n";
-        return emitted==0?5:0;
+    };
+    if (kind == L"pmc") {
+        const auto rows = AggregatePmcCounters(trace);
+        if (trace.pmc_counter_sources.empty()) {
+            PrintError(L"counter-source metadata unavailable");
+            return 5;
+        }
+        uint64_t emitted = 0;
+        if (report_options.json) {
+            JsonStreamWriter local_writer(std::wcout);
+            JsonStreamWriter& writer = envelope ? *envelope : local_writer;
+            writer.BeginArray();
+            for (const auto& row : rows) {
+                if (report_options.pid && row.pid != *report_options.pid) continue;
+                if (report_options.tid && row.tid != *report_options.tid) continue;
+                ++emitted;
+                nlohmann::ordered_json item;
+                item["cpu"] = row.cpu;
+                item["source"] = row.source;
+                item["pid"] = row.pid;
+                item["tid"] = row.tid;
+                item["delta"] = row.delta;
+                item["intervals"] = row.intervals;
+                item["exact"] = false;
+                item["semantics"] = "event-snapshot-derived";
+                writer.Item(item);
+            }
+            writer.EndArray();
+            close_envelope();
+        } else {
+            std::wcout << L"PMC event snapshots: estimated per-CPU/old-thread deltas, no multiplex scaling\nCPU Source PID TID Delta Intervals\n";
+            for (const auto& row : rows) {
+                if (report_options.pid && row.pid != *report_options.pid) continue;
+                if (report_options.tid && row.tid != *report_options.tid) continue;
+                ++emitted;
+                std::wcout << row.cpu << L" " << row.source << L" " << row.pid << L" "
+                           << row.tid << L" " << row.delta << L" " << row.intervals << L"\n";
+            }
+        }
+        return emitted == 0 ? 5 : 0;
     }
     if (kind == L"io") {
-        WriteIoSummary(trace, report_options.json);
-        if (metadata) std::wcout << L"}\n";
+        WriteIoSummary(trace, report_options.json, envelope.get());
+        close_envelope();
         return strict_quality && trace.quality.incomplete ? 6 : 0;
     }
+
 
     if(!archive_directory.empty()) {
         if(!LoadArchiveModules(archive_directory,trace,&error)) { PrintError(error); return 6; }
@@ -1119,21 +1034,28 @@ int RunReport(const std::vector<std::wstring>& arguments) {
     }
 
     if (off_cpu) {
-        std::wostringstream result;
-        if (metadata) {
-            result << L"{\"quality\":";
-            WriteQualityJson(trace, result);
-            result << L",\"rows\":";
-        }
-        WriteOffCpuReport(trace, symbolizer, report_options, result);
-        if (metadata) result << L"}\n";
         if (!output_path.empty()) {
+            std::wostringstream result;
+            std::unique_ptr<JsonStreamWriter> file_envelope;
+            if (metadata) {
+                file_envelope = std::make_unique<JsonStreamWriter>(result);
+                file_envelope->BeginObject();
+                file_envelope->Key(L"quality");
+                file_envelope->Item(QualityJson(trace));
+                file_envelope->Key(L"rows");
+            }
+            WriteOffCpuReport(trace, symbolizer, report_options, result, file_envelope.get());
+            if (file_envelope) {
+                file_envelope->EndObject();
+                result << L"\n";
+            }
             if (!WriteReportFile(output_path, result.str(), &error)) {
                 PrintError(error);
                 return 9;
             }
         } else {
-            std::wcout << result.str();
+            WriteOffCpuReport(trace, symbolizer, report_options, std::wcout, envelope.get());
+            close_envelope();
         }
         const bool exceeds_loss =
             maximum_lost && trace.quality.lost_events > *maximum_lost;
@@ -1197,13 +1119,13 @@ int RunReport(const std::vector<std::wstring>& arguments) {
                        << L"\n";
         }
     }
-    if(stream) {
-        std::wostringstream result;
-        WriteCpuReportFeed(trace,symbolizer,report_options,result,[&](const auto& observe) {
-            if(!StreamEtwSamples(input,trace,observe,&error))throw std::runtime_error(ToUtf8(error));
-        });
-        if(metadata) { std::wcout<<L"{\"quality\":"; WriteQualityJson(trace,std::wcout); std::wcout<<L",\"rows\":"; }
-        std::wcout<<result.str();
+    if (stream) {
+        WriteCpuReportFeed(trace, symbolizer, report_options, std::wcout,
+                           [&](const auto& observe) {
+                               if (!StreamEtwSamples(input, trace, observe, &error))
+                                   throw std::runtime_error(ToUtf8(error));
+                           }, envelope.get());
+        close_envelope();
     } else if (!output_path.empty()) {
         std::wostringstream result;
         WriteCpuReport(trace, symbolizer, report_options, result);
@@ -1224,9 +1146,9 @@ int RunReport(const std::vector<std::wstring>& arguments) {
             return 9;
         }
     } else {
-        WriteCpuReport(trace, symbolizer, report_options, std::wcout);
+        WriteCpuReport(trace, symbolizer, report_options, std::wcout, envelope.get());
+        close_envelope();
     }
-    if (metadata) std::wcout << L"}\n";
     const bool exceeds_loss=maximum_lost&&trace.quality.lost_events>*maximum_lost;
     const bool exceeds_missing=maximum_missing&&trace.quality.samples_without_stack>*maximum_missing;
     return trace.quality.samples_total==0 || exceeds_loss || exceeds_missing || (strict_quality&&trace.quality.incomplete)?6:0;

@@ -2,103 +2,21 @@
 
 #include "common.h"
 
+#include <nlohmann/json.hpp>
 #include <fstream>
 #include <sstream>
 
 namespace wperf {
 namespace {
 
-std::string EscapeJson(std::wstring_view value) {
-    const std::string utf8 = ToUtf8(value);
-    std::string result;
-    for (unsigned char ch : utf8) {
-        switch (ch) {
-            case '"':
-                result += "\\\"";
-                break;
-            case '\\':
-                result += "\\\\";
-                break;
-            case '\n':
-                result += "\\n";
-                break;
-            case '\r':
-                result += "\\r";
-                break;
-            case '\t':
-                result += "\\t";
-                break;
-            default:
-                if (ch < 0x20) {
-                    char buffer[8]{};
-                    sprintf_s(buffer, "\\u%04x", ch);
-                    result += buffer;
-                } else {
-                    result.push_back(static_cast<char>(ch));
-                }
-                break;
-        }
-    }
-    return result;
+std::wstring JsonStringValue(const nlohmann::ordered_json& value, const char* key) {
+    if (!value.contains(key) || !value[key].is_string()) return {};
+    return ToUtf16(value[key].get<std::string>());
 }
 
-std::wstring ExtractJsonString(const std::wstring& text, const std::wstring& key) {
-    const std::wstring marker = L"\"" + key + L"\":\"";
-    size_t position = text.find(marker);
-    if (position == std::wstring::npos) {
-        return {};
-    }
-    position += marker.size();
-    std::wstring result;
-    bool escaped = false;
-    for (; position < text.size(); ++position) {
-        const wchar_t ch = text[position];
-        if (escaped) {
-            switch (ch) {
-                case L'n':
-                    result.push_back(L'\n');
-                    break;
-                case L'r':
-                    result.push_back(L'\r');
-                    break;
-                case L't':
-                    result.push_back(L'\t');
-                    break;
-                default:
-                    result.push_back(ch);
-                    break;
-            }
-            escaped = false;
-            continue;
-        }
-        if (ch == L'\\') {
-            escaped = true;
-            continue;
-        }
-        if (ch == L'"') {
-            break;
-        }
-        result.push_back(ch);
-    }
-    return result;
-}
-
-uint32_t ExtractJsonNumber(const std::wstring& text, const std::wstring& key) {
-    const std::wstring marker = L"\"" + key + L"\":";
-    size_t position = text.find(marker);
-    if (position == std::wstring::npos) {
-        return 0;
-    }
-    position += marker.size();
-    while (position < text.size() && (text[position] == L' ' || text[position] == L'\t')) {
-        ++position;
-    }
-    uint64_t value = 0;
-    while (position < text.size() && text[position] >= L'0' && text[position] <= L'9') {
-        value = value * 10 + static_cast<uint64_t>(text[position] - L'0');
-        ++position;
-    }
-    return static_cast<uint32_t>(value);
+uint32_t JsonNumberValue(const nlohmann::ordered_json& value, const char* key) {
+    if (!value.contains(key) || !value[key].is_number_unsigned()) return 0;
+    return value[key].get<uint32_t>();
 }
 
 }  // namespace
@@ -135,24 +53,23 @@ bool StateStore::Write(const RunState& state, std::wstring* error) const {
         return false;
     }
 
-    stream << "{\n"
-           << "  \"correlation_id\":\"" << EscapeJson(copy.correlation_id) << "\",\n"
-           << "  \"phase\":\"" << EscapeJson(copy.phase) << "\",\n"
-           << "  \"session_name\":\"" << EscapeJson(copy.session_name) << "\",\n"
-           << "  \"trace_path\":\"" << EscapeJson(copy.trace_path) << "\",\n"
-           << "  \"controller_role\":\"" << EscapeJson(copy.controller_role) << "\",\n"
-           << "  \"controller_pid\":" << copy.controller_pid << ",\n"
-           << "  \"worker_pid\":" << copy.worker_pid << ",\n"
-           << "  \"target_pid\":" << copy.target_pid << ",\n"
-           << "  \"guard_pid\":" << copy.guard_pid << ",\n"
-           << "  \"restore_source\":" << copy.restore_source << ",\n"
-           << "  \"restore_interval\":" << copy.restore_interval << ",\n"
-           << "  \"configured_interval\":" << copy.configured_interval << ",\n"
-           << "  \"restore_clear_pmc\":" << copy.restore_clear_pmc << ",\n"
-           << "  \"error_code\":" << copy.error_code << ",\n"
-           << "  \"updated_utc\":\"" << EscapeJson(copy.updated_utc) << "\"\n"
-           << "}\n";
-    stream.flush();
+    nlohmann::ordered_json value;
+    value["correlation_id"] = ToUtf8(copy.correlation_id);
+    value["phase"] = ToUtf8(copy.phase);
+    value["session_name"] = ToUtf8(copy.session_name);
+    value["trace_path"] = ToUtf8(copy.trace_path);
+    value["controller_role"] = ToUtf8(copy.controller_role);
+    value["controller_pid"] = copy.controller_pid;
+    value["worker_pid"] = copy.worker_pid;
+    value["target_pid"] = copy.target_pid;
+    value["guard_pid"] = copy.guard_pid;
+    value["restore_source"] = copy.restore_source;
+    value["restore_interval"] = copy.restore_interval;
+    value["configured_interval"] = copy.configured_interval;
+    value["restore_clear_pmc"] = copy.restore_clear_pmc;
+    value["error_code"] = copy.error_code;
+    value["updated_utc"] = ToUtf8(copy.updated_utc);
+    stream << value.dump(2) << "\n";
     stream.close();
 
     if (!MoveFileExW(temporary.c_str(), path_.c_str(),
@@ -186,24 +103,25 @@ std::vector<RunState> StateStore::ReadAll(
         }
         std::ostringstream bytes;
         bytes << stream.rdbuf();
-        const std::wstring text = ToUtf16(bytes.str());
+        const auto value = nlohmann::ordered_json::parse(bytes.str(), nullptr, false);
+        if (value.is_discarded()) continue;
 
         RunState state;
-        state.correlation_id = ExtractJsonString(text, L"correlation_id");
-        state.phase = ExtractJsonString(text, L"phase");
-        state.session_name = ExtractJsonString(text, L"session_name");
-        state.trace_path = ExtractJsonString(text, L"trace_path");
-        state.controller_role = ExtractJsonString(text, L"controller_role");
-        state.updated_utc = ExtractJsonString(text, L"updated_utc");
-        state.controller_pid = ExtractJsonNumber(text, L"controller_pid");
-        state.worker_pid = ExtractJsonNumber(text, L"worker_pid");
-        state.target_pid = ExtractJsonNumber(text, L"target_pid");
-        state.guard_pid = ExtractJsonNumber(text, L"guard_pid");
-        state.restore_source=ExtractJsonNumber(text,L"restore_source");
-        state.restore_interval=ExtractJsonNumber(text,L"restore_interval");
-        state.configured_interval=ExtractJsonNumber(text,L"configured_interval");
-        state.restore_clear_pmc=ExtractJsonNumber(text,L"restore_clear_pmc");
-        state.error_code = ExtractJsonNumber(text, L"error_code");
+        state.correlation_id = JsonStringValue(value, "correlation_id");
+        state.phase = JsonStringValue(value, "phase");
+        state.session_name = JsonStringValue(value, "session_name");
+        state.trace_path = JsonStringValue(value, "trace_path");
+        state.controller_role = JsonStringValue(value, "controller_role");
+        state.updated_utc = JsonStringValue(value, "updated_utc");
+        state.controller_pid = JsonNumberValue(value, "controller_pid");
+        state.worker_pid = JsonNumberValue(value, "worker_pid");
+        state.target_pid = JsonNumberValue(value, "target_pid");
+        state.guard_pid = JsonNumberValue(value, "guard_pid");
+        state.restore_source=JsonNumberValue(value,"restore_source");
+        state.restore_interval=JsonNumberValue(value,"restore_interval");
+        state.configured_interval=JsonNumberValue(value,"configured_interval");
+        state.restore_clear_pmc=JsonNumberValue(value,"restore_clear_pmc");
+        state.error_code = JsonNumberValue(value, "error_code");
         if (!state.correlation_id.empty()) {
             result.push_back(std::move(state));
         }

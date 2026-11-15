@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/doctor.schema.json",
+  "title": "wperf doctor output",
+  "type": "object",
+  "required": ["version", "executable", "elevated", "state_root", "profile_source_count", "max_pmc_counters", "pmc_owner_count", "pmc_session_count", "active_sessions", "recorded_runs"],
+  "properties": {
+    "version": { "type": "string" },
+    "executable": { "type": "string" },
+    "elevated": { "type": ["boolean", "null"] },
+    "state_root": { "type": "string" },
+    "profile_source_count": { "type": "integer", "minimum": 0 },
+    "max_pmc_counters": { "type": "integer", "minimum": 0 },
+    "pmc_owner_count": { "type": "integer", "minimum": 0 },
+    "pmc_session_count": { "type": "integer", "minimum": 0 },
+    "pmc_owner_error": { "type": "string" },
+    "pmc_session_error": { "type": "string" },
+    "active_sessions": { "type": "array", "items": { "type": "string" } },
+    "recorded_runs": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+  },
+  "additionalProperties": true
+}

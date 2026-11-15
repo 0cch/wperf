@@ -44,6 +44,14 @@ jobs:
           Write-Host "Release version: $version"
           Write-Host "Release tag: $releaseTag"
 
+      - name: Resolve vcpkg
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:VCPKG_INSTALLATION_ROOT)) {
+              throw "VCPKG_INSTALLATION_ROOT is not set"
+          }
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+
       - name: Build and package
         env:
           WPERF_REQUIRE_LIVE_TESTS: "1"

@@ -45,7 +45,10 @@ developer loop:
 
 ```powershell
 # 1. Build
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=D:/Codes/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+  -DVCPKG_MANIFEST_MODE=ON
 cmake --build build --config Release --parallel
 
 # 2. Capture your app
@@ -117,15 +120,17 @@ wperf trace -i captured-with-context.etl -e context --json
 - Windows SDK 10 and CMake 3.24+.
 - Windows SDK Debugging Tools optional for public-symbol downloads from a symbol server.
 - PowerShell 7 recommended for development and release scripts.
+- vcpkg checkout for manifest mode (CI uses `VCPKG_INSTALLATION_ROOT`).
 - Elevation for system capture; offline replay runs at normal integrity.
 
 The release package does not bundle DbgHelp or symsrv. wperf prefers a
 compatible `dbghelp.dll` from `WPERF_DBGHELP_PATH`, the application directory,
 or Windows SDK Debugging Tools, then falls back to the system copy. With a
 symsrv-capable DbgHelp and `_NT_SYMBOL_PATH`, public system symbols can be
-downloaded into a local cache. Zydis is statically linked. The first CMake
-configure fetches pinned CLI11, Zydis, and Zycore revisions; CLI11 is always
-required and Zydis can be disabled with `-DWPERF_ENABLE_DISASM=OFF`.
+downloaded into a local cache. CLI11, nlohmann/json, Zydis, and Zycore are
+managed by the repository `vcpkg.json` manifest and consumed as imported CMake
+targets. Release and CI builds use `x64-windows-static-md`; disassembly can be
+disabled with `-DWPERF_ENABLE_DISASM=OFF`.
 
 ## Design principles
 

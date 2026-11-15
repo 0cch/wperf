@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "wperf",
+  "version-string": "0.8.2.0",
+  "description": "Windows ETW profiler with a perf-style workflow.",
+  "builtin-baseline": "8f363bdc11359ede4bc51e5eb32a2617538049c8",
+  "dependencies": [
+    "cli11",
+    "nlohmann-json",
+    "zydis"
+  ]
+}

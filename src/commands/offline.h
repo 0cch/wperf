@@ -1,13 +1,10 @@
 #pragma once
 
-#include <string>
-#include <vector>
+#include "requests.h"
 
 namespace wperf {
-
-int RunScript(const std::vector<std::wstring>& arguments);
-int RunTrace(const std::vector<std::wstring>& arguments);
-int RunSched(const std::vector<std::wstring>& arguments);
-int RunReport(const std::vector<std::wstring>& arguments);
-
-}  // namespace wperf
+int RunScript(const ScriptRequest& request);
+int RunTrace(const TraceRequest& request);
+int RunSched(const SchedRequest& request);
+int RunReport(const ReportRequest& request);
+}

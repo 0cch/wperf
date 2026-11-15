@@ -12,7 +12,7 @@
 namespace wperf {
 
 bool ReadEtwFile(const std::filesystem::path& path, TraceData& trace,
-                 std::wstring* error = nullptr);
+                 std::wstring* error = nullptr, bool derive_off_cpu = true);
 bool ReadEtwRecords(std::span<const EVENT_RECORD> records, TraceData& trace,
                      uint64_t frequency = 10000000);
 bool ReadEtwMetadata(const std::filesystem::path& path, TraceData& trace,

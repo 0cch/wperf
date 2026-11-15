@@ -14,15 +14,18 @@ guesswork.
 
 ## Development setup
 
-Follow [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The short version:
+Read [docs/CODING_STANDARDS.md](docs/CODING_STANDARDS.md) before making a change, then follow [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The short version:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=D:/Codes/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+  -DVCPKG_MANIFEST_MODE=ON
 cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The two live ETW tests require elevation. Run them from an elevated terminal
+Live ETW tests require elevation. Run them from an elevated terminal
 with `WPERF_REQUIRE_LIVE_TESTS=1`.
 
 ## What makes a good change

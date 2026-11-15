@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/report-pmc.schema.json",
+  "title": "wperf PMC snapshot report",
+  "type": "object",
+  "required": ["quality", "rows"],
+  "properties": {
+    "quality": { "type": "object", "additionalProperties": true },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["cpu", "source", "pid", "tid", "delta", "intervals", "exact", "semantics"],
+        "properties": {
+          "cpu": { "type": "integer", "minimum": 0 },
+          "source": { "type": "integer", "minimum": 0 },
+          "pid": { "type": "integer", "minimum": 0 },
+          "tid": { "type": "integer", "minimum": 0 },
+          "delta": { "type": "integer", "minimum": 0 },
+          "intervals": { "type": "integer", "minimum": 0 },
+          "exact": { "type": "boolean", "enum": [false] },
+          "semantics": { "type": "string", "enum": ["event-snapshot-derived"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -109,56 +109,80 @@ bool SendTextLines(PipeClient& pipe, const std::wstring& prefix,
     return true;
 }
 
+struct LiveWorkerRequest {
+    std::wstring pipe_path;
+    std::wstring nonce;
+    std::wstring mode;
+    std::wstring session_name;
+    std::wstring event_filter = L"all";
+    std::wstring profile_source = L"cpu";
+    uint32_t controller_pid = 0;
+    std::optional<uint32_t> pid;
+    uint64_t interval_ms = 1000;
+    uint64_t duration_ms = 0;
+    uint64_t max_events = 0;
+    bool json = false;
+};
+
+bool ParseLiveWorkerRequest(const std::vector<std::wstring>& arguments,
+                            LiveWorkerRequest& request) {
+    for (size_t index = 0; index < arguments.size(); ++index) {
+        const std::wstring& argument = arguments[index];
+        auto value = [&](std::wstring& target) {
+            if (index + 1 >= arguments.size()) return false;
+            target = arguments[++index];
+            return true;
+        };
+        std::wstring text;
+        if (argument == L"--pipe") { if (!value(request.pipe_path)) return false; }
+        else if (argument == L"--nonce") { if (!value(request.nonce)) return false; }
+        else if (argument == L"--mode") { if (!value(request.mode)) return false; }
+        else if (argument == L"--session") { if (!value(request.session_name)) return false; }
+        else if (argument == L"--event") { if (!value(request.event_filter)) return false; }
+        else if (argument == L"--profile-source") { if (!value(request.profile_source)) return false; }
+        else if (argument == L"--json") { request.json = true; }
+        else if (argument == L"--controller-pid") { if (!value(text) || !ParseUint32(text, request.controller_pid)) return false; }
+        else if (argument == L"--pid") {
+            if (!value(text)) return false;
+            uint32_t pid = 0;
+            if (!ParseUint32(text, pid)) return false;
+            request.pid = pid;
+        } else if (argument == L"--interval") { if (!value(text) || !ParseUnsigned(text, request.interval_ms)) return false; }
+        else if (argument == L"--duration") { if (!value(text) || !ParseUnsigned(text, request.duration_ms)) return false; }
+        else if (argument == L"--max") { if (!value(text) || !ParseUnsigned(text, request.max_events)) return false; }
+        else return false;
+    }
+    return !request.pipe_path.empty() && !request.nonce.empty() &&
+           !request.session_name.empty() && request.controller_pid != 0 &&
+           (request.mode == L"top" || request.mode == L"trace") &&
+           request.interval_ms != 0;
+}
+
 }  // namespace
 
 int RunLiveWorker(const std::vector<std::wstring>& arguments) {
-    const std::wstring pipe_path = OptionValue(arguments, L"--pipe");
-    const std::wstring nonce = OptionValue(arguments, L"--nonce");
-    const std::wstring controller_pid_text =
-        OptionValue(arguments, L"--controller-pid");
-    const std::wstring mode = OptionValue(arguments, L"--mode");
-    const std::wstring session_name = OptionValue(arguments, L"--session");
-    const std::wstring interval_text = OptionValue(arguments, L"--interval", L"1000");
-    const std::wstring duration_text = OptionValue(arguments, L"--duration", L"0");
-    const std::wstring max_text = OptionValue(arguments, L"--max", L"500");
-    const std::wstring event_filter = OptionValue(arguments, L"--event", L"all");
-    const std::wstring profile_source =
-        OptionValue(arguments, L"--profile-source", L"cpu");
-
-    const std::wstring pid_text = OptionValue(arguments, L"--pid");
-    const bool json = HasFlag(arguments, L"--json");
-    if (pipe_path.empty() || nonce.empty() || session_name.empty() ||
-        (mode != L"top" && mode != L"trace")) {
-        return 2;
-    }
-
-    uint64_t interval_ms = 1000;
-    uint64_t duration_ms = 0;
-    uint64_t max_events = 500;
-    if (!ParseUnsigned(interval_text, interval_ms) || interval_ms == 0 ||
-        !ParseUnsigned(duration_text, duration_ms) ||
-        !ParseUnsigned(max_text, max_events)) {
-        return 2;
-    }
-
-    std::optional<uint32_t> pid;
-    if (!pid_text.empty()) {
-        uint32_t value = 0;
-        if (!ParseUint32(pid_text, value)) {
-            return 2;
-        }
-        pid = value;
-    }
+    LiveWorkerRequest internal;
+    if (!ParseLiveWorkerRequest(arguments, internal)) return 2;
+    const std::wstring& pipe_path = internal.pipe_path;
+    const std::wstring& nonce = internal.nonce;
+    const std::wstring& mode = internal.mode;
+    const std::wstring& session_name = internal.session_name;
+    const std::wstring& event_filter = internal.event_filter;
+    const std::wstring& profile_source = internal.profile_source;
+    const uint32_t expected_controller_pid = internal.controller_pid;
+    const std::optional<uint32_t> pid = internal.pid;
+    const uint64_t interval_ms = internal.interval_ms;
+    const uint64_t duration_ms = internal.duration_ms;
+    const uint64_t max_events = internal.max_events;
+    const bool json = internal.json;
 
     PipeClient pipe;
     std::wstring error;
     if (!pipe.Connect(pipe_path, 20000, &error)) {
         return 4;
     }
-    uint32_t expected_controller_pid = 0;
     uint32_t actual_controller_pid = 0;
-    if (!ParseUint32(controller_pid_text, expected_controller_pid) ||
-        !pipe.ServerProcessId(actual_controller_pid) ||
+    if (!pipe.ServerProcessId(actual_controller_pid) ||
         actual_controller_pid != expected_controller_pid) {
         return 4;
     }
@@ -224,13 +248,12 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
     } else {
         uint64_t emitted = 0;
         uint64_t first_timestamp = UINT64_MAX;
-        bool first_json = true;
         if (json) {
             pipe.SendLine(L"JSON_BEGIN", &error);
         } else {
             pipe.SendLine(L"OUT timestamp_ns cpu pid tid event values comm", &error);
         }
-        while (!stop && emitted < max_events) {
+        while (!stop && (max_events == 0 || emitted < max_events)) {
             if (!WaitInterruptibly(pipe,controller.get(),std::min<uint64_t>(interval_ms,250),stop,
                                    error)) {
                 result = 5;
@@ -270,7 +293,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                 if (!MatchesEventFilter(event, event_filter)) {
                     continue;
                 }
-                if (emitted++ >= max_events) {
+                if (max_events != 0 && emitted >= max_events) {
                     break;
                 }
                 if (first_timestamp == UINT64_MAX) {
@@ -283,31 +306,29 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                 const std::wstring comm = ProcessDisplayName(trace, display_pid, event.timestamp_ns);
                 std::wstring line;
                 if (json) {
-                    if (!first_json) {
-                        line += L",";
-                    }
-                    first_json = false;
-                    line += L"{\"ts\":" + std::to_wstring(relative) +
-                            L",\"cpu\":" + std::to_wstring(event.cpu) +
-                            L",\"pid\":" + std::to_wstring(display_pid) +
-                            L",\"tid\":" + std::to_wstring(display_tid) +
-                            L",\"event\":\"" + TraceEventKindName(event.kind) +
-                            L"\",\"value1\":" + std::to_wstring(event.value1) +
-                            L",\"value2\":" + std::to_wstring(event.value2) +
-                            L",\"related_tid\":" + std::to_wstring(event.related_tid) +
-                            L",\"related_pid\":" + std::to_wstring(event.related_pid) +
-                            L",\"status\":" + std::to_wstring(event.status) +
-                            L",\"has_status\":" + (event.has_status ? L"true" : L"false") +
-                            L",\"duration_ns\":" + std::to_wstring(event.duration_ns) +
-                            L",\"has_duration\":" + (event.has_duration ? L"true" : L"false") +
-                            L",\"wait_reason\":" + std::to_wstring(event.wait_reason) +
-                            L",\"previous_state\":" + std::to_wstring(event.previous_state) +
-                            L",\"flags\":" + std::to_wstring(event.flags) +
-                            L",\"file_path\":\""+EscapeJson(event.file_path)+L"\""+
-                            L",\"size\":" + std::to_wstring(event.size) +
-                            L",\"offset\":" + std::to_wstring(event.offset) +
-                            L",\"correlation_id\":" + std::to_wstring(event.correlation_id) +
-                            L",\"comm\":\"" + EscapeJson(comm) + L"\"}";
+                    nlohmann::ordered_json item;
+                    item["ts"] = relative;
+                    item["cpu"] = event.cpu;
+                    item["pid"] = display_pid;
+                    item["tid"] = display_tid;
+                    item["event"] = ToUtf8(TraceEventKindName(event.kind));
+                    item["value1"] = event.value1;
+                    item["value2"] = event.value2;
+                    item["related_tid"] = event.related_tid;
+                    item["related_pid"] = event.related_pid;
+                    item["status"] = event.status;
+                    item["has_status"] = event.has_status;
+                    item["duration_ns"] = event.duration_ns;
+                    item["has_duration"] = event.has_duration;
+                    item["wait_reason"] = event.wait_reason;
+                    item["previous_state"] = event.previous_state;
+                    item["flags"] = event.flags;
+                    item["file_path"] = ToUtf8(event.file_path);
+                    item["size"] = event.size;
+                    item["offset"] = event.offset;
+                    item["correlation_id"] = event.correlation_id;
+                    item["comm"] = ToUtf8(comm);
+                    line += ToUtf16(item.dump());
                 } else {
                     line = std::to_wstring(relative) + L" " +
                            std::to_wstring(event.cpu) + L" " +
@@ -326,6 +347,7 @@ int RunLiveWorker(const std::vector<std::wstring>& arguments) {
                     break;
                 }
                 if (stop) break;
+                ++emitted;
             }
             if (stop || result != 0) {
                 break;

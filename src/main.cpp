@@ -1,6 +1,7 @@
 #include "commands.h"
 
 #include "common.h"
+#include "cpu_report.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -33,6 +34,9 @@ int wmain() {
 
     try {
         return wperf::RunCommandLine(arguments);
+    } catch (const wperf::CpuReportLimitError& exception) {
+        std::wcerr << L"wperf: " << wperf::ToUtf16(exception.what()) << L"\n";
+        return 6;
     } catch (const std::exception& exception) {
         std::wcerr << L"wperf: unhandled exception: "
                    << wperf::ToUtf16(exception.what()) << L"\n";

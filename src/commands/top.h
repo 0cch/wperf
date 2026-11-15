@@ -1,10 +1,7 @@
 #pragma once
 
-#include <string>
-#include <vector>
+#include "requests.h"
 
 namespace wperf {
-
-int RunTop(const std::vector<std::wstring>& arguments);
-
-}  // namespace wperf
+int RunTop(const TopRequest& request);
+}

@@ -5,6 +5,7 @@
 #include "common.h"
 #include "archive.h"
 #include "output.h"
+#include "json_writer.h"
 #include "disassembler.h"
 #include "etl_reader.h"
 #include "symbolizer.h"
@@ -109,76 +110,36 @@ std::map<std::wstring, AggregateValue> AggregateSymbols(
     return result;
 }
 
-int RunDiff(const std::vector<std::wstring>& arguments) {
-    std::filesystem::path first;
-    std::filesystem::path second;
-    std::wstring symbol_path;
-    std::filesystem::path archive_directory;
-    std::wstring dso_filter;
-    std::optional<uint32_t> pid;
-    bool calltree = false;
-    bool json = false;
-    bool csv = false;
-    for (size_t index = 0; index < arguments.size(); ++index) {
-        if (arguments[index] == L"-1" || arguments[index] == L"--first") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            first = arguments[++index];
-        } else if (arguments[index] == L"-2" || arguments[index] == L"--second") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            second = arguments[++index];
-        } else if (arguments[index] == L"--archive") {
-            if(index+1>=arguments.size())return 2;
-            archive_directory=arguments[++index];
-        } else if (arguments[index] == L"--symbol-path") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            symbol_path = arguments[++index];
-        } else if (arguments[index] == L"--pid") {
-            uint32_t value = 0;
-            if (index + 1 >= arguments.size() ||
-                !ParseUint32(arguments[++index], value)) {
-                return 2;
-            }
-            pid = value;
-        } else if (arguments[index] == L"--dso") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            dso_filter = arguments[++index];
-        } else if (arguments[index] == L"--calltree" ||
-                   arguments[index] == L"--weighted") {
-            calltree = calltree || arguments[index] == L"--calltree";
-        } else if (arguments[index] == L"--json") {
-            json = true;
-        } else if (arguments[index] == L"--csv") {
-            csv = true;
-        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            PrintCommandHelp(L"diff");
-            return 0;
-        } else {
-            PrintError(L"unknown diff option: " + arguments[index]);
-            return 2;
-        }
-    }
+int RunDiff(const DiffRequest& request) {
+    std::filesystem::path first = request.first;
+    std::filesystem::path second = request.second;
+    std::wstring symbol_path = request.symbol_path;
+    std::filesystem::path archive_directory = request.archive;
+    std::wstring dso_filter = request.dso;
+    std::optional<uint32_t> pid = request.pid;
+    std::optional<uint32_t> first_pid = request.first_pid;
+    std::optional<uint32_t> second_pid = request.second_pid;
+    std::wstring normalization = request.normalization;
+    const bool calltree = request.calltree;
+    const bool json = request.json;
+    const bool csv = request.csv;
     if (json && csv) {
         PrintError(L"--json and --csv are mutually exclusive");
+        return 2;
+    }
+    if (normalization != L"weight" && normalization != L"samples") {
+        PrintError(L"--normalize requires weight or samples");
         return 2;
     }
     if (first.empty() || second.empty()) {
         PrintError(L"diff requires -1 FILE and -2 FILE");
         return 2;
     }
-
     TraceData first_trace;
     TraceData second_trace;
     std::wstring error;
-    if (!ReadEtwFile(first, first_trace, &error) ||
-        !ReadEtwFile(second, second_trace, &error)) {
+    if (!ReadEtwFile(first, first_trace, &error, false) ||
+        !ReadEtwFile(second, second_trace, &error, false)) {
         PrintError(error);
         return 6;
     }
@@ -203,14 +164,20 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
     for (const auto& image : second_trace.images) {
         second_symbolizer.AddModule(image);
     }
-    const auto before = AggregateSymbols(first_trace, first_symbolizer, pid,
+    const std::optional<uint32_t> before_pid = first_pid ? first_pid : pid;
+    const std::optional<uint32_t> after_pid = second_pid ? second_pid : pid;
+    const auto before = AggregateSymbols(first_trace, first_symbolizer, before_pid,
                                          dso_filter, calltree);
-    const auto after = AggregateSymbols(second_trace, second_symbolizer, pid,
+    const auto after = AggregateSymbols(second_trace, second_symbolizer, after_pid,
                                         dso_filter, calltree);
 
-    uint64_t before_total=0,after_total=0;
-    for(const auto& [key,value]:before) { (void)key; before_total+=value.samples; }
-    for(const auto& [key,value]:after) { (void)key; after_total+=value.samples; }
+    uint64_t before_total=0,after_total=0,before_weight_total=0,after_weight_total=0;
+    for(const auto& [key,value]:before) { (void)key; before_total+=value.samples; before_weight_total+=value.weight_ns; }
+    for(const auto& [key,value]:after) { (void)key; after_total+=value.samples; after_weight_total+=value.weight_ns; }
+    bool normalization_fallback = false;
+    if (normalization == L"weight" && (before_weight_total == 0 || after_weight_total == 0)) {
+        normalization = L"samples"; normalization_fallback = true;
+    }
     std::set<std::pair<SampleKind,uint32_t>> first_sources,second_sources;
     for(const auto& sample:first_trace.samples)first_sources.emplace(sample.kind,sample.profile_source);
     for(const auto& sample:second_trace.samples)second_sources.emplace(sample.kind,sample.profile_source);
@@ -225,127 +192,107 @@ int RunDiff(const std::vector<std::wstring>& arguments) {
         keys.insert(key);
     }
 
-    if (json) {
-        std::wcout << L"[\n";
-    } else if (csv) {
-        std::wcout << L"samples_before,samples_after,delta_samples,"
-                      L"weight_before_ns,weight_after_ns,delta_weight_ns,delta_pp,approximate_95_margin_pp,key\n";
-    } else {
-        std::wcout << std::right << std::setw(13) << L"DeltaSamples"
-                   << std::setw(11) << L"DeltaUs" << std::setw(8) << L"Before"
-                   << std::setw(8) << L"After" << L"  Key\n";
-    }
-    bool first_row = true;
+    struct DiffRow {
+        std::wstring key;
+        AggregateValue old_value;
+        AggregateValue new_value;
+        int64_t sample_delta = 0;
+        int64_t weight_delta = 0;
+        double before_share = 0.0;
+        double after_share = 0.0;
+        double delta_pp = 0.0;
+        double margin = 0.0;
+    };
+    std::vector<DiffRow> diff_rows;
     for (const auto& key : keys) {
-        const AggregateValue old_value = before.count(key) ? before.at(key)
-                                                           : AggregateValue{};
-        const AggregateValue new_value = after.count(key) ? after.at(key)
-                                                          : AggregateValue{};
-        if (old_value.samples == new_value.samples &&
-            old_value.weight_ns == new_value.weight_ns && before_total==after_total) {
+        DiffRow row;
+        row.key = key;
+        row.old_value = before.count(key) ? before.at(key) : AggregateValue{};
+        row.new_value = after.count(key) ? after.at(key) : AggregateValue{};
+        if (row.old_value.samples == row.new_value.samples &&
+            row.old_value.weight_ns == row.new_value.weight_ns && before_total==after_total) {
             continue;
         }
-        const int64_t sample_delta = static_cast<int64_t>(new_value.samples) -
-                                     static_cast<int64_t>(old_value.samples);
-        const int64_t weight_delta = static_cast<int64_t>(new_value.weight_ns) -
-                                     static_cast<int64_t>(old_value.weight_ns);
-        const double before_share=before_total ? double(old_value.samples)/before_total : 0;
-        const double after_share=after_total ? double(new_value.samples)/after_total : 0;
-        const double delta_pp=100*(after_share-before_share);
-        const double margin=196*std::sqrt((before_total?before_share*(1-before_share)/before_total:0)+
-                                         (after_total?after_share*(1-after_share)/after_total:0));
-        if (json) {
-            if (!first_row) {
-                std::wcout << L",\n";
-            }
-            first_row = false;
-            std::wcout << L"{\"key\":\"" << EscapeJson(key)
-                       << L"\",\"samples_before\":" << old_value.samples
-                       << L",\"samples_after\":" << new_value.samples
-                       << L",\"delta_samples\":" << sample_delta
-                       << L",\"weight_before_ns\":" << old_value.weight_ns
-                       << L",\"weight_after_ns\":" << new_value.weight_ns
-                       << L",\"delta_weight_ns\":" << weight_delta
-                       << L",\"share_before\":" << before_share << L",\"share_after\":" << after_share
-                       << L",\"delta_pp\":" << delta_pp << L",\"approximate_95_margin_pp\":" << margin
-                       << L",\"uncertainty_model\":\"independent-binomial-samples\""
-                       << L",\"known_period_samples_before\":" << old_value.known_period_samples
-                       << L",\"known_period_samples_after\":" << new_value.known_period_samples
-                       << L",\"trace_duration_before_ns\":" << (first_trace.start_ns<=first_trace.end_ns?first_trace.end_ns-first_trace.start_ns:0)
-                       << L",\"trace_duration_after_ns\":" << (second_trace.start_ns<=second_trace.end_ns?second_trace.end_ns-second_trace.start_ns:0)
-                       << L",\"exact_time\":false}";
-        } else if (csv) {
-            std::wcout << old_value.samples << L"," << new_value.samples << L","
-                       << sample_delta << L"," << old_value.weight_ns << L","
-                       << new_value.weight_ns << L"," << weight_delta << L","
-                       << delta_pp << L"," << margin << L"," << EscapeCsv(key) << L"\n";
-        } else {
-            std::wcout << std::showpos << std::right << std::setw(13)
-                       << sample_delta << std::noshowpos << std::setw(11)
-                       << weight_delta / 1000 << L"  " << delta_pp << L"pp +/-" << margin << L"  " << std::setw(8)
-                       << old_value.samples << std::setw(8)
-                       << new_value.samples << L"  " << key << L"\n";
-        }
+        row.sample_delta = static_cast<int64_t>(row.new_value.samples) - static_cast<int64_t>(row.old_value.samples);
+        row.weight_delta = static_cast<int64_t>(row.new_value.weight_ns) - static_cast<int64_t>(row.old_value.weight_ns);
+        const uint64_t before_denominator = normalization == L"weight" ? before_weight_total : before_total;
+        const uint64_t after_denominator = normalization == L"weight" ? after_weight_total : after_total;
+        row.before_share = before_denominator ? double(normalization == L"weight" ? row.old_value.weight_ns : row.old_value.samples)/before_denominator : 0;
+        row.after_share = after_denominator ? double(normalization == L"weight" ? row.new_value.weight_ns : row.new_value.samples)/after_denominator : 0;
+        row.delta_pp = 100*(row.after_share-row.before_share);
+        row.margin = 196*std::sqrt((before_total?row.before_share*(1-row.before_share)/before_total:0)+
+                                         (after_total?row.after_share*(1-row.after_share)/after_total:0));
+        diff_rows.push_back(std::move(row));
     }
+
     if (json) {
-        std::wcout << L"\n]\n";
+        JsonStreamWriter writer(std::wcout);
+        writer.BeginArray();
+        for (const auto& row : diff_rows) {
+            nlohmann::ordered_json item;
+            item["key"] = ToUtf8(row.key);
+            item["samples_before"] = row.old_value.samples;
+            item["samples_after"] = row.new_value.samples;
+            item["delta_samples"] = row.sample_delta;
+            item["weight_before_ns"] = row.old_value.weight_ns;
+            item["weight_after_ns"] = row.new_value.weight_ns;
+            item["delta_weight_ns"] = row.weight_delta;
+            item["share_before"] = row.before_share;
+            item["share_after"] = row.after_share;
+            item["delta_pp"] = row.delta_pp;
+            item["approximate_95_margin_pp"] = row.margin;
+            item["uncertainty_model"] = "independent-binomial-samples";
+            item["known_period_samples_before"] = row.old_value.known_period_samples;
+            item["known_period_samples_after"] = row.new_value.known_period_samples;
+            item["trace_duration_before_ns"] = first_trace.start_ns<=first_trace.end_ns?first_trace.end_ns-first_trace.start_ns:0;
+            item["trace_duration_after_ns"] = second_trace.start_ns<=second_trace.end_ns?second_trace.end_ns-second_trace.start_ns:0;
+            item["profile_interval_before_ns"] = first_trace.profile_interval_ns;
+            item["profile_interval_after_ns"] = second_trace.profile_interval_ns;
+            item["normalization"] = ToUtf8(normalization);
+            item["normalization_fallback"] = normalization_fallback;
+            item["compatible"] = true;
+            item["exact_time"] = false;
+            writer.Item(item);
+        }
+        writer.EndArray();
+        std::wcout << L"\n";
+        return 0;
+    }
+    if (csv) {
+        std::wcout << L"samples_before,samples_after,delta_samples,"
+                      L"weight_before_ns,weight_after_ns,delta_weight_ns,delta_pp,approximate_95_margin_pp,key\n";
+        for (const auto& row : diff_rows) {
+            std::wcout << row.old_value.samples << L"," << row.new_value.samples << L","
+                       << row.sample_delta << L"," << row.old_value.weight_ns << L","
+                       << row.new_value.weight_ns << L"," << row.weight_delta << L","
+                       << row.delta_pp << L"," << row.margin << L"," << EscapeCsv(row.key) << L"\n";
+        }
+        return 0;
+    }
+    std::wcout << std::right << std::setw(13) << L"DeltaSamples"
+               << std::setw(11) << L"DeltaUs" << std::setw(8) << L"Before"
+               << std::setw(8) << L"After" << L"  Key\n";
+    for (const auto& row : diff_rows) {
+        std::wcout << std::showpos << std::right << std::setw(13)
+                   << row.sample_delta << std::noshowpos << std::setw(11)
+                   << row.weight_delta / 1000 << L"  " << row.delta_pp << L"pp +/-" << row.margin << L"  " << std::setw(8)
+                   << row.old_value.samples << std::setw(8)
+                   << row.new_value.samples << L"  " << row.key << L"\n";
     }
     return 0;
 }
 
 
-int RunAnnotate(const std::vector<std::wstring>& arguments) {
-    std::filesystem::path input;
-    std::wstring symbol_path;
-    std::filesystem::path archive_directory;
-    std::optional<uint32_t> pid;
-    uint64_t limit = 50;
-    bool json = false;
-    bool csv = false;
-    bool disasm = false;
-    bool stdio_output = false;
-    for (size_t index = 0; index < arguments.size(); ++index) {
-        if (arguments[index] == L"-i" || arguments[index] == L"--input") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            input = arguments[++index];
-        } else if (arguments[index] == L"--archive") {
-            if(index+1>=arguments.size())return 2;
-            archive_directory=arguments[++index];
-        } else if (arguments[index] == L"--symbol-path") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            symbol_path = arguments[++index];
-        } else if (arguments[index] == L"-p" || arguments[index] == L"--pid") {
-            uint32_t value = 0;
-            if (index + 1 >= arguments.size() ||
-                !ParseUint32(arguments[++index], value)) {
-                return 2;
-            }
-            pid = value;
-        } else if (arguments[index] == L"--disasm") {
-            disasm = true;
-        } else if (arguments[index] == L"--json") {
-            json = true;
-        } else if (arguments[index] == L"--csv") {
-            csv = true;
-        } else if (arguments[index] == L"--limit") {
-            if (index + 1 >= arguments.size() ||
-                !ParseUnsigned(arguments[++index], limit)) {
-                return 2;
-            }
-        } else if (arguments[index] == L"--stdio") {
-            stdio_output = true;
-        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            PrintCommandHelp(L"annotate");
-            return 0;
-        } else {
-            PrintError(L"unknown annotate option: " + arguments[index]);
-            return 2;
-        }
-    }
+int RunAnnotate(const AnnotateRequest& request) {
+    std::filesystem::path input = request.input;
+    std::wstring symbol_path = request.symbol_path;
+    std::filesystem::path archive_directory = request.archive;
+    std::optional<uint32_t> pid = request.pid;
+    uint64_t limit = request.limit;
+    bool json = request.json;
+    bool csv = request.csv;
+    bool disasm = request.disasm;
+    bool stdio_output = request.stdio_output;
     if (json && csv) {
         PrintError(L"--json and --csv are mutually exclusive");
         return 2;
@@ -360,7 +307,7 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
     }
     TraceData trace;
     std::wstring error;
-    if (!ReadEtwFile(input, trace, &error)) {
+    if (!ReadEtwFile(input, trace, &error, false)) {
         PrintError(error);
         return 6;
     }
@@ -374,17 +321,27 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
     for (const auto& image : trace.images) {
         symbolizer.AddModule(image);
     }
+    struct InstructionHeat {
+        uint64_t instruction_rva = 0;
+        std::wstring bytes;
+        std::wstring text;
+        uint64_t samples = 0;
+        double overhead = 0.0;
+    };
     struct Heat {
         std::wstring module;
         std::wstring symbol;
         std::wstring source_file;
+        std::wstring source_text;
         std::wstring disassembly;
         const ImageRecord* image = nullptr;
         uint64_t address = 0;
         uint64_t displacement = 0;
         uint32_t line = 0;
         uint64_t samples = 0;
-        uint64_t function_size=0;
+        uint64_t function_rva = 0;
+        uint64_t function_size = 0;
+        std::vector<InstructionHeat> instruction_rows;
         std::map<uint64_t,uint64_t> instruction_samples;
     };
     std::unordered_map<std::wstring, Heat> heat;
@@ -405,6 +362,7 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         value.image = image_index.Find(sample.pid, sample.instruction_pointer,
                                         sample.timestamp_ns);
         value.address=value.image ? value.image->base+symbol.function_rva : sample.instruction_pointer;
+        value.function_rva=symbol.function_rva;
         value.function_size=symbol.function_size;
         ++value.instruction_samples[sample.instruction_pointer];
         value.displacement = symbol.displacement;
@@ -422,6 +380,16 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         if (a.module != b.module) return a.module < b.module;
         return a.address < b.address;
     });
+    for (auto& row : rows) {
+        if (row.source_file.empty() || row.line == 0) continue;
+        std::wifstream source(std::filesystem::path(row.source_file));
+        if (!source) continue;
+        std::wstring line;
+        for (uint32_t current = 1; current <= row.line && std::getline(source, line); ++current) {
+            if (current == row.line) row.source_text = line;
+        }
+    }
+
     bool disassembly_failed = false;
     if (disasm) {
         for (size_t index = 0; index < rows.size() && index < limit; ++index) {
@@ -452,6 +420,14 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
                 row.disassembly += ToUtf16(instruction.bytes);
                 row.disassembly += L"  ";
                 row.disassembly += ToUtf16(instruction.text);
+                InstructionHeat item;
+                item.instruction_rva = row.image->base != 0 && instruction.address >= row.image->base
+                                           ? instruction.address - row.image->base : instruction.address;
+                item.bytes = ToUtf16(instruction.bytes);
+                item.text = ToUtf16(instruction.text);
+                item.samples = hits;
+                item.overhead = row.samples == 0 ? 0.0 : 100.0 * hits / row.samples;
+                row.instruction_rows.push_back(std::move(item));
             }
         }
         if (disassembly_failed && !DisassemblyAvailable()) {
@@ -459,33 +435,56 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
         }
     }
     if (json) {
-        std::wcout << L"[\n";
-        bool first = true;
+        JsonStreamWriter writer(std::wcout);
+        writer.BeginArray();
         for (size_t index = 0; index < rows.size() && index < limit; ++index) {
-            if (!first) {
-                std::wcout << L",\n";
+            const auto& row = rows[index];
+            nlohmann::ordered_json item;
+            item["samples"] = row.samples;
+            item["module"] = ToUtf8(row.module);
+            item["symbol"] = ToUtf8(row.symbol);
+            item["displacement"] = row.displacement;
+            item["source_file"] = ToUtf8(row.source_file);
+            item["source_text"] = ToUtf8(row.source_text);
+            item["line"] = row.line;
+            item["function_rva"] = row.function_rva;
+            item["disassembly"] = ToUtf8(row.disassembly);
+            nlohmann::ordered_json instructions = nlohmann::ordered_json::array();
+            for (const auto& instruction : row.instruction_rows) {
+                nlohmann::ordered_json value;
+                value["instruction_rva"] = instruction.instruction_rva;
+                value["bytes"] = ToUtf8(instruction.bytes);
+                value["text"] = ToUtf8(instruction.text);
+                value["samples"] = instruction.samples;
+                value["overhead"] = instruction.overhead;
+                instructions.push_back(std::move(value));
             }
-            first = false;
-            std::wcout << L"{\"samples\":" << rows[index].samples
-                       << L",\"module\":\"" << EscapeJson(rows[index].module)
-                       << L"\",\"symbol\":\"" << EscapeJson(rows[index].symbol)
-                       << L"\",\"displacement\":" << rows[index].displacement
-                       << L",\"source_file\":\""
-                       << EscapeJson(rows[index].source_file)
-                       << L"\",\"line\":" << rows[index].line
-                       << L",\"disassembly\":\""
-                       << EscapeJson(rows[index].disassembly) << L"\"}";
+            item["instruction_rows"] = std::move(instructions);
+            writer.Item(item);
         }
-        std::wcout << L"\n]\n";
+        writer.EndArray();
+        std::wcout << L"\n";
         return 0;
     }
     if (csv) {
-        std::wcout << L"samples,module,symbol,displacement,source_file,line,disassembly\n";
+        std::wcout << L"samples,module,symbol,displacement,source_file,line,source_text,disassembly,function_rva,instruction_rva,instruction_bytes,instruction_samples,instruction_overhead\n";
         for (size_t index = 0; index < rows.size() && index < limit; ++index) {
-            std::wcout << rows[index].samples << L"," << EscapeCsv(rows[index].module)
-                       << L"," << EscapeCsv(rows[index].symbol) << L"," << rows[index].displacement
-                       << L"," << EscapeCsv(rows[index].source_file) << L"," << rows[index].line
-                       << L"," << EscapeCsv(rows[index].disassembly) << L"\n";
+            const auto& row = rows[index];
+            if (row.instruction_rows.empty()) {
+                std::wcout << row.samples << L"," << EscapeCsv(row.module) << L","
+                           << EscapeCsv(row.symbol) << L"," << row.displacement << L","
+                           << EscapeCsv(row.source_file) << L"," << row.line << L"," << EscapeCsv(row.source_text) << L","
+                           << EscapeCsv(row.disassembly) << L"," << row.function_rva << L",,,,\n";
+                continue;
+            }
+            for (const auto& item : row.instruction_rows) {
+                std::wcout << row.samples << L"," << EscapeCsv(row.module) << L","
+                           << EscapeCsv(row.symbol) << L"," << row.displacement << L","
+                           << EscapeCsv(row.source_file) << L"," << row.line << L"," << EscapeCsv(row.source_text) << L","
+                           << EscapeCsv(row.disassembly) << L"," << row.function_rva << L","
+                           << item.instruction_rva << L"," << EscapeCsv(item.bytes) << L","
+                           << item.samples << L"," << item.overhead << L"\n";
+            }
         }
         return 0;
     }
@@ -511,68 +510,26 @@ int RunAnnotate(const std::vector<std::wstring>& arguments) {
     return 0;
 }
 
-std::string JsonFileEscape(const std::wstring& value) {
-    return ToUtf8(EscapeJson(value));
-}
-
 std::wstring Sha256File(const std::filesystem::path& path, std::wstring* error = nullptr) {
     const auto digest=FileSha256(path);
     if(digest.empty() && error)*error=L"cannot hash file: "+path.wstring();
     return digest;
 }
 
-int RunArchive(const std::vector<std::wstring>& arguments) {
-    std::filesystem::path input;
-    std::filesystem::path output;
-    std::optional<uint32_t> pid;
-    std::wstring symbol_path;
-    uint64_t max_size_mb = 512;
-    bool include_trace = false;
-    for (size_t index = 0; index < arguments.size(); ++index) {
-        if (arguments[index] == L"-i" || arguments[index] == L"--input") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            input = arguments[++index];
-        } else if (arguments[index] == L"-o" || arguments[index] == L"--output") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            output = arguments[++index];
-        } else if (arguments[index] == L"-p" || arguments[index] == L"--pid") {
-            uint32_t value = 0;
-            if (index + 1 >= arguments.size() ||
-                !ParseUint32(arguments[++index], value)) {
-                return 2;
-            }
-            pid = value;
-        } else if (arguments[index] == L"--symbol-path") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            symbol_path = arguments[++index];
-        } else if (arguments[index] == L"--include-trace") {
-            include_trace = true;
-        } else if (arguments[index] == L"--max-size-mb") {
-            if (index + 1 >= arguments.size() ||
-                !ParseUnsigned(arguments[++index], max_size_mb)) {
-                return 2;
-            }
-        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            PrintCommandHelp(L"archive");
-            return 0;
-        } else {
-            PrintError(L"unknown archive option: " + arguments[index]);
-            return 2;
-        }
-    }
+int RunArchive(const ArchiveRequest& request) {
+    const std::filesystem::path input = request.input;
+    const std::filesystem::path output = request.output;
+    const std::optional<uint32_t> pid = request.pid;
+    const std::wstring symbol_path = request.symbol_path;
+    const uint64_t max_size_mb = request.max_size_mb;
+    const bool include_trace = request.include_trace;
     if (input.empty() || output.empty()) {
         PrintError(L"archive requires -i FILE and -o DIRECTORY");
         return 2;
     }
     TraceData trace;
     std::wstring error;
-    if (!ReadEtwFile(input, trace, &error)) {
+    if (!ReadEtwFile(input, trace, &error, false)) {
         PrintError(error);
         return 6;
     }
@@ -721,34 +678,39 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
         std::ofstream manifest(path, std::ios::binary);
         if (!manifest) throw std::runtime_error("cannot write archive manifest");
         if (json) {
-            manifest << "{\n  \"trace\": \"" << JsonFileEscape(input.wstring())
-                     << "\",\n  \"symbol_path\": \"" << JsonFileEscape(symbol_path)
-                     << "\",\n  \"max_size_mb\": " << max_size_mb
-                     << ",\n  \"entries\": [\n";
-            for (size_t index = 0; index < entries.size(); ++index) {
-                const auto& entry = entries[index];
+            std::wostringstream json_output;
+            JsonStreamWriter writer(json_output);
+            writer.BeginObject();
+            writer.Key(L"trace"); writer.String(input.wstring());
+            writer.Key(L"symbol_path"); writer.String(symbol_path);
+            writer.Key(L"max_size_mb"); writer.Unsigned(max_size_mb);
+            writer.Key(L"entries"); writer.BeginArray();
+            for (const auto& entry : entries) {
                 const std::wstring guid = entry.identity.has_pdb_guid
                                               ? FormatGuid(entry.identity.pdb_guid)
                                               : L"";
-                manifest << "    {\"source\":\"" << JsonFileEscape(entry.source)
-                         << "\",\"archived\":\"" << JsonFileEscape(entry.archived)
-                         << "\",\"copied\":" << (entry.copied ? "true" : "false")
-                         << ",\"reason\":\"" << JsonFileEscape(entry.reason)
-                         << "\",\"size\":" << entry.size
-                         << ",\"sha256\":\"" << JsonFileEscape(entry.sha256)
-                         << "\",\"pe_timestamp\":" << entry.identity.timestamp
-                         << ",\"pe_checksum\":" << entry.identity.checksum
-                         << ",\"pe_size_of_image\":" << entry.identity.size_of_image
-                         << ",\"machine\":" << entry.identity.machine
-                         << ",\"pdb_guid\":\"" << JsonFileEscape(guid)
-                         << "\",\"pdb_age\":" << entry.identity.pdb_age
-                         << ",\"pdb_source\":\"" << JsonFileEscape(entry.pdb_source)
-                         << "\",\"pdb_archived\":\"" << JsonFileEscape(entry.pdb_archived)
-                         << "\",\"pdb_copied\":" << (entry.pdb_copied ? "true" : "false")
-                         << ",\"pdb_sha256\":\"" << JsonFileEscape(entry.pdb_sha256)
-                         << "\"}" << (index + 1 == entries.size() ? "\n" : ",\n");
+                nlohmann::ordered_json item;
+                item["source"] = ToUtf8(entry.source);
+                item["archived"] = ToUtf8(entry.archived);
+                item["copied"] = entry.copied;
+                item["reason"] = ToUtf8(entry.reason);
+                item["size"] = entry.size;
+                item["sha256"] = ToUtf8(entry.sha256);
+                item["pe_timestamp"] = entry.identity.timestamp;
+                item["pe_checksum"] = entry.identity.checksum;
+                item["pe_size_of_image"] = entry.identity.size_of_image;
+                item["machine"] = entry.identity.machine;
+                item["pdb_guid"] = ToUtf8(guid);
+                item["pdb_age"] = entry.identity.pdb_age;
+                item["pdb_source"] = ToUtf8(entry.pdb_source);
+                item["pdb_archived"] = ToUtf8(entry.pdb_archived);
+                item["pdb_copied"] = entry.pdb_copied;
+                item["pdb_sha256"] = ToUtf8(entry.pdb_sha256);
+                writer.Item(item);
             }
-            manifest << "  ]\n}\n";
+            writer.EndArray();
+            writer.EndObject();
+            manifest << ToUtf8(json_output.str()) << "\n";
         } else if (csv) {
             manifest << "source,archived,copied,reason,size,sha256,pe_timestamp,"
                         "pe_checksum,pe_size_of_image,machine,pdb_guid,pdb_age,"
@@ -804,44 +766,92 @@ int RunArchive(const std::vector<std::wstring>& arguments) {
     return 0;
 }
 
-int RunBuildIdList(const std::vector<std::wstring>& arguments) {
-    std::filesystem::path input;
-    for (size_t index = 0; index < arguments.size(); ++index) {
-        if (arguments[index] == L"-i" || arguments[index] == L"--input") {
-            if (index + 1 >= arguments.size()) {
-                return 2;
-            }
-            input = arguments[++index];
-        } else if (arguments[index] == L"--help" || arguments[index] == L"-h") {
-            PrintCommandHelp(L"buildid-list");
-            return 0;
-        } else {
-            PrintError(L"unknown buildid-list option: " + arguments[index]);
-            return 2;
-        }
-    }
+int RunBuildIdList(const BuildIdListRequest& request) {
+    std::filesystem::path input = request.input;
+    bool json = request.json;
+    bool csv = request.csv;
     if (input.empty()) {
         PrintError(L"buildid-list requires -i FILE");
-        return 2;
+        return ExitStatus(ExitCode::InvalidArguments);
+    }
+    if (json && csv) {
+        PrintError(L"--json and --csv are mutually exclusive");
+        return ExitStatus(ExitCode::InvalidArguments);
     }
 
     TraceData trace;
     std::wstring error;
-    if (!ReadEtwFile(input, trace, &error)) {
+    if (!ReadEtwMetadata(input, trace, &error)) {
         PrintError(error);
-        return 6;
+        return ExitStatus(ExitCode::ReplayOrQualityFailure);
     }
-    std::wcout << L"Base              Size      Details\n";
+
+    struct Row {
+        const ImageRecord* image = nullptr;
+        ModuleIdentity identity;
+        std::wstring pdb_guid;
+        std::wstring sha256;
+        std::wstring status;
+    };
+    std::vector<Row> rows;
+    rows.reserve(trace.images.size());
     for (const auto& image : trace.images) {
-        if (image.path.empty()) {
-            continue;
-        }
-        std::wcout << std::hex << std::setw(16) << std::setfill(L'0') << image.base
-                   << L" " << std::setw(8) << image.size << std::dec
-                   << std::setfill(L' ') << L" pid=" << image.pid
-                   << L" timestamp=" << image.timestamp
-                   << L" checksum=" << image.checksum << L" " << image.path << L"\n";
+        if (image.path.empty()) continue;
+        Row row;
+        row.image = &image;
+        row.identity = ReadModuleIdentity(ModuleFilePath(image));
+        row.sha256 = FileSha256(ModuleFilePath(image));
+        row.pdb_guid = row.identity.has_pdb_guid ? FormatGuid(row.identity.pdb_guid) : L"";
+        row.status = row.identity.valid ? L"available" : L"missing";
+        rows.push_back(std::move(row));
     }
-    return 0;
+
+    if (json) {
+        JsonStreamWriter writer(std::wcout);
+        writer.BeginArray();
+        for (const auto& row : rows) {
+            nlohmann::ordered_json item;
+            item["base"] = row.image->base;
+            item["size"] = row.image->size;
+            item["pid"] = row.image->pid;
+            item["pe_timestamp"] = row.identity.timestamp;
+            item["pe_checksum"] = row.identity.checksum;
+            item["machine"] = row.identity.machine;
+            item["pdb_guid"] = ToUtf8(row.pdb_guid);
+            item["pdb_age"] = row.identity.pdb_age;
+            item["module_sha256"] = ToUtf8(row.sha256);
+            item["path"] = ToUtf8(row.image->path);
+            item["status"] = ToUtf8(row.status);
+            writer.Item(item);
+        }
+        writer.EndArray();
+        std::wcout << L"\n";
+        return ExitStatus(ExitCode::Success);
+    }
+
+    if (csv) {
+        std::wcout << L"base,size,pid,pe_timestamp,pe_checksum,machine,pdb_guid,pdb_age,module_sha256,path,status\n";
+        for (const auto& row : rows) {
+            std::wcout << row.image->base << L',' << row.image->size << L','
+                       << row.image->pid << L',' << row.identity.timestamp << L','
+                       << row.identity.checksum << L',' << row.identity.machine << L','
+                       << EscapeCsv(row.pdb_guid) << L',' << row.identity.pdb_age << L','
+                       << row.sha256 << L',' << EscapeCsv(row.image->path) << L','
+                       << EscapeCsv(row.status) << L"\n";
+        }
+        return ExitStatus(ExitCode::Success);
+    }
+
+    std::wcout << L"Base              Size      PID       Timestamp  Checksum   GUID/age                         Status     Module\n";
+    for (const auto& row : rows) {
+        std::wcout << std::hex << std::setw(16) << std::setfill(L'0') << row.image->base
+                   << L" " << std::setw(8) << row.image->size << std::dec
+                   << std::setfill(L' ') << L" " << std::setw(8) << row.image->pid
+                   << L" " << std::setw(10) << row.identity.timestamp
+                   << L" " << std::setw(10) << row.identity.checksum
+                   << L" " << std::setw(32) << row.pdb_guid << L" " << std::setw(10)
+                   << row.status << L" " << row.image->path << L"\n";
+    }
+    return ExitStatus(ExitCode::Success);
 }
 }  // namespace wperf

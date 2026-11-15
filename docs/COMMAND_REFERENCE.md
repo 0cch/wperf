@@ -53,7 +53,7 @@ Aliases: `rec`
 | `-g, --call-graph` | Capture call stacks (default for system ETW). |
 | `--no-call-graph` | Disable system ETW stack tracing. |
 | `-p, --pid PID` | Attach to an existing process. |
-| `-d, --duration MS` | Capture duration in milliseconds. |
+| `-d, --duration MS` | Capture duration in milliseconds; default is until Ctrl-C. |
 | `-o, --output FILE` | Write the ETL trace to FILE. |
 | `-e, --event NAME\|ID` | Select a CPU profile, ETW source name or source ID. |
 | `--profile NAME` | cpu, cpu-sched, sched, syscall, vm, io, kernel, all, or pmu. |
@@ -195,9 +195,10 @@ Elevation: not required
 | `--live` | Capture and print events in real time. |
 | `-e, --event KIND` | sched, syscall, pagefault, io, lbr, or context (offline). |
 | `-p, --pid PID` | Include only PID. |
-| `--max N` | Limit emitted events. |
+| `--max N` | Limit emitted events; 0 means unlimited (default). |
 | `--duration MS` | Live capture duration in milliseconds. |
 | `--json` | Print JSON events. |
+| `--metadata` | Wrap JSON events with quality and truncation metadata. |
 | `--elevate` | Start the hidden elevated worker for --live. |
 | `-h, --help` | Show this help. |
 
@@ -227,6 +228,8 @@ Elevation: not required
 | Option | Description |
 |---|---|
 | `-i, --input FILE` | Read FILE. |
+| `--json` | Print JSON scheduler rows and quality metadata. |
+| `--csv` | Print CSV scheduler rows. |
 | `-h, --help` | Show this help. |
 
 Examples:
@@ -250,8 +253,12 @@ Elevation: not required
 | `-p, --pid PID` | Observe an existing process. |
 | `--duration MS` | Observation duration (default: 1000). |
 | `--per-thread` | Print per-thread counters. |
+| `--interval MS` | Sample interval for repeated process statistics. |
 | `--pmu` | Use an ETW PMC profile source. |
 | `-e, --event SOURCE` | Select a PMC source name or numeric ID. |
+| `--period N` | PMC events per interrupt (default: 1000000). |
+| `--json` | Print JSON process statistics. |
+| `--csv` | Print CSV process statistics. |
 | `-h, --help` | Show this help. |
 
 Examples:
@@ -356,6 +363,9 @@ Aliases: `dif`
 | `--archive DIR` | Resolve unavailable paths through verified modules.tsv. |
 | `--pid PID` | Include only PID. |
 | `--dso TEXT` | Filter by module/shared-object substring. |
+| `--first-pid PID` | PID filter for the first trace. |
+| `--second-pid PID` | PID filter for the second trace. |
+| `--normalize MODE` | Normalize shares by weight or samples (default: weight). |
 | `--calltree, --weighted` | Compare call-tree weights. |
 | `--json` | Print JSON rows. |
 | `--csv` | Print CSV rows. |
@@ -412,12 +422,14 @@ Elevation: not required
 | Option | Description |
 |---|---|
 | `-i, --input FILE` | Read FILE. |
+| `--json` | Print JSON module identity rows. |
+| `--csv` | Print CSV module identity rows. |
 | `-h, --help` | Show this help. |
 
 Examples:
 
 ```powershell
-Output includes module base, size, process, PE timestamp, checksum, and image path.
+Output includes module base, size, process, PE/PDB identity, SHA256 when available, and image path.
 ```
 
 ## `list`
@@ -433,6 +445,7 @@ Elevation: not required
 | Option | Description |
 |---|---|
 | `--max N` | Limit provider output. |
+| `--json` | Print JSON profile sources, sessions, or providers. |
 | `-h, --help` | Show this help. |
 
 Examples:
@@ -461,6 +474,7 @@ Elevation: not required
 |---|---|
 | `--bundle DIR` | Write a diagnostic bundle to DIR. |
 | `--include-dumps` | Include .dmp files in the bundle. |
+| `--json` | Print JSON diagnostics. |
 | `-h, --help` | Show this help. |
 
 Examples:

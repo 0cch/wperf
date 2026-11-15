@@ -12,6 +12,13 @@
 
 namespace wperf {
 
+class JsonStreamWriter;
+
+class CpuReportLimitError : public std::runtime_error {
+public:
+    explicit CpuReportLimitError(const char* message) : std::runtime_error(message) {}
+};
+
 struct CpuReportOptions {
     std::optional<uint32_t> pid;
     std::optional<uint32_t> tid;
@@ -35,11 +42,13 @@ struct CpuReportOptions {
 };
 
 void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
-                    const CpuReportOptions& options, std::wostream& output);
+                    const CpuReportOptions& options, std::wostream& output,
+                    JsonStreamWriter* json_writer = nullptr);
 bool MatchesSampleSelection(const TraceData& trace, const SampleRecord& sample,
                              const CpuReportOptions& options);
 void WriteCpuReportFeed(const TraceData& metadata, Symbolizer& symbolizer,
                         const CpuReportOptions& options, std::wostream& output,
-                        const std::function<void(const std::function<void(const SampleRecord&)>&)>& feed);
+                        const std::function<void(const std::function<void(const SampleRecord&)>&)>& feed,
+                        JsonStreamWriter* json_writer = nullptr);
 
 }  // namespace wperf

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 set(WPERF_VERSION_MAJOR 0 CACHE STRING "wperf major version")
 set(WPERF_VERSION_MINOR 8 CACHE STRING "wperf minor version")
-set(WPERF_VERSION_PATCH 1 CACHE STRING "wperf patch version")
+set(WPERF_VERSION_PATCH 2 CACHE STRING "wperf patch version")
 set(WPERF_BUILD_NUMBER 0 CACHE STRING "wperf build number")
 foreach(part WPERF_VERSION_MAJOR WPERF_VERSION_MINOR WPERF_VERSION_PATCH WPERF_BUILD_NUMBER)
     set(version_value "${${part}}")
@@ -23,51 +23,22 @@ add_compile_options(/Zi)
 add_link_options(/DEBUG)
 
 option(WPERF_ENABLE_DISASM "Build optional Zydis-based disassembly support" ON)
+option(WPERF_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
-include(FetchContent)
-set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-    cli11
-    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-    GIT_TAG v2.7.2
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(cli11)
-
+find_package(CLI11 CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 if(WPERF_ENABLE_DISASM)
-    set(ZYDIS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(ZYDIS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
-    set(ZYDIS_BUILD_MAN OFF CACHE BOOL "" FORCE)
-    set(ZYDIS_BUILD_DOXYGEN OFF CACHE BOOL "" FORCE)
-    set(ZYDIS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(ZYDIS_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
-    set(ZYDIS_FEATURE_ENCODER OFF CACHE BOOL "" FORCE)
-    set(ZYDIS_FEATURE_FORMATTER ON CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        zycore
-        GIT_REPOSITORY https://github.com/zyantific/zycore-c.git
-        GIT_TAG 0b2432ced0884fd152b471d97ecf0258ff4d859f
-        GIT_SHALLOW FALSE
-    )
-    FetchContent_GetProperties(zycore)
-    if(NOT zycore_POPULATED)
-        FetchContent_Populate(zycore)
-    endif()
-    set(ZYAN_ZYCORE_PATH "${zycore_SOURCE_DIR}" CACHE PATH "" FORCE)
-    set(ZYAN_SYSTEM_ZYCORE OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        zydis
-        GIT_REPOSITORY https://github.com/zyantific/zydis.git
-        GIT_TAG v4.1.1
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(zydis)
+    find_package(Zydis CONFIG REQUIRED)
+endif()
+
+if(WPERF_WARNINGS_AS_ERRORS)
+    add_compile_options(/WX)
 endif()
 
 add_library(wperf_core STATIC
     src/common.cpp
+    src/json_writer.cpp
+    src/requests.cpp
     src/archive.cpp
     src/analysis.cpp
     src/logger.cpp
@@ -101,10 +72,10 @@ target_compile_definitions(wperf_core PUBLIC
     WPERF_VERSION_STRING="${WPERF_VERSION_STRING}"
 )
 target_compile_options(wperf_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
-target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi tdh ole32)
+target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi tdh ole32 nlohmann_json::nlohmann_json)
 if(WPERF_ENABLE_DISASM)
     target_compile_definitions(wperf_core PUBLIC WPERF_HAVE_ZYDIS=1)
-    target_link_libraries(wperf_core PUBLIC Zydis)
+    target_link_libraries(wperf_core PUBLIC Zydis::Zydis)
 endif()
 
 add_executable(wperf
@@ -142,6 +113,10 @@ add_executable(wperf_cli_tests tests/cli_unit_tests.cpp src/cli.cpp)
 target_compile_options(wperf_cli_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_cli_tests PRIVATE wperf_core CLI11::CLI11)
 add_test(NAME cli_unit_tests COMMAND wperf_cli_tests)
+add_executable(wperf_request_tests tests/request_tests.cpp)
+target_compile_options(wperf_request_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_request_tests PRIVATE wperf_core)
+add_test(NAME request_tests COMMAND wperf_request_tests)
 add_executable(wperf_regression_tests tests/regression_tests.cpp)
 target_compile_options(wperf_regression_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
@@ -149,6 +124,15 @@ target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
 target_compile_definitions(wperf_regression_tests PRIVATE WPERF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 add_test(NAME wperf_regression_tests COMMAND wperf_regression_tests)
 set_tests_properties(wperf_regression_tests PROPERTIES TIMEOUT 20)
+add_executable(wperf_json_writer_tests tests/json_writer_tests.cpp)
+target_compile_options(wperf_json_writer_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_json_writer_tests PRIVATE wperf_core)
+add_test(NAME json_writer_tests COMMAND wperf_json_writer_tests)
+
+add_executable(wperf_decoder_fuzz_smoke tests/decoder_fuzz_smoke.cpp)
+target_compile_options(wperf_decoder_fuzz_smoke PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_decoder_fuzz_smoke PRIVATE wperf_core)
+add_test(NAME decoder_fuzz_smoke COMMAND wperf_decoder_fuzz_smoke)
 add_executable(wperf_live_integration_tests tests/live_integration_tests.cpp)
 target_compile_options(wperf_live_integration_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_live_integration_tests PRIVATE wperf_core)
@@ -158,6 +142,16 @@ add_test(NAME live_top_controller_smoke
          COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/live_top_smoke.ps1
          -Wperf $<TARGET_FILE:wperf>)
 set_tests_properties(live_top_controller_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
+                     SKIP_RETURN_CODE 77 LABELS integration)
+add_test(NAME live_trace_json_smoke
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/live_trace_json_smoke.ps1
+         -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_trace_json_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
+                     SKIP_RETURN_CODE 77 LABELS integration)
+add_test(NAME live_pmc_json_smoke
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/live_pmc_json_smoke.ps1
+         -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_pmc_json_smoke PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE
                      SKIP_RETURN_CODE 77 LABELS integration)
 add_test(NAME cli_version COMMAND wperf --version)
 add_test(NAME cli_version_format COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/version_test.ps1 -Wperf $<TARGET_FILE:wperf>)
@@ -200,7 +194,7 @@ add_test(NAME cli_script_fixture COMMAND wperf script -i ${CMAKE_CURRENT_SOURCE_
 add_test(NAME cli_script_csv COMMAND wperf script -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --limit 3 -F timestamp,pid,comm,symbol --csv)
 add_test(NAME cli_script_missing_value COMMAND wperf script -i)
 add_test(NAME cli_trace_missing_value COMMAND wperf trace -e)
-add_test(NAME archive_manifest_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/archive_manifest_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
+add_test(NAME archive_manifest_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/archive_manifest_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR} -SchemaPath ${CMAKE_CURRENT_SOURCE_DIR}/docs/schemas/archive.schema.json)
 add_test(NAME cli_provider_list COMMAND wperf list providers --max 1)
 add_test(NAME cli_provider_bad_guid COMMAND wperf record --provider not-a-guid)
 add_test(NAME replay_contract COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/replay_contract.ps1
@@ -220,6 +214,20 @@ set_tests_properties(cli_conformance_test PROPERTIES TIMEOUT 60)
 add_test(NAME cli_pmc_frequency_rejected COMMAND wperf record --pmc-source 19 -F 999)
 add_test(NAME cli_report_nan_rejected COMMAND wperf report --percent-limit nan)
 add_test(NAME cli_negative_limit_rejected COMMAND wperf script --limit -1)
+add_test(NAME exit_code_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/exit_code_test.ps1 -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(exit_code_test PROPERTIES TIMEOUT 30)
+add_test(NAME trace_limit_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/trace_limit_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)
+set_tests_properties(trace_limit_test PROPERTIES TIMEOUT 30)
+add_test(NAME buildid_list_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/buildid_list_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl)
+set_tests_properties(buildid_list_test PROPERTIES TIMEOUT 30)
+add_test(NAME stat_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/stat_output_test.ps1 -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(stat_output_test PROPERTIES TIMEOUT 30)
+add_test(NAME sched_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/sched_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)
+set_tests_properties(sched_output_test PROPERTIES TIMEOUT 30)
+add_test(NAME annotate_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/annotate_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -SymbolPath $<TARGET_FILE_DIR:wperf>)
+set_tests_properties(annotate_output_test PROPERTIES TIMEOUT 30)
+add_test(NAME diff_options_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/diff_options_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl)
+set_tests_properties(diff_options_test PROPERTIES TIMEOUT 30)
 set_tests_properties(cli_provider_bad_guid cli_report_conflicting_formats
                      cli_annotate_conflicting_formats
                      cli_script_missing_value cli_trace_missing_value

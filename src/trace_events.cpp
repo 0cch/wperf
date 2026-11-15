@@ -219,10 +219,19 @@ void TraceCorrelationState::Enrich(TraceData& trace) {
             default: break;
         }
     }
-    trace.quality.incomplete = trace.quality.incomplete || trace.quality.lost_events != 0 ||
-        trace.quality.lost_buffers != 0 || trace.quality.ring_dropped != 0 ||
-        trace.quality.decode_errors != 0 || trace.quality.metadata_dropped != 0 ||
-        trace.quality.correlation_evicted != 0;
+    FinalizeTraceQuality(trace);
+}
+
+void FinalizeTraceQuality(TraceData& trace) {
+    const auto& q = trace.quality;
+    trace.quality.incomplete = trace.quality.incomplete ||
+        q.samples_dropped != 0 || q.stack_key_mismatch != 0 ||
+        q.lost_events != 0 || q.lost_buffers != 0 || q.ring_dropped != 0 ||
+        q.decode_errors != 0 || q.metadata_dropped != 0 ||
+        q.correlation_evicted != 0 || q.sched_unknown_pid != 0 ||
+        q.io_orphaned != 0 || q.syscall_orphaned != 0 ||
+        q.off_cpu_evicted != 0 || q.off_cpu_duplicate_ready != 0 ||
+        q.budget_exceeded;
 }
 
 void EnrichTraceEvents(TraceData& trace) {

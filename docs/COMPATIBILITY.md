@@ -26,7 +26,7 @@ device configuration.
 | CMake | 3.24+ |
 | Windows SDK | Windows 10/11 SDK |
 | Runtime | Windows system DLLs only; no WPA/WPR dependency |
-| Optional disassembly | Zydis/Zycore fetched by CMake, or build with disassembly off |
+| Optional disassembly | Zydis/Zycore supplied by the vcpkg manifest, or build with disassembly off |
 
 ## Feature compatibility
 
@@ -64,6 +64,19 @@ hashes, and limitations.
 AMD Ryzen hardware has been used for general ETW/CI validation, but Intel-only
 features are not claimed to pass there. ARM64 context-register payload decoding
 has not been implemented.
+
+## Capture and output semantics
+
+- `record -p PID` is system-wide ETW capture followed by analysis filtering; it is
+  not a kernel-level per-process attach.
+- Without `--duration`, system capture runs until Ctrl+C. A target command stops
+  capture when its root process exits.
+- `trace --max 0` means unlimited output. A finite `--max` emits a truncation
+  warning, and `trace --json --metadata` reports `truncated` explicitly.
+- `stat` JSON distinguishes Windows process API counters (`windows-api`) from
+  event-sampled ETW PMC data (`etw-pmc-sampling`).
+- `diff --normalize weight|samples` changes the denominator used for share
+  comparisons; incompatible sample sources are rejected.
 
 ## Semantics that differ from Linux perf
 

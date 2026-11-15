@@ -5,6 +5,8 @@
 #include "common.h"
 
 #include <CLI/CLI.hpp>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <algorithm>
 #include <deque>
@@ -68,7 +70,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Flag("-g,--call-graph", "Capture call stacks (default for system ETW)."),
             Flag("--no-call-graph", "Disable system ETW stack tracing."),
             Value("-p,--pid", "PID", "Attach to an existing process."),
-            Value("-d,--duration", "MS", "Capture duration in milliseconds."),
+            Value("-d,--duration", "MS", "Capture duration in milliseconds; default is until Ctrl-C."),
             Value("-o,--output", "FILE", "Write the ETL trace to FILE."),
             Value("-e,--event", "NAME|ID", "Select a CPU profile, ETW source name or source ID."),
             Value("--profile", "NAME", "cpu, cpu-sched, sched, syscall, vm, io, kernel, all, or pmu."),
@@ -167,9 +169,10 @@ std::vector<CommandSpec> BuildCatalog() {
             Flag("--live", "Capture and print events in real time."),
             Value("-e,--event", "KIND", "sched, syscall, pagefault, io, lbr, or context (offline)."),
             Value("-p,--pid", "PID", "Include only PID."),
-            Value("--max", "N", "Limit emitted events."),
+            Value("--max", "N", "Limit emitted events; 0 means unlimited (default)."),
             Value("--duration", "MS", "Live capture duration in milliseconds."),
             Flag("--json", "Print JSON events."),
+            Flag("--metadata", "Wrap JSON events with quality and truncation metadata."),
             Flag("--elevate", "Start the hidden elevated worker for --live."),
         },
         {
@@ -186,6 +189,8 @@ std::vector<CommandSpec> BuildCatalog() {
         "wperf sched -i FILE [options]", false,
         {
             Value("-i,--input", "FILE", "Read FILE."),
+            Flag("--json", "Print JSON scheduler rows and quality metadata."),
+            Flag("--csv", "Print CSV scheduler rows."),
         },
         {"wperf sched -i sched.etl"});
 
@@ -196,8 +201,12 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("-p,--pid", "PID", "Observe an existing process."),
             Value("--duration", "MS", "Observation duration (default: 1000)."),
             Flag("--per-thread", "Print per-thread counters."),
+            Value("--interval", "MS", "Sample interval for repeated process statistics."),
             Flag("--pmu", "Use an ETW PMC profile source."),
             Value("-e,--event", "SOURCE", "Select a PMC source name or numeric ID."),
+            Value("--period", "N", "PMC events per interrupt (default: 1000000)."),
+            Flag("--json", "Print JSON process statistics."),
+            Flag("--csv", "Print CSV process statistics."),
         },
         {
             "wperf stat -p 1234 --duration 2000",
@@ -257,6 +266,9 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("--archive", "DIR", "Resolve unavailable paths through verified modules.tsv."),
             Value("--pid", "PID", "Include only PID."),
             Value("--dso", "TEXT", "Filter by module/shared-object substring."),
+            Value("--first-pid", "PID", "PID filter for the first trace."),
+            Value("--second-pid", "PID", "PID filter for the second trace."),
+            Value("--normalize", "MODE", "Normalize shares by weight or samples (default: weight)."),
             Flag("--calltree,--weighted", "Compare call-tree weights."),
             Flag("--json", "Print JSON rows."),
             Flag("--csv", "Print CSV rows."),
@@ -286,8 +298,10 @@ std::vector<CommandSpec> BuildCatalog() {
         "wperf buildid-list -i FILE [options]", false,
         {
             Value("-i,--input", "FILE", "Read FILE."),
+            Flag("--json", "Print JSON module identity rows."),
+            Flag("--csv", "Print CSV module identity rows."),
         }, {
-            "Output includes module base, size, process, PE timestamp, checksum, and image path.",
+            "Output includes module base, size, process, PE/PDB identity, SHA256 when available, and image path.",
         });
 
     AddCommand(catalog, "list", {},
@@ -295,6 +309,7 @@ std::vector<CommandSpec> BuildCatalog() {
         "wperf list [providers] [options]", false,
         {
             Value("--max", "N", "Limit provider output."),
+            Flag("--json", "Print JSON profile sources, sessions, or providers."),
         },
         {"wperf list", "wperf list providers --max 20"}, {
             "Without providers, list profile sources and active wperf-owned sessions.",
@@ -307,6 +322,7 @@ std::vector<CommandSpec> BuildCatalog() {
         {
             Value("--bundle", "DIR", "Write a diagnostic bundle to DIR."),
             Flag("--include-dumps", "Include .dmp files in the bundle."),
+            Flag("--json", "Print JSON diagnostics."),
         }, {
             "--bundle writes a redacted diagnostic bundle. Crash dumps are included only with --include-dumps.",
         });
@@ -496,15 +512,36 @@ const CommandSpec* FindCommand(const std::vector<CommandSpec>& catalog,
     }
     return nullptr;
 }
-void AddOption(CLI::App& command, const OptionSpec& spec, std::string& storage) {
+std::string OptionKey(const std::string& names) {
+    size_t start = 0;
+    std::string first;
+    while (start <= names.size()) {
+        const size_t comma = names.find(',', start);
+        const std::string token = names.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        if (first.empty()) first = token;
+        if (token.starts_with("--")) return token;
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return first;
+}
+
+void AddOption(CLI::App& command, const OptionSpec& spec, OptionValues& values,
+               OptionFlags& flags,
+               std::vector<std::pair<std::string, CLI::Option*>>& value_options) {
+    const std::string key = OptionKey(spec.names);
     if (spec.value.empty()) {
-        auto* flag = command.add_flag(spec.names, spec.description);
+        bool& value = flags[key];
+        auto* flag = command.add_flag(spec.names, value, spec.description);
         flag->disable_flag_override();
         return;
     }
-    auto* option = command.add_option(spec.names, storage, spec.description);
+    auto [iterator, inserted] = values.try_emplace(key);
+    (void)inserted;
+    auto* option = command.add_option(spec.names, iterator->second, spec.description);
     option->type_name(spec.value);
     if (spec.optional_value) option->expected(0, 1);
+    value_options.emplace_back(key, option);
 }
 
 const OptionSpec* FindOption(const CommandSpec& command, std::string_view name) {
@@ -663,11 +700,12 @@ int Run(const std::vector<std::wstring>& arguments, const Dispatch& dispatch) {
     bool help = false;
     app.add_flag("-h,--help", help, "Show this help.");
 
-    std::deque<std::string> option_values;
+    OptionValues option_values;
+    OptionFlags option_flags;
+    std::vector<std::pair<std::string, CLI::Option*>> value_options;
     std::string list_mode;
     for (const auto& option : selected->options) {
-        option_values.emplace_back();
-        AddOption(app, option, option_values.back());
+        AddOption(app, option, option_values, option_flags, value_options);
     }
     if (selected->name == "list") {
         auto* mode = app.add_option("mode", list_mode, "Optional providers clause.");
@@ -689,6 +727,9 @@ int Run(const std::vector<std::wstring>& arguments, const Dispatch& dispatch) {
         std::wcerr << L"wperf: " << ToUtf16(error.what()) << L"\n";
         return 2;
     }
+    for (const auto& [key, option] : value_options) {
+        if (option->count() == 0) option_values.erase(key);
+    }
 
     if (help) {
         std::wcout << RenderCommandHelp(*selected);
@@ -698,8 +739,21 @@ int Run(const std::vector<std::wstring>& arguments, const Dispatch& dispatch) {
         std::wcout << L"wperf " << kVersion << L"\n";
         return 0;
     }
+    if (selected->name == "list" && !list_mode.empty()) option_values["@mode"] = list_mode;
 
-    return dispatch(ToUtf16(selected->name), normalized_rest);
+    std::vector<std::wstring> target;
+    const auto separator = std::find(normalized_rest.begin(), normalized_rest.end(), L"--");
+    if (separator != normalized_rest.end()) {
+        target.assign(separator + 1, normalized_rest.end());
+    }
+    CommandRequest request;
+    std::wstring request_error;
+    if (!BuildCommandRequest(selected->name, option_values, option_flags, target, request,
+                             &request_error)) {
+        PrintError(request_error.empty() ? L"invalid command request" : request_error);
+        return 2;
+    }
+    return dispatch(request);
 }
 std::wstring GeneralHelp() {
     return RenderGeneralHelp(BuildCatalog());

@@ -38,6 +38,15 @@ const GUID kStackWalkGuid = {0xdef2fe46, 0x7bd6, 0x4b80,
 const GUID kLbrGuid = {0x99134383, 0x5248, 0x43fc,
                        {0x83, 0x4b, 0x52, 0x94, 0x54, 0xe7, 0x5d, 0xf3}};
 
+std::wstring UnknownEventKey(const GUID& provider, uint32_t event_code) {
+    wchar_t guid[64]{};
+    swprintf_s(guid, L"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+               provider.Data1, provider.Data2, provider.Data3, provider.Data4[0],
+               provider.Data4[1], provider.Data4[2], provider.Data4[3],
+               provider.Data4[4], provider.Data4[5], provider.Data4[6], provider.Data4[7]);
+    return std::wstring(guid) + L":" + std::to_wstring(event_code);
+}
+
 GUID GetClassGuid(const EVENT_RECORD& record) {
     GUID result{};
     for (USHORT index = 0; index < record.ExtendedDataCount; ++index) {
@@ -299,25 +308,26 @@ void ParseLbr(const EVENT_RECORD& record, TraceData& trace) {
     LbrSample decoded;
     if (!DecodeLbrPayload(static_cast<const BYTE*>(record.UserData),
                           record.UserDataLength, trace.pointer_size, decoded)) {
+        ++trace.quality.decode_errors;
         return;
     }
-    ++trace.quality.lbr_events;
+    LbrSampleRecord sample;
+    sample.timestamp_ns = decoded.timestamp_qpc != 0
+                              ? QpcToNs(decoded.timestamp_qpc, trace.qpc_frequency)
+                              : EtwTimestampNs(record, trace.qpc_frequency);
+    sample.cpu = EtwProcessorIndex(record);
+    sample.pid = decoded.pid;
+    sample.tid = decoded.tid;
+    sample.filters = decoded.filters;
+    sample.event_id = record.EventHeader.EventDescriptor.Opcode;
+    sample.group_id = static_cast<uint64_t>(trace.lbr_samples.size());
+    sample.branches.reserve(decoded.branches.size());
     for (const LbrBranch& branch : decoded.branches) {
-        TraceEvent event;
-        event.timestamp_ns = decoded.timestamp_qpc != 0
-                                 ? QpcToNs(decoded.timestamp_qpc, trace.qpc_frequency)
-                                 : EtwTimestampNs(record, trace.qpc_frequency);
-        event.cpu = EtwProcessorIndex(record);
-        event.pid = decoded.pid;
-        event.tid = decoded.tid;
-        event.kind = TraceEventKind::LastBranchRecord;
-        event.value1 = branch.from_address;
-        event.value2 = branch.to_address;
-        event.flags = decoded.filters;
-        event.event_id = record.EventHeader.EventDescriptor.Opcode;
-        trace.events.push_back(std::move(event));
+        sample.branches.push_back({branch.from_address, branch.to_address});
     }
-    trace.quality.lbr_branches += decoded.branches.size();
+    ++trace.quality.lbr_events;
+    trace.quality.lbr_branches += sample.branches.size();
+    trace.lbr_samples.push_back(std::move(sample));
 }
 
 void ParseContextRegisters(const EVENT_RECORD& record, TraceData& trace) {
@@ -574,9 +584,10 @@ void ConsumeEventRecord(PEVENT_RECORD record) {
         (IsEqualGUID(class_guid,kPerfInfoGuid)&&(opcode==46||opcode==47||opcode==51||opcode==52||opcode==122));
     if(stored)context->charged_bytes+=(IsEqualGUID(class_guid,kStackWalkGuid)?4:2)*
         (uint64_t{record->UserDataLength}+sizeof(SampleRecord)+sizeof(TraceEvent));
+    trace->quality.budget_estimated_bytes=context->charged_bytes;
     if(context->charged_bytes>512ull*1024*1024) {
         context->failure=L"replay exceeded 512 MiB managed budget; use report --stream or a shorter capture";
-        trace->quality.incomplete=true; return;
+        trace->quality.budget_exceeded=true; trace->quality.budget_limit_bytes=512ull*1024*1024; trace->quality.incomplete=true; return;
     }
     const bool is_stack_event =
         IsEqualGUID(class_guid, kStackWalkGuid) ||
@@ -604,7 +615,21 @@ void ConsumeEventRecord(PEVENT_RECORD record) {
     } else if ((IsEqualGUID(class_guid, kLbrGuid) ||
                 IsEqualGUID(record->EventHeader.ProviderId, kLbrGuid)) &&
                event_code == 32) {
+        const size_t before = trace->lbr_samples.size();
         ParseLbr(*record, *trace);
+        if (trace->lbr_samples.size() > before) {
+            const auto& sample = trace->lbr_samples.back();
+            context->charged_bytes += sizeof(LbrSampleRecord) +
+                sample.branches.size() * sizeof(LbrBranchRecord);
+            trace->quality.budget_estimated_bytes = context->charged_bytes;
+            if (context->charged_bytes > 512ull * 1024 * 1024) {
+                context->failure = L"replay exceeded 512 MiB managed budget; use report --stream or a shorter capture";
+                trace->quality.budget_exceeded = true;
+                trace->quality.budget_limit_bytes = 512ull * 1024 * 1024;
+                trace->quality.incomplete = true;
+                return;
+            }
+        }
     } else if (is_stack_event && event_code == 32) {
         ++trace->quality.stack_events_total;
         ParseStack(*record, *trace, context->stacks);
@@ -647,6 +672,9 @@ void ConsumeEventRecord(PEVENT_RECORD record) {
         ParseSample(*record, *trace);
     } else {
         ++trace->quality.unknown_events;
+        const std::wstring key = UnknownEventKey(record->EventHeader.ProviderId, event_code);
+        if (trace->unknown_event_keys.size() < 256 || trace->unknown_event_keys.contains(key))
+            ++trace->unknown_event_keys[key];
     }
 }
 void WINAPI EventRecordCallback(PEVENT_RECORD record) {
@@ -659,7 +687,7 @@ ULONG WINAPI ReplayBufferCallback(PEVENT_TRACE_LOGFILEW logfile) {
     return !static_cast<ReplayContext*>(logfile->Context)->failure;
 }
 
-void FinishReplay(ReplayContext& context, TraceData& trace) {
+void FinishReplay(ReplayContext& context, TraceData& trace, bool derive_off_cpu) {
     std::unordered_map<uint32_t, std::vector<const ThreadRecord*>> threads_by_tid;
     for (const ThreadRecord& thread : trace.threads) {
         threads_by_tid[thread.tid].push_back(&thread);
@@ -857,15 +885,16 @@ void FinishReplay(ReplayContext& context, TraceData& trace) {
     }
 
     EnrichTraceEvents(trace);
-    BuildOffCpuIntervals(trace);
+    if (derive_off_cpu) BuildOffCpuIntervals(trace);
 }
 
 }  // namespace
 
 bool ReadEtwPass(const std::filesystem::path& path, TraceData& trace,
-                 std::wstring* error,bool metadata_only,const std::function<void(const SampleRecord&)>* consumer) {
+                 std::wstring* error,bool metadata_only,const std::function<void(const SampleRecord&)>* consumer,bool derive_off_cpu) {
     if(!consumer)trace = TraceData{};
     trace.source_path = path.wstring();
+    trace.quality.budget_limit_bytes = 512ull * 1024 * 1024;
 
     ReplayContext context;
     context.trace = &trace;
@@ -912,23 +941,24 @@ bool ReadEtwPass(const std::filesystem::path& path, TraceData& trace,
         return false;
     }
 
-    if(!metadata_only&&!consumer)FinishReplay(context,trace);
+    if(!metadata_only&&!consumer) FinishReplay(context,trace,derive_off_cpu);
+    else FinalizeTraceQuality(trace);
     return true;
 }
 
-bool ReadEtwFile(const std::filesystem::path& path,TraceData& trace,std::wstring* error) {
-    return ReadEtwPass(path,trace,error,false,nullptr);
+bool ReadEtwFile(const std::filesystem::path& path,TraceData& trace,std::wstring* error,bool derive_off_cpu) {
+    return ReadEtwPass(path,trace,error,false,nullptr,derive_off_cpu);
 }
 bool ReadEtwMetadata(const std::filesystem::path& path,TraceData& trace,std::wstring* error) {
     trace.stacks_loaded=false;
-    const bool result=ReadEtwPass(path,trace,error,true,nullptr);
+    const bool result=ReadEtwPass(path,trace,error,true,nullptr,false);
     trace.stacks_loaded=false;
     return result;
 }
 bool StreamEtwSamples(const std::filesystem::path& path,TraceData& trace,
     const std::function<void(const SampleRecord&)>& consumer,std::wstring* error) {
     trace.quality.samples_total=trace.quality.samples_without_stack=trace.quality.pmc_samples=0;
-    return ReadEtwPass(path,trace,error,false,&consumer);
+    return ReadEtwPass(path,trace,error,false,&consumer,false);
 }
 
 bool ReadEtwRecords(std::span<const EVENT_RECORD> records,TraceData& trace,uint64_t frequency) {
@@ -938,7 +968,7 @@ bool ReadEtwRecords(std::span<const EVENT_RECORD> records,TraceData& trace,uint6
         EVENT_RECORD record=source; record.UserContext=&context;
         EventRecordCallback(&record);
     }
-    FinishReplay(context,trace);
+    FinishReplay(context,trace,true);
     return true;
 }
 

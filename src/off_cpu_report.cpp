@@ -1,6 +1,8 @@
 #include "off_cpu_report.h"
 
+#include "common.h"
 #include "trace_events.h"
+#include "json_writer.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -20,6 +22,7 @@ struct ResolvedFrame {
     std::wstring module;
     std::wstring module_identity;
     std::wstring symbol;
+    std::vector<InlineFrame> inline_frames;
 };
 
 struct FrameKey {
@@ -120,30 +123,6 @@ StackQuality WorseQuality(StackQuality left, StackQuality right) {
     return StackQuality::Exact;
 }
 
-std::wstring JsonEscape(const std::wstring& value) {
-    std::wstring result;
-    for (wchar_t ch : value) {
-        switch (ch) {
-            case L'"': result += L"\\\""; break;
-            case L'\\': result += L"\\\\"; break;
-            case L'\n': result += L"\\n"; break;
-            case L'\r': result += L"\\r"; break;
-            case L'\t': result += L"\\t"; break;
-            default:
-                if (ch < 0x20) {
-                    constexpr wchar_t hex[] = L"0123456789abcdef";
-                    result += L"\\u00";
-                    result.push_back(hex[(ch >> 4) & 0xf]);
-                    result.push_back(hex[ch & 0xf]);
-                } else {
-                    result.push_back(ch);
-                }
-                break;
-        }
-    }
-    return result;
-}
-
 std::wstring FoldedLabel(std::wstring value) {
     for (wchar_t& ch : value) {
         if (ch == L';' || ch == L'\n' || ch == L'\r') {
@@ -229,6 +208,7 @@ ResolvedFrame DescribeFrame(const TraceData& trace, Symbolizer& symbolizer,
     frame.module_identity = resolved.module_identity;
     frame.rva = resolved.rva;
     frame.symbol = resolved.symbol;
+    frame.inline_frames = resolved.inline_frames;
     if (frame.module.empty() && !frame.module_identity.empty()) {
         const auto separator = frame.module_identity.find(L'|');
         frame.module = frame.module_identity.substr(0, separator);
@@ -352,18 +332,28 @@ std::wstring StackText(const std::vector<ResolvedFrame>& frames) {
     return text;
 }
 
-void WriteFramesJson(const std::vector<ResolvedFrame>& frames, std::wostream& output) {
-    for (size_t index = 0; index < frames.size(); ++index) {
-        if (index != 0) output << L',';
-        const ResolvedFrame& frame = frames[index];
-        output << L"{\"address\":" << frame.address
-               << L",\"module\":\"" << JsonEscape(frame.module)
-               << L"\",\"module_identity\":\"" << JsonEscape(frame.module_identity)
-               << L"\",\"rva\":" << frame.rva
-               << L",\"symbol\":\"" << JsonEscape(frame.symbol) << L"\"}";
+nlohmann::ordered_json FramesJson(const std::vector<ResolvedFrame>& frames) {
+    nlohmann::ordered_json result = nlohmann::ordered_json::array();
+    for (const auto& frame : frames) {
+        nlohmann::ordered_json item;
+        item["address"] = frame.address;
+        item["module"] = ToUtf8(frame.module);
+        item["module_identity"] = ToUtf8(frame.module_identity);
+        item["rva"] = frame.rva;
+        item["symbol"] = ToUtf8(frame.symbol);
+        nlohmann::ordered_json inlines = nlohmann::ordered_json::array();
+        for (const auto& inline_frame : frame.inline_frames) {
+            nlohmann::ordered_json inline_item;
+            inline_item["symbol"] = ToUtf8(inline_frame.symbol);
+            inline_item["source_file"] = ToUtf8(inline_frame.source_file);
+            inline_item["line"] = inline_frame.line;
+            inlines.push_back(std::move(inline_item));
+        }
+        item["inline_frames"] = std::move(inlines);
+        result.push_back(std::move(item));
     }
+    return result;
 }
-
 }  // namespace
 
 const wchar_t* OffCpuKindName(OffCpuKind kind) {
@@ -380,7 +370,8 @@ const wchar_t* StackQualityName(StackQuality quality) {
 }
 
 void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
-                       const CpuReportOptions& options, std::wostream& output) {
+                       const CpuReportOptions& options, std::wostream& output,
+                       JsonStreamWriter* json_writer) {
     std::unordered_map<OffCpuKey, OffCpuRow, OffCpuKeyHash> grouped;
     grouped.reserve(trace.off_cpu_intervals.size());
     std::unordered_map<std::wstring, uint32_t> module_ids;
@@ -490,60 +481,52 @@ void WriteOffCpuReport(const TraceData& trace, Symbolizer& symbolizer,
     }
 
     if (options.json) {
-        output << L"[\n";
-        bool first = true;
+        JsonStreamWriter local_writer(output);
+        JsonStreamWriter& writer = json_writer == nullptr ? local_writer : *json_writer;
+        writer.BeginArray();
         for (const OffCpuRow& row : rows) {
             const double percent = total_ns == 0 ? 0.0 : 100.0 * row.duration_ns / total_ns;
             if (percent < options.percent_limit) continue;
-            if (!first) output << L",\n";
-            first = false;
             const uint64_t inferred_ns = row.boundary_inferred ? row.duration_ns : 0;
             const uint64_t confirmed_ns = row.boundary_inferred ? 0 : row.duration_ns;
-            output << L"{\"kind\":\"" << OffCpuKindName(row.kind)
-                   << L"\",\"pid\":" << row.pid
-                   << L",\"process_start_ns\":" << row.process_start_ns
-                   << L",\"tid\":" << row.tid
-                   << L",\"thread_start_ns\":" << row.thread_start_ns
-                   << L",\"comm\":\"" << JsonEscape(row.comm)
-                   << L"\",\"duration_ns\":" << row.duration_ns
-                   << L",\"confirmed_duration_ns\":" << confirmed_ns
-                   << L",\"inferred_duration_ns\":" << inferred_ns
-                   << L",\"intervals\":" << row.intervals
-                   << L",\"inferred_intervals\":" << (row.boundary_inferred ? row.intervals : 0)
-                   << L",\"boundary\":\"" << BoundaryName(row.boundary_inferred)
-                   << L"\",\"boundary_inferred\":"
-                   << (row.boundary_inferred ? L"true" : L"false")
-                   << L",\"overhead\":" << percent
-                   << L",\"wait_reason\":" << row.wait_reason
-                   << L",\"wait_reason_name\":\"" << JsonEscape(ReasonName(row))
-                   << L"\",\"stack_quality\":\"" << StackQualityName(row.quality)
-                   << L"\",\"stack_missing\":" << (row.stack_missing ? L"true" : L"false")
-                   << L",\"stack_ambiguous\":"
-                   << (row.stack_ambiguous ? L"true" : L"false")
-                   << L",\"stack\":[";
-            for (size_t index = 0; index < row.stack.size(); ++index) {
-                if (index != 0) output << L',';
-                output << row.stack[index].address;
-            }
-            output << L"],\"stack_frames\":[";
-            WriteFramesJson(row.stack, output);
-            output << L"],\"wakeup_pid\":" << row.wakeup_pid
-                   << L",\"wakeup_tid\":" << row.wakeup_tid
-                   << L",\"wakeup_process_start_ns\":" << row.wakeup_process_start_ns
-                   << L",\"wakeup_thread_start_ns\":" << row.wakeup_thread_start_ns
-                   << L",\"wakeup_stack\":[";
-            for (size_t index = 0; index < row.wakeup_stack.size(); ++index) {
-                if (index != 0) output << L',';
-                output << row.wakeup_stack[index].address;
-            }
-            output << L"],\"wakeup_stack_frames\":[";
-            WriteFramesJson(row.wakeup_stack, output);
-            output << L"]}";
+            nlohmann::ordered_json item;
+            item["kind"] = ToUtf8(OffCpuKindName(row.kind));
+            item["pid"] = row.pid;
+            item["process_start_ns"] = row.process_start_ns;
+            item["tid"] = row.tid;
+            item["thread_start_ns"] = row.thread_start_ns;
+            item["comm"] = ToUtf8(row.comm);
+            item["duration_ns"] = row.duration_ns;
+            item["confirmed_duration_ns"] = confirmed_ns;
+            item["inferred_duration_ns"] = inferred_ns;
+            item["intervals"] = row.intervals;
+            item["inferred_intervals"] = row.boundary_inferred ? row.intervals : 0;
+            item["boundary"] = ToUtf8(BoundaryName(row.boundary_inferred));
+            item["boundary_inferred"] = row.boundary_inferred;
+            item["overhead"] = percent;
+            item["wait_reason"] = row.wait_reason;
+            item["wait_reason_name"] = ToUtf8(ReasonName(row));
+            item["stack_quality"] = ToUtf8(StackQualityName(row.quality));
+            item["stack_missing"] = row.stack_missing;
+            item["stack_ambiguous"] = row.stack_ambiguous;
+            nlohmann::ordered_json stack = nlohmann::ordered_json::array();
+            nlohmann::ordered_json wakeup = nlohmann::ordered_json::array();
+            for (const auto& frame : row.stack) stack.push_back(frame.address);
+            for (const auto& frame : row.wakeup_stack) wakeup.push_back(frame.address);
+            item["stack"] = std::move(stack);
+            item["stack_frames"] = FramesJson(row.stack);
+            item["wakeup_pid"] = row.wakeup_pid;
+            item["wakeup_tid"] = row.wakeup_tid;
+            item["wakeup_process_start_ns"] = row.wakeup_process_start_ns;
+            item["wakeup_thread_start_ns"] = row.wakeup_thread_start_ns;
+            item["wakeup_stack"] = std::move(wakeup);
+            item["wakeup_stack_frames"] = FramesJson(row.wakeup_stack);
+            writer.Item(item);
         }
-        output << L"\n]\n";
+        writer.EndArray();
+        output << L"\n";
         return;
     }
-
     if (options.csv) {
         output << L"kind,pid,process_start_ns,tid,thread_start_ns,comm,duration_ns,"
                   L"confirmed_duration_ns,inferred_duration_ns,intervals,"

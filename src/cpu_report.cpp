@@ -1,5 +1,6 @@
 #include "cpu_report.h"
 #include "output.h"
+#include "json_writer.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -138,10 +139,11 @@ bool MatchesSampleSelection(const TraceData& trace,const SampleRecord& sample,co
 
 void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
                     const CpuReportOptions& options, std::wostream& output,
-                    const std::function<void(const std::function<void(const SampleRecord&)>&)>& feed) {
+                    const std::function<void(const std::function<void(const SampleRecord&)>&)>& feed,
+                    JsonStreamWriter* json_writer) {
     uint64_t total_samples = 0;
-    std::unordered_map<std::wstring, Row> rows;
     std::map<std::wstring, uint64_t> folded;
+    std::unordered_map<std::wstring, Row> rows;
     TreeNode root;
 
     symbolizer.PrepareTrace(trace);
@@ -160,7 +162,7 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
         const uint64_t instance = process_names.InstanceStart(sample.pid, sample.timestamp_ns);
         const std::wstring process_key = std::to_wstring(sample.pid) + L"@" + std::to_wstring(instance);
         const std::wstring key = process_key + L"|" + SymbolAggregateKey(leaf);
-        if(rows.size()>=200000&&!rows.contains(key))throw std::runtime_error("report aggregation exceeds 200000 rows");
+        if(rows.size()>=200000&&!rows.contains(key))throw CpuReportLimitError("report aggregation exceeds 200000 rows");
         auto& row = rows[key];
         row.pid = sample.pid;
         row.process_start_ns = instance;
@@ -258,28 +260,28 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
               });
 
     if (options.json) {
-        output << L"[\n";
-        bool first = true;
+        JsonStreamWriter local_writer(output);
+        JsonStreamWriter& writer = json_writer == nullptr ? local_writer : *json_writer;
+        writer.BeginArray();
         for (const auto& row : sorted) {
             const double percent = total_samples == 0
                                        ? 0.0
                                        : 100.0 * row.samples / total_samples;
-            if (percent < options.percent_limit) {
-                continue;
-            }
-            if (!first) {
-                output << L",\n";
-            }
-            first = false;
-            output << L"  {\"overhead\":" << percent << L",\"samples\":"
-                   << row.samples << L",\"comm\":\"" << EscapeJson(row.comm)
-                   << L"\",\"dso\":\"" << EscapeJson(row.dso) << L"\",\"symbol\":\""
-                   << EscapeJson(row.symbol) << L"\",\"pid\":" << row.pid
-                   << L",\"process_start_ns\":" << row.process_start_ns
-                   << L",\"module_identity\":\"" << EscapeJson(row.module_identity)
-                   << L"\",\"module_path\":\"" << EscapeJson(row.module_path) << L"\"}";
+            if (percent < options.percent_limit) continue;
+            nlohmann::ordered_json item;
+            item["overhead"] = percent;
+            item["samples"] = row.samples;
+            item["comm"] = ToUtf8(row.comm);
+            item["dso"] = ToUtf8(row.dso);
+            item["symbol"] = ToUtf8(row.symbol);
+            item["pid"] = row.pid;
+            item["process_start_ns"] = row.process_start_ns;
+            item["module_identity"] = ToUtf8(row.module_identity);
+            item["module_path"] = ToUtf8(row.module_path);
+            writer.Item(item);
         }
-        output << L"\n]\n";
+        writer.EndArray();
+        output << L"\n";
         return;
     }
 
@@ -320,8 +322,9 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
     }
 }
 
-void WriteCpuReport(const TraceData& trace,Symbolizer& symbols,const CpuReportOptions& options,std::wostream& output) {
-    WriteCpuReportFeed(trace,symbols,options,output,[&](const auto& observe) { for(const auto& sample:trace.samples)observe(sample); });
+void WriteCpuReport(const TraceData& trace,Symbolizer& symbols,const CpuReportOptions& options,std::wostream& output,
+                    JsonStreamWriter* json_writer) {
+    WriteCpuReportFeed(trace,symbols,options,output,[&](const auto& observe) { for(const auto& sample:trace.samples)observe(sample); }, json_writer);
 }
 
 }  // namespace wperf

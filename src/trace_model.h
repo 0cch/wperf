@@ -59,6 +59,22 @@ private:
     std::shared_ptr<std::vector<uint64_t>> data_;
 };
 
+struct LbrBranchRecord {
+    uint64_t from_address = 0;
+    uint64_t to_address = 0;
+};
+
+struct LbrSampleRecord {
+    uint64_t timestamp_ns = 0;
+    uint32_t cpu = 0;
+    uint32_t pid = 0;
+    uint32_t tid = 0;
+    uint32_t filters = 0;
+    uint32_t event_id = 0;
+    uint64_t group_id = 0;
+    std::vector<LbrBranchRecord> branches;
+};
+
 struct ContextRegisterRecord {
     uint64_t timestamp_qpc = 0;
     uint64_t rip = 0;
@@ -135,6 +151,8 @@ struct TraceEvent {
     std::wstring file_path;
     uint32_t operation_id = 0;
     uint32_t context_register_index = UINT32_MAX;
+    uint64_t lbr_group_id = UINT64_MAX;
+    uint32_t lbr_branch_index = 0;
     SharedStack stack;
     StackQuality stack_quality = StackQuality::Missing;
     bool stack_missing = true;
@@ -213,6 +231,9 @@ struct TraceQuality {
     uint64_t off_cpu_inferred_intervals = 0;
     uint64_t off_cpu_duplicate_ready = 0;
     uint64_t off_cpu_evicted = 0;
+    bool budget_exceeded = false;
+    uint64_t budget_limit_bytes = 0;
+    uint64_t budget_estimated_bytes = 0;
     bool incomplete = false;
 };
 
@@ -223,6 +244,7 @@ struct TraceData {
     std::vector<SampleRecord> samples;
     std::vector<TraceEvent> events;
     std::vector<ContextRegisterRecord> context_registers;
+    std::vector<LbrSampleRecord> lbr_samples;
     std::vector<OffCpuInterval> off_cpu_intervals;
     TraceQuality quality;
     uint32_t pointer_size = sizeof(void*);
@@ -235,6 +257,7 @@ struct TraceData {
     uint64_t end_ns = 0;
     std::vector<uint32_t> pmc_counter_sources;
     std::unordered_map<uint32_t,std::wstring> pmc_source_names;
+    std::map<std::wstring, uint64_t> unknown_event_keys;
     bool stacks_loaded = true;
 };
 

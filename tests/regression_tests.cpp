@@ -435,8 +435,6 @@ void TestLeafAndMachineOutput() {
     std::wostringstream table; wperf::WriteCpuReport(trace,symbols,options,table);
     Check(table.str().find(L"caller.dll") == std::wstring::npos, "table hotspot comes from sampled IP");
     Check(table.str().find(L"a\"\"b.exe") != std::wstring::npos, "CSV quotes are doubled");
-    Check(wperf::EscapeJson(std::wstring{L'"',L'\\',L'\n',wchar_t{1}}) == L"\\\"\\\\\\n\\u0001",
-          "JSON escapes quotes, backslashes, newlines and controls");
     options.csv=false; options.folded=true; options.exact_stacks_only=true;
     std::wostringstream excluded; wperf::WriteCpuReport(trace,symbols,options,excluded);
     Check(excluded.str().empty(), "exact-only output excludes uncertain stacks");
@@ -626,6 +624,15 @@ void TestStreamingAndStopDeadline() {
     uint64_t samples=0;
     Check(wperf::StreamEtwSamples(fixture,trace,[&](const auto&){++samples;},&error)&&samples==17323&&trace.samples.empty(),
           "streaming consumes all real ETL samples without retaining them");
+    const auto sched_fixture=std::filesystem::path(WPERF_TEST_DATA_DIR)/L"sched.etl";
+    wperf::TraceData full_derived;
+    wperf::TraceData events_only;
+    Check(wperf::ReadEtwFile(sched_fixture,full_derived,&error,true) &&
+          !full_derived.off_cpu_intervals.empty(),
+          "full replay builds off-CPU intervals when requested");
+    Check(wperf::ReadEtwFile(sched_fixture,events_only,&error,false) &&
+          events_only.off_cpu_intervals.empty(),
+          "event-only replay skips off-CPU interval derivation");
     const auto executable=std::filesystem::path(wperf::GetExecutablePath()).parent_path()/L"wperf.exe";
     SetEnvironmentVariableW(L"WPERF_ENABLE_TEST_FAULTS",L"1");
     wperf::ProcessLaunchResult child;
@@ -1180,8 +1187,70 @@ void TestContextRegisterAndLbrReplay() {
     Check(registers.timestamp_qpc == 200 && registers.rip == 0x3000 &&
           registers.rsp == 0x4000 && registers.r15 == 15,
           "context-register replay preserves timestamp and register order");
+
+    records.clear();
+    storage.clear();
+    record(lbr, 32, 300, std::vector<BYTE>{1, 2, 3});
+    wperf::TraceData malformed;
+    Check(wperf::ReadEtwRecords(records, malformed, 10000000),
+          "malformed LBR replay completes");
+    Check(malformed.quality.decode_errors == 1,
+          "malformed LBR payload is counted as a decode error");
+
+    records.clear();
+    storage.clear();
+    std::vector<BYTE> grouped_lbr(72, 0);
+    uint64_t grouped_time = 400;
+    uint32_t grouped_pid = 10, grouped_tid = 20, grouped_filters = 0x200;
+    memcpy(grouped_lbr.data(), &grouped_time, 8);
+    memcpy(grouped_lbr.data() + 8, &grouped_pid, 4);
+    memcpy(grouped_lbr.data() + 12, &grouped_tid, 4);
+    memcpy(grouped_lbr.data() + 16, &grouped_filters, 4);
+    uint64_t grouped_from1 = 0x1000, grouped_to1 = 0x2000;
+    uint64_t grouped_from2 = 0x3000, grouped_to2 = 0x4000;
+    memcpy(grouped_lbr.data() + 24, &grouped_from1, 8);
+    memcpy(grouped_lbr.data() + 32, &grouped_to1, 8);
+    memcpy(grouped_lbr.data() + 48, &grouped_from2, 8);
+    memcpy(grouped_lbr.data() + 56, &grouped_to2, 8);
+    record(lbr, 32, grouped_time, std::move(grouped_lbr));
+    wperf::TraceData grouped;
+    Check(wperf::ReadEtwRecords(records, grouped, 10000000),
+          "grouped LBR replay completes");
+    Check(grouped.lbr_samples.size() == 1 && grouped.lbr_samples[0].branches.size() == 2,
+          "LBR samples retain branch groups and order");
+
+    records.clear();
+    storage.clear();
+    GUID unknown_provider = {0x11111111,0x2222,0x3333,{0x44,0x55,0x66,0x77,0x88,0x99,0xaa,0xbb}};
+    record(unknown_provider, 77, 500, std::vector<BYTE>{1, 2, 3, 4});
+    wperf::TraceData unknown;
+    Check(wperf::ReadEtwRecords(records, unknown, 10000000), "unknown event replay completes");
+    Check(unknown.unknown_event_keys.size() == 1, "unknown events retain provider/opcode identity");
+    Check(grouped.events.empty(), "LBR branches are not flattened into generic events");
 }
 
+
+void TestQualityFinalization() {
+    wperf::TraceData trace;
+    trace.quality.stack_key_mismatch = 1;
+    wperf::FinalizeTraceQuality(trace);
+    Check(trace.quality.incomplete, "stack key mismatch marks replay incomplete");
+
+    wperf::TraceData orphaned;
+    orphaned.quality.io_orphaned = 1;
+    wperf::FinalizeTraceQuality(orphaned);
+    Check(orphaned.quality.incomplete, "orphaned I/O correlation marks replay incomplete");
+
+    wperf::TraceData dropped;
+    dropped.quality.samples_dropped = 1;
+    wperf::FinalizeTraceQuality(dropped);
+    Check(dropped.quality.incomplete, "dropped samples mark replay incomplete");
+
+    wperf::TraceData budget;
+    budget.quality.budget_exceeded = true;
+    wperf::FinalizeTraceQuality(budget);
+    Check(budget.quality.incomplete, "budget exhaustion marks replay incomplete");
+}
 
 int main() {
     TestProfileDecoder();
@@ -1207,6 +1276,7 @@ int main() {
     TestRendererDrainDeadlineAndErrors();
     TestOffCpuReportIdentityBoundariesAndFilters();
     TestSelectorsAndObservedIntervals();
+    TestQualityFinalization();
     if (failures == 0) std::cout << "regression tests: PASS\n";
     return failures == 0 ? 0 : 1;
 }

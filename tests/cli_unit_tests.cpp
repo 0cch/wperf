@@ -4,7 +4,8 @@
 #include <iostream>
 #include <string>
 #include <string_view>
-#include <utility>
+#include <type_traits>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -14,8 +15,30 @@ int g_failures = 0;
 struct Invocation {
     bool dispatched = false;
     std::wstring command;
-    std::vector<std::wstring> rest;
+    wperf::CommandRequest request;
 };
+
+std::wstring CommandName(const wperf::CommandRequest& request) {
+    return std::visit([](const auto& value) -> std::wstring {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, wperf::RecordRequest>) return L"record";
+        else if constexpr (std::is_same_v<T, wperf::ReportRequest>) return L"report";
+        else if constexpr (std::is_same_v<T, wperf::ScriptRequest>) return L"script";
+        else if constexpr (std::is_same_v<T, wperf::TraceRequest>) return L"trace";
+        else if constexpr (std::is_same_v<T, wperf::SchedRequest>) return L"sched";
+        else if constexpr (std::is_same_v<T, wperf::StatRequest>) return L"stat";
+        else if constexpr (std::is_same_v<T, wperf::TopRequest>) return L"top";
+        else if constexpr (std::is_same_v<T, wperf::AnnotateRequest>) return L"annotate";
+        else if constexpr (std::is_same_v<T, wperf::DiffRequest>) return L"diff";
+        else if constexpr (std::is_same_v<T, wperf::ArchiveRequest>) return L"archive";
+        else if constexpr (std::is_same_v<T, wperf::BuildIdListRequest>) return L"buildid-list";
+        else if constexpr (std::is_same_v<T, wperf::ListRequest>) return L"list";
+        else if constexpr (std::is_same_v<T, wperf::DoctorRequest>) return L"doctor";
+        else if constexpr (std::is_same_v<T, wperf::RecoverRequest>) return L"recover";
+        else if constexpr (std::is_same_v<T, wperf::TestRequest>) return L"test";
+        else return L"unknown";
+    }, request);
+}
 
 void Check(bool condition, std::wstring_view message) {
     if (!condition) {
@@ -26,11 +49,10 @@ void Check(bool condition, std::wstring_view message) {
 
 int Run(const std::vector<std::wstring>& arguments, Invocation* invocation) {
     *invocation = {};
-    return wperf::cli::Run(arguments, [invocation](const std::wstring& command,
-                                                   const std::vector<std::wstring>& rest) {
+    return wperf::cli::Run(arguments, [invocation](const wperf::CommandRequest& request) {
         invocation->dispatched = true;
-        invocation->command = command;
-        invocation->rest = rest;
+        invocation->command = CommandName(request);
+        invocation->request = request;
         return 0;
     });
 }
@@ -244,17 +266,19 @@ void TestCompactOptions() {
 void TestNormalizedArguments() {
     Invocation invocation;
     Check(Run({L"record", L"-F99"}, &invocation) == 0 &&
-              invocation.rest == std::vector<std::wstring>{L"-F", L"99"},
-          L"attached short option value was not normalized");
+              std::get_if<wperf::RecordRequest>(&invocation.request) != nullptr &&
+              std::get<wperf::RecordRequest>(invocation.request).frequency == 99,
+          L"attached short option value was not parsed");
     Check(Run({L"report", L"--percent-limit=0"}, &invocation) == 0 &&
-              invocation.rest == std::vector<std::wstring>{L"--percent-limit", L"0"},
-          L"equals option value was not normalized");
+              std::get_if<wperf::ReportRequest>(&invocation.request) != nullptr &&
+              std::get<wperf::ReportRequest>(invocation.request).percent_limit == 0.0,
+          L"equals option value was not parsed");
     Check(Run({L"diff", L"-1", L"before.etl", L"-2", L"after.etl"}, &invocation) == 0 &&
-              invocation.rest == std::vector<std::wstring>{
-                  L"--first", L"before.etl", L"--second", L"after.etl"},
-          L"perf-style diff operands were not normalized");
+              std::get_if<wperf::DiffRequest>(&invocation.request) != nullptr &&
+              std::get<wperf::DiffRequest>(invocation.request).first == L"before.etl" &&
+              std::get<wperf::DiffRequest>(invocation.request).second == L"after.etl",
+          L"perf-style diff operands were not parsed");
 }
-
 void TestErrorsAndSeparators() {
     Invocation invocation;
     Check(Run({L"does-not-exist"}, &invocation) == 2 && !invocation.dispatched,
@@ -272,7 +296,9 @@ void TestErrorsAndSeparators() {
 
     Check(Run({L"record", L"--", L"app.exe", L"--help"}, &invocation) == 0 &&
               invocation.dispatched && invocation.command == L"record" &&
-              invocation.rest == std::vector<std::wstring>{L"--", L"app.exe", L"--help"},
+              std::get_if<wperf::RecordRequest>(&invocation.request) != nullptr &&
+              std::get<wperf::RecordRequest>(invocation.request).target ==
+                  std::vector<std::wstring>({L"app.exe", L"--help"}),
           L"target arguments after -- were not preserved");
 }
 

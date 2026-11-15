@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$Wperf,
     [Parameter(Mandatory=$true)][string]$Fixture,
-    [Parameter(Mandatory=$true)][string]$OutputDirectory
+    [Parameter(Mandatory=$true)][string]$OutputDirectory,
+    [Parameter(Mandatory=$true)][string]$SchemaPath
 )
 $ErrorActionPreference = 'Stop'
 $output = Join-Path $OutputDirectory ("archive-" + [guid]::NewGuid().ToString('N'))
@@ -14,8 +15,7 @@ foreach ($name in @('manifest.json', 'manifest.csv', 'manifest.txt')) {
         throw "missing $name"
     }
 }
-$manifest = Get-Content (Join-Path $output 'manifest.json') -Raw | ConvertFrom-Json
-if ($manifest.entries.Count -eq 0) {
-    throw 'archive manifest has no entries'
-}
+$manifestText = Get-Content (Join-Path $output 'manifest.json') -Raw
+if (-not (Test-Json -Json $manifestText -SchemaFile $SchemaPath -ErrorAction Stop)) { throw 'archive manifest does not match schema' }
+$manifest = $manifestText | ConvertFrom-Json
 Write-Output "archive manifest test: PASS ($($manifest.entries.Count) modules)"

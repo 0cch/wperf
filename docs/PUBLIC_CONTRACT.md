@@ -50,9 +50,15 @@ Additive JSON fields and new optional CLI flags do not require a major version.
 |---:|---|
 | `0` | The requested operation completed successfully |
 | `2` | Invalid arguments or incompatible options |
-| `4` | Capture, worker, session, or cleanup failure |
+| `3` | Administrator rights are required, or elevation was cancelled |
+| `4` | Capture, worker, session, guard, or cleanup failure |
 | `5` | Requested capability/source produced no usable data |
 | `6` | Trace replay failed or a requested quality gate was not met |
+| `7` | The requested target process could not be launched or opened |
+| `8` | The target process exited with a non-zero status; the original status is reported separately |
+| `9` | Internal error, IPC failure, filesystem failure, or an unexpected exception |
+
+For commands that launch a target process, wperf reports a target launch failure as `7` and a non-zero target status as `8`; the original child status is emitted on stderr and must not be confused with the wperf exit code.
 
 A caller should not infer success from report content alone: check the exit code
 and, for JSON, the `quality.incomplete` field.
@@ -64,7 +70,17 @@ Versioned schemas live in [`schemas/`](schemas/):
 - `report-cpu.schema.json` — `report --json --metadata`;
 - `report-off-cpu.schema.json` — `report --off-cpu --json --metadata`;
 - `report-io.schema.json` — `report --kind io --json --metadata`;
-- `trace.schema.json` — `trace -i FILE ... --json`.
+- `report-pmc.schema.json` — `report --kind pmc --json --metadata`;
+- `trace.schema.json` — `trace -i FILE ... --json`;
+- `trace-metadata.schema.json` — `trace -i FILE ... --json --metadata`;
+- `stat.schema.json` — `stat ... --json`;
+- `sched.schema.json` — `sched -i FILE --json`;
+- `annotate.schema.json` — `annotate ... --json`;
+- `diff.schema.json` — `diff ... --json`;
+- `archive.schema.json` — `archive` manifest.json;
+- `buildid-list.schema.json` — `buildid-list -i FILE --json`;
+- `list.schema.json` — `list --json`;
+- `doctor.schema.json` — `doctor --json`.
 
 Schemas set `additionalProperties: true` so compatible fields can be added
 without breaking existing consumers. Required fields and enum meanings are the
@@ -76,7 +92,7 @@ preserves 64-bit integers or parse large values as strings themselves.
 
 ## CSV contract
 
-CSV headers are stable for documented options. New columns may be appended in a
+CSV headers are stable for documented options, including `stat`, `sched`, `buildid-list`, `annotate`, `diff`, `archive`, and `script`. New columns may be appended in a
 minor release. Existing column names and meanings should not change without a
 deprecation notice. Empty values mean unavailable or intentionally omitted data,
 not numeric zero.

@@ -75,6 +75,11 @@ wperf record --elevate --duration 10000 -o child.etl `
 `record` waits for the elevated side to report READY before launching a child.
 When the child exits, capture stops automatically.
 
+Without `--duration`, system-wide capture runs until Ctrl+C; when a target command
+is supplied, it stops when that root process exits. `-p` observes an existing process
+and is currently implemented as system-wide ETW capture plus analysis filtering,
+not as a kernel-level per-process attach.
+
 ### Profiles and events
 
 `--profile` enables common event groups:
@@ -167,6 +172,8 @@ order. ARM64 context payload decoding is not implemented.
 wperf record --elevate --provider {PROVIDER-GUID} --duration 3000 `
   -o provider.etl
 wperf list providers --max 20
+wperf list --json
+wperf doctor --json
 ```
 
 Private-provider capture produces a normal ETL for wperf, WPA, PerfView, or
@@ -314,6 +321,10 @@ Event filters:
 | `lbr` | LBR branch records |
 | `context` | AMD64 context-register records |
 
+`--max` defaults to `0`, meaning no output limit. A finite limit emits a warning
+when truncation occurs. `--json --metadata` wraps events with `quality` and a
+`truncated` boolean.
+
 ## Sample scripting
 
 `script` exports one line per sample.
@@ -340,11 +351,18 @@ wperf stat --pmu -e TotalCycles -- .\app.exe
 `stat` reports observed process/thread counters. PMC mode is ETW-derived and
 should not be treated as a hardware counter programming API.
 
+Use `--json` or `--csv` for automation and `--interval MS` for repeated process
+statistics. PMC mode reports `source=etw-pmc-sampling`, `exact=false`, and the
+configured sampling period (`--period`, default 1000000); it is not an exact
+counter total.
+
 ## Symbols
 
 ```powershell
 wperf report -i cpu.etl --symbol-path .\build\Release
 wperf buildid-list -i cpu.etl
+wperf buildid-list -i cpu.etl --json
+wperf buildid-list -i cpu.etl --csv
 ```
 
 Symbol resolution uses DbgHelp, local PDBs, optional symbol-server settings,
@@ -376,6 +394,10 @@ wperf annotate -i cpu.etl --symbol-path .\build\Release --disasm --json
 disassembly. With `-DWPERF_ENABLE_DISASM=OFF`, the command falls back to
 address heat with a warning.
 
+`--json` includes `function_rva` and `instruction_rows`. When disassembly is
+available, each instruction row carries RVA, bytes, text, samples, and
+function-relative overhead.
+
 ## Diff
 
 ```powershell
@@ -387,6 +409,10 @@ wperf diff -1 before.etl -2 after.etl --pid 1234 --dso app.exe --csv
 The default diff is weighted by CPU sample period. Known-period coverage and
 normalized shares are retained so unknown periods are not presented as exact
 execution time.
+
+`--normalize weight|samples` controls share normalization. Use `--first-pid` and
+`--second-pid` when the compared runs use different PIDs. JSON rows include
+compatibility, profile-period, and normalization metadata.
 
 ## Reproducible archives
 
@@ -423,9 +449,13 @@ wperf recover --all-stale
 |---:|---|
 | `0` | Success |
 | `2` | Invalid CLI arguments or incompatible options |
+| `3` | Permission or elevation failure |
 | `4` | Capture/start/cleanup failure |
 | `5` | Requested PMC/LBR capability produced no data |
 | `6` | Invalid trace or failed replay quality gate |
+| `7` | Target process launch/open failure |
+| `8` | Target process exited non-zero; original status is reported |
+| `9` | Internal, IPC, filesystem, or unexpected error |
 
 Exit codes are part of the automation contract. Treat a changed code as a
 compatibility change and add a regression test.

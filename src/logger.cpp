@@ -4,53 +4,9 @@
 
 #include <iomanip>
 #include <sstream>
+#include <nlohmann/json.hpp>
 
 namespace wperf {
-namespace {
-
-std::string EscapeJson(std::wstring_view value) {
-    const std::string utf8 = ToUtf8(value);
-    std::string result;
-    result.reserve(utf8.size() + 8);
-    for (unsigned char ch : utf8) {
-        switch (ch) {
-            case '"':
-                result += "\\\"";
-                break;
-            case '\\':
-                result += "\\\\";
-                break;
-            case '\b':
-                result += "\\b";
-                break;
-            case '\f':
-                result += "\\f";
-                break;
-            case '\n':
-                result += "\\n";
-                break;
-            case '\r':
-                result += "\\r";
-                break;
-            case '\t':
-                result += "\\t";
-                break;
-            default:
-                if (ch < 0x20) {
-                    std::ostringstream escaped;
-                    escaped << "\\u" << std::hex << std::setw(4)
-                            << std::setfill('0') << static_cast<int>(ch);
-                    result += escaped.str();
-                } else {
-                    result.push_back(static_cast<char>(ch));
-                }
-                break;
-        }
-    }
-    return result;
-}
-
-}  // namespace
 
 std::wstring_view LogLevelName(LogLevel level) {
     switch (level) {
@@ -87,12 +43,14 @@ void Logger::Log(LogLevel level, std::wstring_view phase,
         return;
     }
 
-    stream_ << "{\"ts\":\"" << EscapeJson(UtcTimestamp()) << "\","
-            << "\"level\":\"" << EscapeJson(LogLevelName(level)) << "\","
-            << "\"role\":\"" << EscapeJson(role_) << "\","
-            << "\"correlation\":\"" << EscapeJson(correlation_id_) << "\","
-            << "\"phase\":\"" << EscapeJson(phase) << "\","
-            << "\"message\":\"" << EscapeJson(message) << "\"}\n";
+    nlohmann::ordered_json entry;
+    entry["ts"] = ToUtf8(UtcTimestamp());
+    entry["level"] = ToUtf8(LogLevelName(level));
+    entry["role"] = ToUtf8(role_);
+    entry["correlation"] = ToUtf8(correlation_id_);
+    entry["phase"] = ToUtf8(phase);
+    entry["message"] = ToUtf8(message);
+    stream_ << entry.dump() << "\n";
     stream_.flush();
 }
 

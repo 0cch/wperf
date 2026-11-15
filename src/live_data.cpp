@@ -1,6 +1,7 @@
 #include "live_data.h"
 
 #include "common.h"
+#include "trace_events.h"
 
 #include <algorithm>
 #include <iomanip>
@@ -380,6 +381,7 @@ bool LiveWindowDecoder::Finish(TraceData& trace, uint64_t& interval_ms,
         ++trace_.quality.decode_errors;
     }
     trace = std::move(trace_);
+    FinalizeTraceQuality(trace);
     interval_ms = interval_ms_;
     active_ = false;
     return true;

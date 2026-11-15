@@ -3,11 +3,12 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "requests.h"
 
 namespace wperf::cli {
 
-// Receives a canonical command name and the normalized public arguments after it.
-using Dispatch = std::function<int(const std::wstring&, const std::vector<std::wstring>&)>;
+// Receives a fully typed public command request.
+using Dispatch = std::function<int(const CommandRequest&)>;
 
 // Validates one public command, handles built-in help/version forms, and dispatches.
 // Internal worker commands are handled by the caller before this function is called.

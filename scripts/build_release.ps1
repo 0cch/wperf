@@ -5,12 +5,29 @@ param(
     [string]$VersionMajor = "0",
     [string]$VersionMinor = "8",
     [string]$VersionPatch = "0",
-    [string]$BuildNumber = "0"
+    [string]$BuildNumber = "0",
+    [string]$VcpkgRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
+    $VcpkgRoot = $env:VCPKG_ROOT
+}
+if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
+    $VcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+}
+if ([string]::IsNullOrWhiteSpace($VcpkgRoot) -and (Test-Path "D:\Codes\vcpkg")) {
+    $VcpkgRoot = "D:\Codes\vcpkg"
+}
+if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
+    throw "vcpkg root was not found; set VCPKG_ROOT or pass -VcpkgRoot"
+}
+$vcpkgToolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
+if (-not (Test-Path -LiteralPath $vcpkgToolchain)) {
+    throw "vcpkg toolchain not found: $vcpkgToolchain"
+}
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$build = Join-Path $repo "build"
+$build = Join-Path $repo "build-release"
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $repo "dist"
 }
@@ -33,7 +50,10 @@ $configureArguments = @(
     "-DWPERF_VERSION_MAJOR=$VersionMajor",
     "-DWPERF_VERSION_MINOR=$VersionMinor",
     "-DWPERF_VERSION_PATCH=$VersionPatch",
-    "-DWPERF_BUILD_NUMBER=$BuildNumber"
+    "-DWPERF_BUILD_NUMBER=$BuildNumber",
+    "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain",
+    "-DVCPKG_TARGET_TRIPLET=x64-windows-static-md",
+    "-DVCPKG_MANIFEST_MODE=ON"
 )
 & $cmake @configureArguments
 if ($LASTEXITCODE -ne 0) { throw "configure failed" }
@@ -61,7 +81,7 @@ foreach ($doc in @("README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.
 $docsOutput = Join-Path $OutputDirectory "docs"
 New-Item -ItemType Directory -Force -Path $docsOutput | Out-Null
 foreach ($doc in @("USAGE.md", "ARCHITECTURE.md", "COMPATIBILITY.md",
-                  "DEVELOPMENT.md", "PUBLIC_CONTRACT.md", "COMMAND_REFERENCE.md", "RELEASE.md",
+                  "DEVELOPMENT.md", "CODING_STANDARDS.md", "PUBLIC_CONTRACT.md", "COMMAND_REFERENCE.md", "RELEASE.md",
                   "HARDWARE_VALIDATION.md")) {
     $source = Join-Path $repo (Join-Path "docs" $doc)
     if (Test-Path $source) {

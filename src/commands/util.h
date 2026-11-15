@@ -11,6 +11,21 @@
 #include <string_view>
 #include <vector>
 
+namespace wperf {
+enum class ExitCode : int {
+    Success = 0,
+    InvalidArguments = 2,
+    PermissionDenied = 3,
+    CaptureFailure = 4,
+    CapabilityUnavailable = 5,
+    ReplayOrQualityFailure = 6,
+    TargetLaunchFailure = 7,
+    TargetProcessFailure = 8,
+    InternalError = 9,
+};
+inline int ExitStatus(ExitCode code) { return static_cast<int>(code); }
+}
+
 namespace wperf::commands {
 
 inline std::wstring FormatGuid(const GUID& guid) {
@@ -20,27 +35,6 @@ inline std::wstring FormatGuid(const GUID& guid) {
                guid.Data4[2], guid.Data4[3], guid.Data4[4], guid.Data4[5],
                guid.Data4[6], guid.Data4[7]);
     return buffer;
-}
-
-inline std::wstring OptionValue(const std::vector<std::wstring>& arguments,
-                                const std::wstring& name,
-                                const std::wstring& fallback = {}) {
-    for (size_t index = 0; index + 1 < arguments.size(); ++index) {
-        if (arguments[index] == name) {
-            return arguments[index + 1];
-        }
-    }
-    return fallback;
-}
-
-inline bool HasFlag(const std::vector<std::wstring>& arguments,
-                    const std::wstring& flag) {
-    for (const auto& argument : arguments) {
-        if (argument == flag) {
-            return true;
-        }
-    }
-    return false;
 }
 
 inline bool ParseUnsigned(const std::wstring& value, uint64_t& result) {

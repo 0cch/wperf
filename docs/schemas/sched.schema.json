@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/sched.schema.json",
+  "title": "wperf scheduler report",
+  "type": "object",
+  "required": ["quality", "rows"],
+  "properties": {
+    "quality": { "type": "object", "additionalProperties": true },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pid", "comm", "running_ms", "ready_ms", "blocked_ms", "wakeups", "wakeup_avg_us", "wakeup_max_us", "p50_us", "p95_us", "p99_us", "top_wait_reason"],
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

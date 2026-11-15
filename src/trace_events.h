@@ -32,6 +32,7 @@ private:
     uint64_t maximum_age_ns_;
     uint64_t last_prune_ns_ = 0;
 };
+void FinalizeTraceQuality(TraceData& trace);
 void EnrichTraceEvents(TraceData& trace);
 
 }  // namespace wperf

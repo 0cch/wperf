@@ -176,7 +176,9 @@ for the validated architecture. ARM64 payload decoding is not claimed.
 ## Output and compatibility
 
 Text output is for humans. JSON/CSV and exit codes are the automation contract.
-Quality metadata is intentionally verbose in JSON so callers can decide whether
+JSON is serialized through nlohmann/json and the shared streaming writer, so
+large trace/report output is not assembled as one string. Quality metadata is
+intentionally verbose in JSON so callers can decide whether
 a result is usable.
 
 See [USAGE.md](USAGE.md) for command behavior and [COMPATIBILITY.md](COMPATIBILITY.md)

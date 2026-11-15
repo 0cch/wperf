@@ -1,5 +1,22 @@
 # wperf Changelog
 
+## 0.8.2.0 - 2026-11-16
+
+- Normalized and documented the complete exit-code contract, including target launch, target failure, permission, and internal errors.
+- Made trace truncation explicit, changed `--max` to unlimited by default, and added `trace --json --metadata`.
+- Added a shared trace-quality finalizer for full, stream, metadata, and live paths; LBR decode failures and budget exhaustion now affect completeness.
+- Reworked LBR replay to retain samples and ordered branch groups instead of flattening every branch into a full event.
+- Added precise replay budget fields, skipped off-CPU derivation unless requested, and converted CPU row overflow into a replay-quality error.
+- Added structured JSON/CSV output for `stat`, `sched`, `buildid-list`, `list`, and `doctor`, plus `stat --interval`.
+- Added instruction-level annotate JSON/CSV fields, inline-frame reporting for off-CPU frames, weighted/per-trace-PID diff options, and unknown provider/opcode accounting.
+- Expanded JSON schemas and contract tests for reports, traces, scheduler, stat, annotate, diff, archive, module identity, list, and doctor.
+- Added a deterministic decoder fuzz smoke test and warnings-as-errors CI configuration.
+- Replaced vendored/FetchContent dependencies with the pinned vcpkg manifest and `x64-windows-static-md` static dependency builds.
+- Made CLI11 the single public parser and moved command dispatch to typed request variants; internal worker, guard, and live-worker arguments are also parsed once.
+- Standardized JSON serialization on nlohmann/json and the shared streaming writer, including report metadata envelopes, PMC rows, and live trace events.
+- Added repository coding standards, vcpkg-based development/release commands, and live PMC/live trace JSON integration tests.
+
+
 ## 0.8.1.0
 - Optimized off-CPU report generation from 1.880 s to 0.657 s on the validation workload (64.8% less time, 2.84x throughput) by removing repeated linear image scans, interning module identities, using structured aggregation keys, and switching to reserved unordered maps.
 - Reused indexed image/process lookups in annotate and off-CPU reporting, with deterministic tie-breaking preserved for equal sample counts.
