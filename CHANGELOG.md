@@ -1,6 +1,6 @@
 # wperf Changelog
 
-## 0.8.2.3 - 2026-11-16
+## 0.8.2.0 - 2026-11-16
 
 - Normalized and documented the complete exit-code contract, including target launch, target failure, permission, and internal errors.
 - Made trace truncation explicit, changed `--max` to unlimited by default, and added `trace --json --metadata`.
