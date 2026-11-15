@@ -13,6 +13,12 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
+      - name: Fetch vcpkg baseline
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content -LiteralPath vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin $baseline
+          git -C "$env:VCPKG_INSTALLATION_ROOT" cat-file -e "$baseline^{commit}"
       - name: Configure
         shell: pwsh
         run: |
@@ -33,6 +39,12 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v5
+      - name: Fetch vcpkg baseline
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content -LiteralPath vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin $baseline
+          git -C "$env:VCPKG_INSTALLATION_ROOT" cat-file -e "$baseline^{commit}"
       - name: Configure without Zydis
         shell: pwsh
         run: |

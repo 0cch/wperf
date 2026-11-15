@@ -50,6 +50,9 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:VCPKG_INSTALLATION_ROOT)) {
               throw "VCPKG_INSTALLATION_ROOT is not set"
           }
+          $baseline = (Get-Content -LiteralPath vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --no-tags --depth=1 origin $baseline
+          git -C "$env:VCPKG_INSTALLATION_ROOT" cat-file -e "$baseline^{commit}"
           "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
 
       - name: Build and package

@@ -22,11 +22,18 @@ if ([string]::IsNullOrWhiteSpace($VcpkgRoot) -and (Test-Path "D:\Codes\vcpkg")) 
 if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
     throw "vcpkg root was not found; set VCPKG_ROOT or pass -VcpkgRoot"
 }
+$repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $vcpkgToolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
 if (-not (Test-Path -LiteralPath $vcpkgToolchain)) {
     throw "vcpkg toolchain not found: $vcpkgToolchain"
 }
-$repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$manifest = Get-Content -LiteralPath (Join-Path $repo "vcpkg.json") -Raw | ConvertFrom-Json
+$baseline = $manifest.'builtin-baseline'
+& git -C $VcpkgRoot cat-file -e "$baseline^{commit}" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    & git -C $VcpkgRoot fetch --no-tags --depth=1 origin $baseline
+    if ($LASTEXITCODE -ne 0) { throw "cannot fetch vcpkg baseline $baseline" }
+}
 $build = Join-Path $repo "build-release"
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $repo "dist"
