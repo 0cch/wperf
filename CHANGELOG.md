@@ -1,6 +1,6 @@
 # wperf Changelog
 
-## 0.8.2.1 - 2026-11-16
+## 0.8.2.2 - 2026-11-16
 
 - Normalized and documented the complete exit-code contract, including target launch, target failure, permission, and internal errors.
 - Made trace truncation explicit, changed `--max` to unlimited by default, and added `trace --json --metadata`.
@@ -14,7 +14,7 @@
 - Replaced vendored/FetchContent dependencies with the pinned vcpkg manifest and `x64-windows-static-md` static dependency builds.
 - Made CLI11 the single public parser and moved command dispatch to typed request variants; internal worker, guard, and live-worker arguments are also parsed once.
 - Standardized JSON serialization on nlohmann/json and the shared streaming writer, including report metadata envelopes, PMC rows, and live trace events.
-- Added repository coding standards, vcpkg-based development/release commands, and live PMC/live trace JSON integration tests.`n- Made CI fetch the manifest baseline commit when GitHub's preinstalled vcpkg checkout does not contain it.
+- Added repository coding standards, vcpkg-based development/release commands, and live PMC/live trace JSON integration tests.`n- Made CI fetch the manifest baseline commit when GitHub's preinstalled vcpkg checkout does not contain it.`n- Made the exit-code test assert based on the current process elevation state so elevated CI runners are tested correctly.
 
 
 ## 0.8.1.0

@@ -19,7 +19,10 @@ function Invoke-Case {
     }
 }
 
-Invoke-Case "permission denied" 3 @("record", "--duration", "1")
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+$recordWithoutElevateExit = if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { 0 } else { 3 }
+Invoke-Case "record privilege behavior" $recordWithoutElevateExit @("record", "--duration", "1")
 Invoke-Case "target launch failure" 7 @("stat", "--duration", "1", "--", "wperf-command-that-does-not-exist-7d43e0")
 Invoke-Case "target nonzero exit" 8 @("stat", "--duration", "1", "--", "cmd.exe", "/d", "/c", "exit 42")
 
