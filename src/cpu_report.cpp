@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <iomanip>
+#include <iostream>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -49,12 +50,14 @@ struct Row {
     std::wstring dso;
     std::wstring symbol;
     uint64_t samples = 0;
+    uint64_t weight = 0;
 };
 
 struct TreeNode {
     std::wstring name;
     uint64_t self = 0;
     uint64_t inclusive = 0;
+    uint64_t inclusive_weight = 0;
     std::map<std::wstring, TreeNode> children;
 };
 
@@ -88,15 +91,15 @@ std::wstring FoldedLabel(std::wstring value) {
 
 
 void PrintTree(const TreeNode& node, uint64_t total, int depth,
-               const CpuReportOptions& options, std::wostream& output) {
+               const CpuReportOptions& options, std::wostream& output, bool use_period) {
     if (depth == 0 && node.name.empty()) {
         for (const auto& [name, child] : node.children) {
             (void)name;
-            PrintTree(child, total, 0, options, output);
+            PrintTree(child, total, 0, options, output, use_period);
         }
         return;
     }
-    const double percent = total == 0 ? 0.0 : 100.0 * node.inclusive / total;
+    const double percent = total == 0 ? 0.0 : 100.0 * (use_period ? node.inclusive_weight : node.inclusive) / total;
     if (percent < options.percent_limit) {
         return;
     }
@@ -104,7 +107,7 @@ void PrintTree(const TreeNode& node, uint64_t total, int depth,
            << L"  " << std::fixed << std::setprecision(2) << percent << L"%\n";
     for (const auto& [name, child] : node.children) {
         (void)name;
-        PrintTree(child, total, depth + 1, options, output);
+        PrintTree(child, total, depth + 1, options, output, use_period);
     }
 }
 
@@ -142,7 +145,9 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
                     const std::function<void(const std::function<void(const SampleRecord&)>&)>& feed,
                     JsonStreamWriter* json_writer) {
     uint64_t total_samples = 0;
-    std::map<std::wstring, uint64_t> folded;
+    uint64_t total_weight = 0, unknown_periods = 0;
+    std::optional<std::pair<SampleKind, uint32_t>> domain;
+    std::map<std::wstring, std::pair<uint64_t,uint64_t>> folded;
     std::unordered_map<std::wstring, Row> rows;
     TreeNode root;
 
@@ -158,7 +163,13 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
             return;
         }
 
+        const auto sample_domain = std::make_pair(sample.kind, sample.profile_source);
+        if (domain && *domain != sample_domain)
+            throw CpuReportLimitError("mixed sample domains; select one --source ID");
+        domain = sample_domain;
         ++total_samples;
+        total_weight += sample.period;
+        unknown_periods += sample.period == 0;
         const uint64_t instance = process_names.InstanceStart(sample.pid, sample.timestamp_ns);
         const std::wstring process_key = std::to_wstring(sample.pid) + L"@" + std::to_wstring(instance);
         const std::wstring key = process_key + L"|" + SymbolAggregateKey(leaf);
@@ -172,6 +183,7 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
         row.dso = leaf.module;
         row.symbol = leaf.symbol;
         ++row.samples;
+        row.weight += sample.period;
 
         if (!options.folded && !options.call_tree) return;
         auto stack = StackForSample(sample);
@@ -186,6 +198,7 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
             auto& process_node = root.children[process_key];
             process_node.name = comm + L"[" + process_key + L"]";
             ++process_node.inclusive;
+            process_node.inclusive_weight += sample.period;
             node = &process_node;
         }
         for (size_t index = 0; index < stack.size(); ++index) {
@@ -198,6 +211,7 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
                     node=&it->second;
                     if(inserted)node->name=label;
                     ++node->inclusive;
+                    node->inclusive_weight += sample.period;
                 }
             };
             const std::wstring suffix=resolved.module_identity.empty()?L"":L" ["+resolved.module_identity+L"]";
@@ -210,14 +224,19 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
             if(reverse_stack)for(auto frame=resolved.inline_frames.rbegin();frame!=resolved.inline_frames.rend();++frame)emit_inline(*frame);
         }
         if (options.call_tree) ++node->self;
-        if (options.folded) ++folded[folded_stack];
+        if (options.folded) { ++folded[folded_stack].first; folded[folded_stack].second += sample.period; }
     });
 
+    const bool fallback = options.weight_mode == CpuReportOptions::WeightMode::Period && unknown_periods != 0;
+    const bool use_period = options.weight_mode == CpuReportOptions::WeightMode::Period && !fallback;
+    const uint64_t denominator = use_period ? total_weight : total_samples;
+    const wchar_t* unit = domain && domain->first == SampleKind::Pmc ? L"events" : L"ns";
+    if (fallback && !options.quiet)
+        std::wcerr << L"wperf: unknown sample periods; overhead and folded weights fall back to samples\n";
     if (options.folded) {
-        for (const auto& [stack, count] : folded) {
-            const double percent = total_samples == 0
-                                       ? 0.0
-                                       : 100.0 * count / total_samples;
+        for (const auto& [stack, counts] : folded) {
+            const uint64_t count = use_period ? counts.second : counts.first;
+            const double percent = denominator == 0 ? 0.0 : 100.0 * count / denominator;
             if (percent < options.percent_limit) {
                 continue;
             }
@@ -226,7 +245,7 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
         return;
     }
     if (options.call_tree) {
-        PrintTree(root, total_samples, 0, options, output);
+        PrintTree(root, denominator, 0, options, output, use_period);
         return;
     }
 
@@ -238,11 +257,12 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
     }
     std::vector<std::wstring> sort_fields = options.sort_fields;
     if (sort_fields.empty()) {
-        sort_fields.push_back(L"samples");
+        sort_fields.push_back(use_period ? L"weight" : L"samples");
     }
     std::sort(sorted.begin(), sorted.end(),
               [&](const Row& left, const Row& right) {
                   for (const std::wstring& field : sort_fields) {
+                      if (field == L"weight" && left.weight != right.weight) return left.weight > right.weight;
                       if (field == L"comm" && left.comm != right.comm) {
                           return left.comm < right.comm;
                       }
@@ -264,13 +284,18 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
         JsonStreamWriter& writer = json_writer == nullptr ? local_writer : *json_writer;
         writer.BeginArray();
         for (const auto& row : sorted) {
-            const double percent = total_samples == 0
-                                       ? 0.0
-                                       : 100.0 * row.samples / total_samples;
+            const double percent = denominator == 0 ? 0.0 :
+                100.0 * (use_period ? row.weight : row.samples) / denominator;
             if (percent < options.percent_limit) continue;
             nlohmann::ordered_json item;
             item["overhead"] = percent;
             item["samples"] = row.samples;
+            item["weight"] = row.weight;
+            item["weight_unit"] = ToUtf8(unit);
+            item["overhead_basis"] = use_period ? "period" : "samples";
+            item["normalization_fallback"] = fallback;
+            item["profile_source"] = domain ? domain->second : 0;
+            item["sample_kind"] = domain && domain->first == SampleKind::Pmc ? "pmc" : "cpu";
             item["comm"] = ToUtf8(row.comm);
             item["dso"] = ToUtf8(row.dso);
             item["symbol"] = ToUtf8(row.symbol);
@@ -286,17 +311,18 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
     }
 
     if (options.csv) {
-        output << L"overhead,samples,comm,dso,symbol,pid,process_start_ns,module_identity\n";
+        output << L"overhead,samples,comm,dso,symbol,pid,process_start_ns,module_identity,weight,weight_unit,overhead_basis,normalization_fallback\n";
         for (const auto& row : sorted) {
-            const double percent = total_samples == 0
-                                       ? 0.0
-                                       : 100.0 * row.samples / total_samples;
+            const double percent = denominator == 0 ? 0.0 :
+                100.0 * (use_period ? row.weight : row.samples) / denominator;
             if (percent < options.percent_limit) {
                 continue;
             }
             output << percent << L"," << row.samples << L"," << EscapeCsv(row.comm) << L","
                    << EscapeCsv(row.dso) << L"," << EscapeCsv(row.symbol) << L"," << row.pid << L","
-                   << row.process_start_ns << L"," << EscapeCsv(row.module_identity) << L"\n";
+                   << row.process_start_ns << L"," << EscapeCsv(row.module_identity) << L","
+                   << row.weight << L"," << unit << L"," << (use_period ? L"period" : L"samples")
+                   << L"," << (fallback ? L"true" : L"false") << L"\n";
         }
         return;
     }
@@ -308,8 +334,8 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
            << L"Command" << L"  " << std::setw(kDsoWidth) << L"Shared Object"
            << L"  Symbol\n";
     for (const auto& row : sorted) {
-        const double percent = total_samples == 0 ? 0.0
-                                                   : 100.0 * row.samples / total_samples;
+        const double percent = denominator == 0 ? 0.0 :
+            100.0 * (use_period ? row.weight : row.samples) / denominator;
         if (percent < options.percent_limit) {
             continue;
         }

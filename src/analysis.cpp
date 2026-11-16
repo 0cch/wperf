@@ -1,10 +1,12 @@
 #include "analysis.h"
+#include "trace_events.h"
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
 
 namespace wperf {
-std::vector<PmcDeltaRow> AggregatePmcCounters(const TraceData& trace) {
+std::vector<PmcDeltaRow> AggregatePmcCounters(const TraceData& trace,
+    const std::function<bool(uint64_t, const TraceEvent&)>& select) {
     std::map<std::pair<uint32_t,uint32_t>,std::pair<uint64_t,uint64_t>> previous;
     std::map<std::tuple<uint32_t,uint32_t,uint32_t,uint32_t>,PmcDeltaRow> rows;
     for(const auto& event:trace.events) {
@@ -13,7 +15,8 @@ std::vector<PmcDeltaRow> AggregatePmcCounters(const TraceData& trace) {
             const uint32_t source=trace.pmc_counter_sources[slot];
             const uint64_t value=event.pmc_counters[slot];
             auto found=previous.find({event.cpu,source});
-            if(found!=previous.end()&&event.timestamp_ns>found->second.first&&value>=found->second.second) {
+            if(found!=previous.end()&&event.timestamp_ns>found->second.first&&value>=found->second.second &&
+               (!select || select(found->second.first, event))) {
                 const uint32_t tid=event.kind==TraceEventKind::ContextSwitch?event.related_tid:UINT32_MAX;
                 const uint32_t pid=tid==0?0:(event.related_pid!=0?event.related_pid:UINT32_MAX);
                 auto& row=rows[{event.cpu,source,pid,tid}];
@@ -57,6 +60,12 @@ std::map<uint32_t,SchedulerRow> AnalyzeScheduler(const TraceData& trace) {
 }
 void BuildOffCpuIntervals(TraceData& trace) {
     trace.off_cpu_intervals.clear();
+    trace.quality.off_cpu_blocked_intervals = trace.quality.off_cpu_ready_intervals = 0;
+    trace.quality.off_cpu_stack_exact = trace.quality.off_cpu_stack_approximate = 0;
+    trace.quality.off_cpu_stack_ambiguous = trace.quality.off_cpu_stack_missing = 0;
+    trace.quality.off_cpu_preemptions = trace.quality.off_cpu_unclosed = 0;
+    trace.quality.off_cpu_inferred_intervals = trace.quality.off_cpu_duplicate_ready = 0;
+    trace.quality.off_cpu_evicted = 0;
     ThreadIndex threads;
     threads.Build(trace);
     struct Pending {
@@ -289,9 +298,16 @@ void BuildOffCpuIntervals(TraceData& trace) {
         trace.end_ns != 0 ? trace.end_ns : (ordered.empty() ? 0 : ordered.back()->timestamp_ns);
     for (const auto& [tid, item] : pending) {
         (void)tid;
-        close_pending(item, end_time, true);
+        uint64_t boundary = end_time;
+        if (item.thread_end_ns != 0) boundary = std::min(boundary, item.thread_end_ns);
+        if (const auto* process = FindProcess(trace, item.pid, item.stack_timestamp_ns != 0 ?
+                                             item.stack_timestamp_ns : item.ready_start_ns)) {
+            if (process->end_ns != 0) boundary = std::min(boundary, process->end_ns);
+        }
+        close_pending(item, boundary, true);
         ++trace.quality.off_cpu_unclosed;
     }
+    FinalizeTraceQuality(trace);
     std::stable_sort(trace.off_cpu_intervals.begin(), trace.off_cpu_intervals.end(),
                      [](const OffCpuInterval& left, const OffCpuInterval& right) {
                          if (left.start_ns != right.start_ns) {

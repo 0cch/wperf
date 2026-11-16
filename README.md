@@ -78,9 +78,18 @@ Generate flame graph input:
 
 ```powershell
 .\build\Release\wperf.exe report -i app.etl `
-  --symbol-path .\build\Release --folded --quiet -o stacks.folded
+  --symbol-path .\build\Release --weight samples --folded --quiet -o stacks.folded
 perl flamegraph.pl stacks.folded > stacks.svg
 ```
+
+CPU tables, call trees and folded stacks default to sampling-period weights
+(CPU nanoseconds or PMC event counts). Use `--weight samples` for counts;
+unknown periods fall back to counts with a diagnostic. `--source ID` selects a
+single source when an ETL contains multiple sample domains.
+
+`diff --match symbol` aligns resolved module/function names across builds;
+`--match identity` requires strict build identity. `buildid-list` distinguishes
+recorded and local module identity; use `--hash` for cached local-file SHA256.
 
 ## Common workflows
 
@@ -107,7 +116,7 @@ wperf trace -i sched.etl -e sched --json --max 100
 ### Hardware counters and branch history
 
 ```powershell
-wperf record --elevate --pmc-source TotalCycles --period 1000000 `
+wperf record --elevate -e TotalCycles --period 1000000 `
   --duration 3000 -o pmc.etl
 wperf record --elevate --lbr -F 99 --duration 3000 -o lbr.etl
 wperf trace -i captured-with-context.etl -e context --json

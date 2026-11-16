@@ -2,6 +2,7 @@
 #include "commands/live_control.h"
 #include "elevation.h"
 #include "etw.h"
+#include "state.h"
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -25,6 +26,50 @@ bool WaitOutput(LiveWorkerClient& worker,bool top) {
         } else Sleep(10);
     }
     return false;
+}
+bool TestRecordRecovery(const std::filesystem::path& bin) {
+    TRACE_PROFILE_INTERVAL before{0,0}; ULONG returned=0;
+    if (TraceQueryInformation(0,TraceSampledProfileIntervalInfo,&before,sizeof(before),&returned)!=ERROR_SUCCESS) return false;
+    const auto session=L"wperf-integration-record-"+NewId();
+    const auto output=std::filesystem::temp_directory_path()/(session+L".etl");
+    ProcessLaunchResult controller;
+    if (!LaunchWorkerProcess((bin/L"wperf.exe").wstring(),
+        {L"record",L"-F",L"99",L"--no-call-graph",L"--session",session,L"--duration",L"15000",L"-o",output.wstring()},false,controller,nullptr)) return false;
+    ScopedHandle parent(controller.process);
+    RunState active;
+    const auto deadline=GetTickCount64()+10000;
+    while (GetTickCount64()<deadline) {
+        for (const auto& state:StateStore::ReadAll(GetSessionsDirectory()))
+            if (state.session_name==session && state.controller_role==L"controller" && state.phase==L"CAPTURING") active=state;
+        if (active.worker_pid!=0) break;
+        Sleep(20);
+    }
+    const auto checkpoint=StateStore(StateStore::PathFor(active.correlation_id)).ReadRecovery();
+    bool valid=checkpoint && checkpoint->worker_pid==active.worker_pid &&
+               checkpoint->restore_interval==before.Interval && checkpoint->configured_interval!=before.Interval;
+    std::cout<<"record checkpoint: before="<<before.Interval<<" original="<<(checkpoint?checkpoint->restore_interval:0)
+             <<" configured="<<(checkpoint?checkpoint->configured_interval:0)<<" worker="<<active.worker_pid<<'\n';
+    ScopedHandle child(OpenProcess(PROCESS_TERMINATE|SYNCHRONIZE,FALSE,active.worker_pid));
+    if (child.get()) TerminateProcess(child.get(),93);
+    else TerminateProcess(parent.get(),93);
+    valid=WaitGone(session) && valid;
+    if (WaitForSingleObject(parent.get(),10000)!=WAIT_OBJECT_0) { TerminateProcess(parent.get(),94); valid=false; }
+    TRACE_PROFILE_INTERVAL after{0,0};
+    // Session disappearance precedes guard configuration restore; wait for both.
+    bool restored=false;
+    const auto restore_deadline=GetTickCount64()+6000;
+    while (GetTickCount64()<restore_deadline) {
+        restored=TraceQueryInformation(0,TraceSampledProfileIntervalInfo,&after,sizeof(after),&returned)==ERROR_SUCCESS && after.Interval==before.Interval;
+        if (restored) break;
+        Sleep(20);
+    }
+    if (!restored && checkpoint) {
+        // Restore only this test's owned configuration if the assertion fails.
+        RestoreProfileConfiguration({0,before.Interval,checkpoint->configured_interval,false},nullptr);
+    }
+    std::error_code ec; std::filesystem::remove(output,ec);
+    if (!valid || !restored) std::wcerr<<L"record checkpoint/restore validation failed: after="<<after.Interval<<L"\n";
+    return valid && restored;
 }
 int wmain(int argc,wchar_t** argv) {
     const auto bin=std::filesystem::path(GetExecutablePath()).parent_path();
@@ -86,7 +131,8 @@ int wmain(int argc,wchar_t** argv) {
     if(!orphan.get()||WaitForSingleObject(orphan.get(),10000)!=WAIT_OBJECT_0||!WaitGone(ToUtf16(session)))
         return fail(L"worker did not stop after its controller exited with no matching events");
     std::error_code ignored; std::filesystem::remove(info_path,ignored);
+    if (!TestRecordRecovery(bin)) return fail(L"record worker kill did not preserve and restore the timer checkpoint");
     TerminateProcess(workload.get(),0);
-    std::cout<<"live ETW CPU, STOP, worker kill and empty-filter controller kill: PASS\n";
+    std::cout<<"live ETW CPU, STOP, worker kill, empty-filter controller kill and record timer recovery: PASS\n";
     return 0;
 }

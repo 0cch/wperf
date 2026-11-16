@@ -5,7 +5,39 @@
   "type": "array",
   "items": {
     "type": "object",
-    "required": ["key", "samples_before", "samples_after", "delta_samples", "weight_before_ns", "weight_after_ns", "delta_weight_ns", "share_before", "share_after", "delta_pp", "approximate_95_margin_pp", "normalization", "normalization_fallback", "compatible"],
-    "additionalProperties": true
+    "required": [
+      "key",
+      "samples_before",
+      "samples_after",
+      "delta_samples",
+      "weight_before_ns",
+      "weight_after_ns",
+      "delta_weight_ns",
+      "share_before",
+      "share_after",
+      "delta_pp",
+      "approximate_95_margin_pp",
+      "normalization",
+      "normalization_fallback",
+      "compatible",
+      "matching",
+      "match_status"
+    ],
+    "additionalProperties": true,
+    "properties": {
+      "matching": {
+        "enum": [
+          "symbol",
+          "identity"
+        ]
+      },
+      "match_status": {
+        "enum": [
+          "matched",
+          "added",
+          "removed"
+        ]
+      }
+    }
   }
 }

@@ -115,7 +115,7 @@ source-specific event count with `--period N`. Do not combine `-F` with PMC
 selection.
 
 ```powershell
-wperf record --elevate --pmc-source TotalCycles --period 1000000 `
+wperf record --elevate -e TotalCycles --period 1000000 `
   --duration 3000 -o pmc.etl
 ```
 
@@ -136,6 +136,8 @@ wperf report -i snapshots.etl --kind pmc --json --metadata
 These values are per-CPU/old-thread deltas derived from event snapshots. They
 are always marked `exact:false` and `event-snapshot-derived`; they are not exact
 hardware totals.
+PMC interrupt sampling (`-e SOURCE`/`--pmc-source`) and `--pmc-counters` snapshots
+must use separate captures; combining them is an argument error.
 
 ### Intel LBR
 
@@ -209,20 +211,45 @@ Useful selectors include `--pid`, `--tid`, `--comm`, `--dso`, `--symbol`,
 `--cpu`, `--time-start`, `--time-end`, `--scope`, and `--include-children`.
 `--exact-stacks` excludes approximate or ambiguous stack correlations.
 
+`--weight period` is the default: tables and trees use the sum of known periods
+(CPU nanoseconds or PMC event counts). `--weight samples` uses counts. If any
+selected period is unknown, the whole selected report falls back to counts;
+JSON exposes `overhead_basis` and `normalization_fallback`. Mixed sample domains
+are rejected; select one with `--source ID`. Sorting defaults to weight in period
+mode and samples in count mode; `--sort weight` is also accepted.
+
+I/O and PMC snapshot reports support PID/TID/comm/children/CPU/time selection,
+`--max-lost-events` and `--strict-quality`. PMC snapshot time windows include only
+deltas whose two endpoints are within the window; filtering retains counter
+baselines. PMC snapshots support CSV and `--source ID`. I/O supports text/JSON.
+Symbol/stack/scope/weight/sort/percent options are rejected for these kinds;
+missing-stack gates require CPU/off-CPU stacks. I/O init/complete/orphan diagnostics
+and report quality gates describe the full capture; I/O event/file metrics describe
+the selection. An empty I/O/PMC selection exits 5.
+
+`--stream` omits stack assessment (`stacks_loaded=false`,
+`stack_assessment=not-loaded`); omitted stacks are not counted as missing.
+Streaming JSON emits rows first and final quality after the second pass.
+`--max-missing-stacks` and `--exact-stacks` cannot be used with `--stream`.
+
 ### Call tree and folded stacks
 
 ```powershell
 wperf report -i cpu.etl --symbol-path .\build\Release --call-graph callee
 wperf report -i cpu.etl --symbol-path .\build\Release --call-graph caller
 wperf report -i cpu.etl --symbol-path .\build\Release `
-  --folded --quiet -o stacks.folded
+  --weight samples --folded --quiet -o stacks.folded
 ```
 
 Folded output is the standard collapsed-stack format, rooted at the process
-name. Counts are sample counts for CPU profiles and nanoseconds for off-CPU
-profiles. `-o` writes UTF-8 without BOM and LF line endings.
+name. Weights are CPU nanosecond periods (PMC event counts for PMC samples), or
+sample counts with `--weight samples` or unknown-period fallback. Off-CPU weights
+remain nanoseconds. `-o` writes UTF-8 without BOM and LF line endings.
 
 Render with an external FlameGraph implementation:
+The example above explicitly selects sample counts for the renderer's default
+sample labels. For confirmed period weights, use `--countname nanoseconds` for
+CPU or `--countname events` for PMC, and check for unknown-period fallback.
 
 ```powershell
 perl flamegraph.pl stacks.folded > flamegraph.svg
@@ -339,6 +366,10 @@ wperf script -i cpu.etl `
 The text format is wperf-specific and is not intended as input to
 `stackcollapse-perf.pl`. Use `report --folded` for FlameGraph input.
 
+`script -o FILE` writes the selected text/CSV to UTF-8 without BOM and LF line
+endings, with no duplicate stdout output. Parent directories are created and
+write failures exit 9.
+
 ## Scheduler summary and `stat`
 
 ```powershell
@@ -356,6 +387,22 @@ statistics. PMC mode reports `source=etw-pmc-sampling`, `exact=false`, and the
 configured sampling period (`--period`, default 1000000); it is not an exact
 counter total.
 
+`--per-thread` works in text, JSON and CSV for Windows API mode. Counters are
+deltas over the observation, not thread lifetime totals. Threads are discovered
+every 50 ms; observed exited threads retain handles and distinct creation times.
+Threads created and exited entirely between polls can be missed. JSON adds
+`threads`, `threads_complete` (whether observed counters could be accessed), and
+`thread_counter_scope=observation-delta`. This flag does not claim every thread
+was observed. CSV adds process/thread records with the header:
+
+```text
+row_type,elapsed_ms,pid,tid,thread_start_100ns,user_ms,sys_ms,cycles,page_faults,io_read_ops,io_read_bytes,io_write_ops,io_write_bytes,target_exit_code
+```
+
+`thread_start_100ns` is the absolute Windows FILETIME creation value; absent
+thread/process-only CSV fields are empty. Without `--per-thread`, the existing
+process CSV header is unchanged. PMC mode rejects `--per-thread` and `--interval`.
+
 ## Symbols
 
 ```powershell
@@ -363,7 +410,18 @@ wperf report -i cpu.etl --symbol-path .\build\Release
 wperf buildid-list -i cpu.etl
 wperf buildid-list -i cpu.etl --json
 wperf buildid-list -i cpu.etl --csv
+wperf buildid-list -i cpu.etl --hash --json
 ```
+
+`buildid-list` preserves ETL `pe_timestamp`, `pe_checksum`, mapping size/PID/base
+and `recorded_identity`. `local_identity` contains the current file's PE/PDB
+metadata; top-level machine/PDB fields also describe that local file. Status is
+`matching`, `mismatched` or `missing`. A valid PE file alone is not a match.
+SHA256 is optional (`--hash`), cached once per normalized local path, and always
+describes the local file (`module_sha256_source=local-file`). Without `--hash`,
+`module_sha256` is empty and `hash_status=not-requested`; requested hashes are
+`computed` or `unavailable`. All mapping rows are retained. CSV appends
+`local_pe_timestamp,local_pe_checksum,local_size_of_image,hash_status`.
 
 Symbol resolution uses DbgHelp, local PDBs, optional symbol-server settings,
 and the project's identity-aware `.symcache`. Module timestamp/checksum/PDB
@@ -412,7 +470,15 @@ execution time.
 
 `--normalize weight|samples` controls share normalization. Use `--first-pid` and
 `--second-pid` when the compared runs use different PIDs. JSON rows include
-compatibility, profile-period, and normalization metadata.
+compatibility, profile-period, and normalization metadata. Unknown periods in
+either selected trace cause normalization to fall back to samples.
+
+`--match symbol` (default) compares resolved functions by logical module filename
+and function name, ignoring build paths, timestamps and RVAs. `--match identity`
+retains strict module identity and RVA matching. Unresolved addresses retain
+strict identity keys in either mode and cannot promise cross-build alignment.
+JSON/CSV add `matching` and `match_status` (`matched`, `added`, `removed`).
+Unmapped addresses have trace-local keys rather than a shared `[unknown]` key.
 
 ## Reproducible archives
 

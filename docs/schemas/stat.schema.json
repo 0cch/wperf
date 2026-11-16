@@ -5,35 +5,206 @@
   "type": "object",
   "oneOf": [
     {
-      "required": ["source", "target_pid", "target_exit_code", "elapsed_ms", "user_ms", "sys_ms", "cycles", "page_faults", "io_read_ops", "io_read_bytes", "io_write_ops", "io_write_bytes", "samples"],
+      "required": [
+        "source",
+        "target_pid",
+        "target_exit_code",
+        "elapsed_ms",
+        "user_ms",
+        "sys_ms",
+        "cycles",
+        "page_faults",
+        "io_read_ops",
+        "io_read_bytes",
+        "io_write_ops",
+        "io_write_bytes",
+        "samples"
+      ],
       "properties": {
-        "source": { "const": "windows-api" },
-        "target_pid": { "type": "integer", "minimum": 0 },
-        "target_exit_code": { "type": ["integer", "null"] },
-        "elapsed_ms": { "type": "integer", "minimum": 0 },
-        "user_ms": { "type": "integer", "minimum": 0 },
-        "sys_ms": { "type": "integer", "minimum": 0 },
-        "cycles": { "type": ["integer", "null"] },
-        "page_faults": { "type": "integer", "minimum": 0 },
-        "io_read_ops": { "type": "integer", "minimum": 0 },
-        "io_read_bytes": { "type": "integer", "minimum": 0 },
-        "io_write_ops": { "type": "integer", "minimum": 0 },
-        "io_write_bytes": { "type": "integer", "minimum": 0 },
-        "samples": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
-      }
+        "source": {
+          "const": "windows-api"
+        },
+        "target_pid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "target_exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "user_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sys_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cycles": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "page_faults": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "io_read_ops": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "io_read_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "io_write_ops": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "io_write_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "samples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "threads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "tid",
+              "thread_start_100ns",
+              "available",
+              "user_ms",
+              "sys_ms",
+              "cycles"
+            ],
+            "properties": {
+              "tid": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "thread_start_100ns": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "available": {
+                "type": "boolean"
+              },
+              "user_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "sys_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cycles": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "threads_complete": {
+          "type": "boolean"
+        },
+        "thread_counter_scope": {
+          "const": "observation-delta"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "threads"
+            ]
+          },
+          "then": {
+            "required": [
+              "threads_complete",
+              "thread_counter_scope"
+            ]
+          }
+        }
+      ]
     },
     {
-      "required": ["source", "exact", "profile_source", "source_name", "sampling_period", "target_pid", "sample_count", "samples", "quality"],
+      "required": [
+        "source",
+        "exact",
+        "profile_source",
+        "source_name",
+        "sampling_period",
+        "target_pid",
+        "sample_count",
+        "samples",
+        "quality"
+      ],
       "properties": {
-        "source": { "const": "etw-pmc-sampling" },
-        "exact": { "const": false },
-        "profile_source": { "type": "integer", "minimum": 0 },
-        "source_name": { "type": "string" },
-        "sampling_period": { "type": "integer", "minimum": 0 },
-        "target_pid": { "type": "integer", "minimum": 0 },
-        "sample_count": { "type": "integer", "minimum": 0 },
-        "samples": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
-        "quality": { "type": "object", "additionalProperties": true }
+        "source": {
+          "const": "etw-pmc-sampling"
+        },
+        "exact": {
+          "const": false
+        },
+        "profile_source": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_name": {
+          "type": "string"
+        },
+        "sampling_period": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "target_pid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "samples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "quality": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "stack_assessment": {
+              "enum": [
+                "loaded",
+                "not-loaded"
+              ]
+            }
+          }
+        }
       }
     }
   ],

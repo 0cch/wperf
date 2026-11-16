@@ -1,6 +1,6 @@
 # Hardware Validation Evidence
 
-Updated: 2026-11-14.
+Updated: 2026-11-16.
 
 This document records Intel hardware validation for LBR, PMC sampling/snapshots,
 and AMD64 context registers. Raw traces remain local and are not
@@ -229,3 +229,31 @@ LBR, PMC sampling/snapshots and AMD64 context-register decoding are accepted
 build. The context-register decoder uses the WMI event type 122 field order and
 the independently published 144-byte AMD64 layout, and is exposed through
 `wperf trace -e context`. ARM64 context-register payload decoding is not claimed.
+
+## Priority-fix regression validation — 2026-11-16
+
+Host: AMD Ryzen 7 8700G, Windows 11 x64 build 26200. The working tree is based
+on 0.8.2.0 with the unreleased priority fixes; builds used MSVC and warnings as
+errors, both with and without Zydis.
+
+| Check | Result |
+|---|---|
+| Non-live CTest, Zydis enabled | 58/58 passed |
+| Non-live CTest, Zydis disabled | 58/58 passed |
+| Elevated live CTest, each build | 4/4 passed |
+| Record worker termination | Independent recovery checkpoint survived controller writes; timer interval restored after guard cleanup |
+| PMC interrupt sampling | Real TotalCycles JSON retained sampling source and estimated semantics |
+| Single-source CSwitch PMC snapshots | Real counter payloads/source metadata, CPU/time filtering, CSV, and strict-quality exits validated |
+| Streaming report and period weights | Final quality matched 17,323 fixture samples; unequal 1/9 ms periods yielded 10/90% in deterministic regression |
+| Module identity and hashing | Recorded/local identities separated; hashes cached per local path and enabled with --hash |
+
+On the checked-in CPU fixture and this host's available module files,
+`buildid-list --json` took 1.80 s after the fix, versus 78.84 s in the original
+evaluation. The default now omits full-file hashing. Explicit `--hash --json`
+took 13.79 s with unique-path caching; these timings describe different requested
+work and are not an identical-work hashing benchmark. The existing 30/60-second
+CTest deadlines were retained.
+
+Scope of this run: CPU, scheduler, PMC sampling/snapshots, output contracts and
+cleanup on this AMD/Windows combination. The Intel LBR/context evidence above
+remains a separate hardware validation run.

@@ -50,6 +50,9 @@ struct ReportRequest {
     bool folded = false, off_cpu = false, off_cpu_include_inferred = false;
     bool stdio_output = false, quiet = false, verbose = false, csv = false, json = false;
     std::wstring kind;
+    std::wstring weight = L"period";
+    bool weight_explicit = false;
+    std::optional<uint32_t> source;
 };
 
 struct ScriptRequest {
@@ -115,6 +118,7 @@ struct DiffRequest {
     std::optional<uint32_t> pid, first_pid, second_pid;
     std::wstring dso;
     std::wstring normalization = L"weight";
+    std::wstring matching = L"symbol";
     bool calltree = false, json = false, csv = false;
 };
 
@@ -129,6 +133,7 @@ struct ArchiveRequest {
 struct BuildIdListRequest {
     std::filesystem::path input;
     bool json = false, csv = false;
+    bool hash = false;
 };
 
 struct ListRequest {

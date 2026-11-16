@@ -5,19 +5,124 @@
   "type": "array",
   "items": {
     "type": "object",
-    "required": ["base", "size", "pid", "pe_timestamp", "pe_checksum", "machine", "pdb_guid", "pdb_age", "module_sha256", "path", "status"],
+    "required": [
+      "base",
+      "size",
+      "pid",
+      "pe_timestamp",
+      "pe_checksum",
+      "machine",
+      "pdb_guid",
+      "pdb_age",
+      "module_sha256",
+      "path",
+      "status",
+      "recorded_identity",
+      "local_identity",
+      "module_sha256_source",
+      "hash_status"
+    ],
     "properties": {
-      "base": { "type": "integer", "minimum": 0 },
-      "size": { "type": "integer", "minimum": 0 },
-      "pid": { "type": "integer", "minimum": 0 },
-      "pe_timestamp": { "type": "integer", "minimum": 0 },
-      "pe_checksum": { "type": "integer", "minimum": 0 },
-      "machine": { "type": "integer", "minimum": 0 },
-      "pdb_guid": { "type": "string" },
-      "pdb_age": { "type": "integer", "minimum": 0 },
-      "module_sha256": { "type": "string" },
-      "path": { "type": "string" },
-      "status": { "type": "string" }
+      "base": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "size": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "pid": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "pe_timestamp": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "pe_checksum": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "machine": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "pdb_guid": {
+        "type": "string"
+      },
+      "pdb_age": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "module_sha256": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "matching",
+          "mismatched",
+          "missing"
+        ]
+      },
+      "recorded_identity": {
+        "type": "object",
+        "required": [
+          "pe_timestamp",
+          "pe_checksum",
+          "size_of_image"
+        ],
+        "properties": {
+          "pe_timestamp": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pe_checksum": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "size_of_image": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": true
+      },
+      "local_identity": {
+        "type": "object",
+        "required": [
+          "pe_timestamp",
+          "pe_checksum",
+          "size_of_image"
+        ],
+        "properties": {
+          "pe_timestamp": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pe_checksum": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "size_of_image": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": true
+      },
+      "module_sha256_source": {
+        "const": "local-file"
+      },
+      "hash_status": {
+        "enum": [
+          "not-requested",
+          "computed",
+          "unavailable"
+        ]
+      }
     },
     "additionalProperties": true
   }

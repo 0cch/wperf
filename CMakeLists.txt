@@ -117,6 +117,10 @@ add_executable(wperf_request_tests tests/request_tests.cpp)
 target_compile_options(wperf_request_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_request_tests PRIVATE wperf_core)
 add_test(NAME request_tests COMMAND wperf_request_tests)
+add_executable(wperf_priority_fixes_tests tests/priority_fixes_tests.cpp)
+target_compile_options(wperf_priority_fixes_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_priority_fixes_tests PRIVATE wperf_core)
+add_test(NAME priority_fixes COMMAND wperf_priority_fixes_tests)
 add_executable(wperf_regression_tests tests/regression_tests.cpp)
 target_compile_options(wperf_regression_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
@@ -220,6 +224,11 @@ add_test(NAME trace_limit_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOU
 set_tests_properties(trace_limit_test PROPERTIES TIMEOUT 30)
 add_test(NAME buildid_list_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/buildid_list_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl)
 set_tests_properties(buildid_list_test PROPERTIES TIMEOUT 30)
+add_test(NAME priority_cli
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/priority_cli_test.ps1
+         -Wperf $<TARGET_FILE:wperf> -FixtureDirectory ${CMAKE_CURRENT_SOURCE_DIR}/tests/data
+         -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR}/priority-cli)
+set_tests_properties(priority_cli PROPERTIES TIMEOUT 30)
 add_test(NAME stat_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/stat_output_test.ps1 -Wperf $<TARGET_FILE:wperf>)
 set_tests_properties(stat_output_test PROPERTIES TIMEOUT 30)
 add_test(NAME sched_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/sched_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)

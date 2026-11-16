@@ -1,5 +1,22 @@
 # wperf Changelog
 
+## Unreleased
+
+- Separated worker recovery checkpoints from controller status and validated guard checkpoint identity.
+- Corrected CPU table/tree/folded overhead to period weights; added `--weight period|samples` and `--source`, with whole-report fallback for unknown periods and rejection of mixed domains.
+- Applied I/O/PMC PID/TID/comm/children/CPU/time selection, preserved PMC baselines across filters, added PMC CSV, and unified loss/strict gates; incompatible options now fail explicitly.
+- Forwarded parsed `record --pmc-counters` sources to the worker; the typed-request conversion had silently dropped the counter list.
+- Finalized stream quality after consuming samples and distinguished unloaded stacks from missing stacks.
+- Waited for metadata-provider enablement before writing capture periods/counter sources, preventing successful writes that silently logged no metadata.
+- Added default `diff --match symbol` cross-build alignment and optional strict identity matching, with explicit added/removed rows.
+- Preserved recorded ETL module identity, separated local identity, and changed buildid status to matching/mismatched/missing.
+- Cached module metadata and optional local-file SHA256; `buildid-list --hash` now requests hashing instead of hashing every mapping by default.
+- Clipped inferred off-CPU intervals at thread/process exit and finalized derived quality counters.
+- Implemented `script -o` UTF-8/LF output and observation-delta thread stat output in text/JSON/CSV, retaining observed exited threads; corrected PMC name examples to use `-e`.
+- Updated help, generated command reference, usage, compatibility/public contracts, schemas, and regression tests together.
+
+Compatibility: CPU/folded defaults use periods; use `--weight samples` for the prior count mode. Diff defaults to symbol matching; use `--match identity` for prior keys. Buildid PE fields now describe the capture, status values changed, and hashes require `--hash`; CSV adds local-identity/hash columns. These pre-1.0 default/meaning changes must be released as a minor version, not a compatible patch.
+
 ## 0.8.2.0 - 2026-11-16
 
 - Normalized and documented the complete exit-code contract, including target launch, target failure, permission, and internal errors.
@@ -14,7 +31,10 @@
 - Replaced vendored/FetchContent dependencies with the pinned vcpkg manifest and `x64-windows-static-md` static dependency builds.
 - Made CLI11 the single public parser and moved command dispatch to typed request variants; internal worker, guard, and live-worker arguments are also parsed once.
 - Standardized JSON serialization on nlohmann/json and the shared streaming writer, including report metadata envelopes, PMC rows, and live trace events.
-- Added repository coding standards, vcpkg-based development/release commands, and live PMC/live trace JSON integration tests.`n- Made CI fetch the manifest baseline commit when GitHub's preinstalled vcpkg checkout does not contain it.`n- Made the exit-code test assert based on the current process elevation state so elevated CI runners are tested correctly.`n- Increased the target-exit test duration to avoid a startup race on busy CI runners.
+- Added repository coding standards, vcpkg-based development/release commands, and live PMC/live trace JSON integration tests.
+- Made CI fetch the manifest baseline commit when GitHub's preinstalled vcpkg checkout does not contain it.
+- Made the exit-code test assert based on the current process elevation state so elevated CI runners are tested correctly.
+- Increased the target-exit test duration to avoid a startup race on busy CI runners.
 
 
 ## 0.8.1.0

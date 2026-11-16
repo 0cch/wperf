@@ -76,11 +76,17 @@ Two tests protect the boundary:
 3. The worker configures the profile interval/PMC source, starts an ETW session,
    and enables the requested kernel providers.
 4. The controller waits for READY before launching a child process.
+   Capture metadata provider enablement also waits for completion before writing
+   period/source metadata; asynchronous enablement could otherwise discard the
+   first metadata event while EventWrite still returns success.
 5. The worker drains real-time buffers or writes a sequential ETL.
 6. STOP is bounded; the worker reports lost buffers/events and restores global
    sampling state.
 7. The guard stops orphaned sessions and restores configuration if the worker
-   exits unexpectedly.
+   exits unexpectedly. The worker writes recovery fields to a separate atomic
+   `<state>.restore` checkpoint, validated by correlation ID and worker PID.
+   Controller status writes cannot overwrite that checkpoint. Legacy state
+   fields remain a fallback for older runs.
 
 The system logger may independently report buffer loss. Successful process
 exit alone is not proof of a complete trace; quality counters are part of the
@@ -136,7 +142,8 @@ running --preemption--> ready --scheduled--> running
 A blocked interval requires a switching-out `Wait`. The outgoing thread is
 `related_tid`; `previous_state` belongs to that outgoing thread. Intervals that
 cross the end of capture are marked truncated, not treated as confirmed
-observations.
+observations. Inferred upper bounds also stop at thread/process termination.
+Quality is finalized after all derived interval counters are populated.
 
 Reports expose confirmed and inferred duration separately. Folded output uses
 nanoseconds as its weight.
@@ -183,3 +190,8 @@ a result is usable.
 
 See [USAGE.md](USAGE.md) for command behavior and [COMPATIBILITY.md](COMPATIBILITY.md)
 for platform and semantic limits.
+
+CPU aggregation tracks counts and periods separately and rejects mixed units.
+Streaming output emits final quality after rows. Build identity remains strict
+for symbol loading/cache; cross-build diff matching uses a separate symbol key.
+Module-list file metadata and optional hashes are cached within each invocation.

@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -31,6 +32,8 @@
 
 namespace wperf {
 using namespace commands;
+
+bool WriteReportFile(const std::filesystem::path&, const std::wstring&, std::wstring*);
 
 int RunScript(const ScriptRequest& request) {
     std::filesystem::path input = request.input;
@@ -87,13 +90,16 @@ int RunScript(const ScriptRequest& request) {
         symbolizer.AddModule(image);
     }
 
+    std::wostringstream file_output;
+    std::wostream& output = request.output.empty() ? std::wcout : file_output;
+
     for (size_t field_index = 0; field_index < field_list.size(); ++field_index) {
         if (field_index != 0) {
-            std::wcout << (csv ? L"," : L" ");
+            output << (csv ? L"," : L" ");
         }
-        std::wcout << field_list[field_index];
+        output << field_list[field_index];
     }
-    std::wcout << L"\n";
+    output << L"\n";
 
     ProcessNameIndex process_names(trace);
     uint64_t emitted = 0;
@@ -109,31 +115,31 @@ int RunScript(const ScriptRequest& request) {
         const std::wstring comm = process_names.Name(sample.pid, sample.timestamp_ns);
         for (size_t field_index = 0; field_index < field_list.size(); ++field_index) {
             if (field_index != 0) {
-                std::wcout << (csv ? L"," : L" ");
+                output << (csv ? L"," : L" ");
             }
             const std::wstring& field = field_list[field_index];
             if (field == L"timestamp") {
-                std::wcout << sample.timestamp_ns;
+                output << sample.timestamp_ns;
             } else if (field == L"cpu") {
-                std::wcout << sample.cpu;
+                output << sample.cpu;
             } else if (field == L"pid") {
-                std::wcout << sample.pid;
+                output << sample.pid;
             } else if (field == L"tid") {
-                std::wcout << sample.tid;
+                output << sample.tid;
             } else if (field == L"ip") {
-                std::wcout << std::hex << sample.instruction_pointer << std::dec;
+                output << std::hex << sample.instruction_pointer << std::dec;
             } else if (field == L"comm") {
-                std::wcout << (csv ? CsvEscape(comm) : comm);
+                output << (csv ? CsvEscape(comm) : comm);
             } else if (field == L"dso") {
-                std::wcout << (csv ? CsvEscape(leaf.module) : leaf.module);
+                output << (csv ? CsvEscape(leaf.module) : leaf.module);
             } else if (field == L"symbol") {
-                std::wcout << (csv ? CsvEscape(leaf.symbol) : leaf.symbol);
+                output << (csv ? CsvEscape(leaf.symbol) : leaf.symbol);
             } else if (field == L"source") {
-                std::wcout << sample.profile_source;
+                output << sample.profile_source;
             } else if (field == L"period") {
-                std::wcout << sample.period;
+                output << sample.period;
             } else if (field == L"stack_quality") {
-                std::wcout << (sample.stack_quality == StackQuality::Exact ? L"exact" :
+                output << (sample.stack_quality == StackQuality::Exact ? L"exact" :
                                sample.stack_quality == StackQuality::Approximate ? L"approximate" : L"missing");
             } else if (field == L"stack") {
                 std::wostringstream stack;
@@ -143,11 +149,14 @@ int RunScript(const ScriptRequest& request) {
                     }
                     stack << std::hex << sample.stack[frame] << std::dec;
                 }
-                std::wcout << (csv ? CsvEscape(stack.str()) : stack.str());
+                output << (csv ? CsvEscape(stack.str()) : stack.str());
             }
         }
-        std::wcout << L"\n";
+        output << L"\n";
         ++emitted;
+    }
+    if (!request.output.empty() && !WriteReportFile(request.output, file_output.str(), &error)) {
+        PrintError(error); return 9;
     }
     return 0;
 }
@@ -737,7 +746,30 @@ int RunSched(const SchedRequest& request) {
     }
     return ExitStatus(ExitCode::Success);
 }
-void WriteIoSummary(const TraceData& trace, bool json, JsonStreamWriter* shared_writer = nullptr) {
+bool MatchesEventSelection(const TraceData& trace, const TraceEvent& event,
+                           const CpuReportOptions& options, const ProcessNameIndex& names,
+                           bool outgoing = false) {
+    SampleRecord point;
+    point.pid = outgoing ? (event.related_tid == 0 ? 0 :
+                           event.related_pid == 0 ? UINT32_MAX : event.related_pid) : event.pid;
+    point.tid = outgoing ? event.related_tid : event.tid;
+    point.cpu = event.cpu;
+    point.timestamp_ns = event.timestamp_ns;
+    auto selection = options;
+    selection.profile_source.reset();
+    if (!MatchesSampleSelection(trace, point, selection)) return false;
+    if (options.comm_filter.empty()) return true;
+    auto lower = [](std::wstring text) {
+        std::transform(text.begin(), text.end(), text.begin(), [](wchar_t ch) { return wchar_t(std::towlower(ch)); });
+        return text;
+    };
+    return lower(names.Name(point.pid, point.timestamp_ns)).find(lower(options.comm_filter)) != std::wstring::npos;
+}
+
+uint64_t WriteIoSummary(const TraceData& trace, const CpuReportOptions& options,
+                       JsonStreamWriter* shared_writer = nullptr) {
+    const bool json = options.json;
+    ProcessNameIndex names(trace);
     uint64_t file_io = 0;
     uint64_t disk_io = 0;
     uint64_t file_duration_total_ns = 0;
@@ -750,6 +782,7 @@ void WriteIoSummary(const TraceData& trace, bool json, JsonStreamWriter* shared_
     struct FileStats { uint64_t operations=0,bytes=0; std::vector<uint64_t> durations; };
     std::map<std::pair<std::wstring,uint32_t>,FileStats> files;
     for (const TraceEvent& event : trace.events) {
+        if (!MatchesEventSelection(trace, event, options, names)) continue;
         if (event.kind == TraceEventKind::FileIo) {
             ++file_io;
             ++file_operations[event.event_id];
@@ -777,6 +810,7 @@ void WriteIoSummary(const TraceData& trace, bool json, JsonStreamWriter* shared_
         JsonStreamWriter local_writer(std::wcout);
         JsonStreamWriter& writer = shared_writer == nullptr ? local_writer : *shared_writer;
         writer.BeginObject();
+        writer.Key(L"quality_scope"); writer.String(L"capture");
         writer.Key(L"file_io"); writer.Unsigned(file_io);
         writer.Key(L"disk_io"); writer.Unsigned(disk_io);
         writer.Key(L"init"); writer.Unsigned(trace.quality.io_init_events);
@@ -804,12 +838,9 @@ void WriteIoSummary(const TraceData& trace, bool json, JsonStreamWriter* shared_
         writer.EndArray();
         writer.EndObject();
         std::wcout << L"\n";
-        return;
+        return file_io + disk_io;
     }
 
-    std::wcout << L"IO quality  init=" << trace.quality.io_init_events
-               << L" complete=" << trace.quality.io_complete_events
-               << L" orphan=" << trace.quality.io_orphaned << L"\n";
     std::wcout << L"Kind     Events  Timed  AvgUs  MaxUs\n";
     const uint64_t file_average =
         file_duration_count == 0 ? 0 : file_duration_total_ns / file_duration_count;
@@ -828,6 +859,7 @@ void WriteIoSummary(const TraceData& trace, bool json, JsonStreamWriter* shared_
     for (const auto& [id, count] : file_operations) {
         std::wcout << L"  " << id << L"  " << count << L"\n";
     }
+    return file_io + disk_io;
 }
 
 bool WriteReportFile(const std::filesystem::path& path, const std::wstring& text,
@@ -860,6 +892,9 @@ int RunReport(const ReportRequest& request) {
     std::wstring kind = request.kind;
     CpuReportOptions report_options;
     report_options.pid = request.pid;
+    report_options.weight_mode = request.weight == L"samples" ? CpuReportOptions::WeightMode::Samples : CpuReportOptions::WeightMode::Period;
+    report_options.quiet = request.quiet;
+    report_options.profile_source = request.source;
     report_options.tid = request.tid;
     report_options.comm_filter = request.comm;
     report_options.dso_filter = request.dso;
@@ -948,6 +983,25 @@ int RunReport(const ReportRequest& request) {
         input = std::filesystem::absolute(input);
     }
 
+    if ((kind == L"io" || kind == L"pmc") &&
+        (!request.dso.empty() || !request.symbol.empty() || request.scope != L"all" ||
+         request.call_graph || request.folded || request.exact_stacks || request.max_missing_stacks ||
+         request.percent_limit || !request.sort_fields.empty() || request.weight_explicit ||
+         !request.archive.empty() || !request.symbol_path.empty())) {
+        PrintError(L"I/O and PMC snapshot reports do not support symbol, stack, scope, weight, sort, or percent options");
+        return 2;
+    }
+    if ((kind == L"io" || off_cpu) && request.source) {
+        PrintError(L"--source is only supported for CPU/PMC reports"); return 2;
+    }
+    if (off_cpu && request.weight_explicit) { PrintError(L"off-CPU reports always use duration weights"); return 2; }
+    if (!off_cpu && request.off_cpu_include_inferred) { PrintError(L"--off-cpu-include-inferred requires --off-cpu"); return 2; }
+    if (stream && maximum_missing) { PrintError(L"--max-missing-stacks requires loaded stacks"); return 2; }
+    const auto quality_failed = [&](const TraceData& data) {
+        return (maximum_lost && data.quality.lost_events > *maximum_lost) ||
+               (maximum_missing && data.quality.samples_without_stack > *maximum_missing) ||
+               (strict_quality && data.quality.incomplete);
+    };
     TraceData trace;
     std::wstring error;
     if(stream&&(kind==L"io"||kind==L"pmc"||report_options.call_tree||report_options.folded||report_options.exact_stacks_only)) {
@@ -962,18 +1016,29 @@ int RunReport(const ReportRequest& request) {
     if (metadata && output_path.empty()) {
         envelope = std::make_unique<JsonStreamWriter>(std::wcout);
         envelope->BeginObject();
-        envelope->Key(L"quality");
-        envelope->Item(QualityJson(trace));
         envelope->Key(L"rows");
     }
     const auto close_envelope = [&]() {
         if (envelope) {
+            envelope->Key(L"quality");
+            envelope->Item(QualityJson(trace));
             envelope->EndObject();
             std::wcout << L"\n";
         }
     };
+    if ((kind == L"io" || kind == L"pmc") && !quiet) {
+        if (verbose) std::wcerr << ToUtf16(QualityJson(trace).dump()) << L"\n";
+        else std::wcerr << L"wperf: capture quality lost=" << trace.quality.lost_events
+                        << L" decode_errors=" << trace.quality.decode_errors
+                        << L" incomplete=" << trace.quality.incomplete << L"\n";
+    }
     if (kind == L"pmc") {
-        const auto rows = AggregatePmcCounters(trace);
+        ProcessNameIndex names(trace);
+        const auto rows = AggregatePmcCounters(trace, [&](uint64_t start, const TraceEvent& event) {
+            if (!MatchesEventSelection(trace, event, report_options, names, true)) return false;
+            const uint64_t origin = trace.start_ns == UINT64_MAX ? 0 : trace.start_ns;
+            return !report_options.start_offset_ns || (start >= origin && start-origin >= *report_options.start_offset_ns);
+        });
         if (trace.pmc_counter_sources.empty()) {
             PrintError(L"counter-source metadata unavailable");
             return 5;
@@ -984,8 +1049,8 @@ int RunReport(const ReportRequest& request) {
             JsonStreamWriter& writer = envelope ? *envelope : local_writer;
             writer.BeginArray();
             for (const auto& row : rows) {
-                if (report_options.pid && row.pid != *report_options.pid) continue;
-                if (report_options.tid && row.tid != *report_options.tid) continue;
+
+                if (report_options.profile_source && row.source != *report_options.profile_source) continue;
                 ++emitted;
                 nlohmann::ordered_json item;
                 item["cpu"] = row.cpu;
@@ -1001,21 +1066,25 @@ int RunReport(const ReportRequest& request) {
             writer.EndArray();
             close_envelope();
         } else {
-            std::wcout << L"PMC event snapshots: estimated per-CPU/old-thread deltas, no multiplex scaling\nCPU Source PID TID Delta Intervals\n";
+            if (report_options.csv) std::wcout << L"cpu,source,pid,tid,delta,intervals,exact,semantics\n";
+            else std::wcout << L"PMC event snapshots: estimated per-CPU/old-thread deltas, no multiplex scaling\nCPU Source PID TID Delta Intervals\n";
             for (const auto& row : rows) {
-                if (report_options.pid && row.pid != *report_options.pid) continue;
-                if (report_options.tid && row.tid != *report_options.tid) continue;
+
+                if (report_options.profile_source && row.source != *report_options.profile_source) continue;
                 ++emitted;
-                std::wcout << row.cpu << L" " << row.source << L" " << row.pid << L" "
-                           << row.tid << L" " << row.delta << L" " << row.intervals << L"\n";
+                const wchar_t* sep = report_options.csv ? L"," : L" ";
+                std::wcout << row.cpu << sep << row.source << sep << row.pid << sep
+                           << row.tid << sep << row.delta << sep << row.intervals;
+                if (report_options.csv) std::wcout << L",false,event-snapshot-derived";
+                std::wcout << L"\n";
             }
         }
-        return emitted == 0 ? 5 : 0;
+        return quality_failed(trace) ? 6 : (emitted == 0 ? 5 : 0);
     }
     if (kind == L"io") {
-        WriteIoSummary(trace, report_options.json, envelope.get());
+        const auto emitted = WriteIoSummary(trace, report_options, envelope.get());
         close_envelope();
-        return strict_quality && trace.quality.incomplete ? 6 : 0;
+        return quality_failed(trace) ? 6 : (emitted == 0 ? 5 : 0);
     }
 
 
@@ -1151,6 +1220,6 @@ int RunReport(const ReportRequest& request) {
     }
     const bool exceeds_loss=maximum_lost&&trace.quality.lost_events>*maximum_lost;
     const bool exceeds_missing=maximum_missing&&trace.quality.samples_without_stack>*maximum_missing;
-    return trace.quality.samples_total==0 || exceeds_loss || exceeds_missing || (strict_quality&&trace.quality.incomplete)?6:0;
+    return trace.quality.samples_total==0 || exceeds_loss || exceeds_missing || quality_failed(trace)?6:0;
 }
 }  // namespace wperf

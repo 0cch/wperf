@@ -170,6 +170,9 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
         value.symbol_path = W(values, "--symbol-path");
         value.archive = W(values, "--archive");
         value.sort_fields = SplitComma(W(values, "--sort"));
+        for (const auto& field : value.sort_fields)
+            if (field != L"weight" && field != L"samples" && field != L"comm" && field != L"dso" && field != L"symbol")
+                return Bad(error, L"unsupported report sort field: " + field);
         if (values.contains("--call-graph")) {
             value.call_graph = W(values, "--call-graph");
             if (value.call_graph->empty()) value.call_graph = L"callee";
@@ -193,6 +196,11 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
         value.csv = Has(flags, "--csv");
         value.json = Has(flags, "--json");
         value.kind = W(values, "--kind");
+        value.weight = TextOr(values, "--weight", L"period");
+        value.weight_explicit = values.contains("--weight");
+        if (value.weight != L"period" && value.weight != L"samples")
+            return Bad(error, L"--weight requires period or samples");
+        if (!ReadU32(values, "--source", value.source, error)) return false;
         if (!ReadU32(values, "--pid", value.pid, error) ||
             !ReadU32(values, "--tid", value.tid, error) ||
             !ReadNumber(values, "--percent-limit", value.percent_limit, error) ||
@@ -206,6 +214,9 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
         if (value.percent_limit && (*value.percent_limit < 0.0 || *value.percent_limit > 100.0)) {
             return Bad(error, L"--percent-limit requires a number from 0 to 100");
         }
+        if ((value.time_start_ms && *value.time_start_ms > UINT64_MAX / 1000000) ||
+            (value.time_end_ms && *value.time_end_ms > UINT64_MAX / 1000000))
+            return Bad(error, L"report time offset exceeds nanosecond range");
         request = std::move(value);
         return true;
     }
@@ -321,6 +332,9 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
         value.archive = W(values, "--archive");
         value.dso = W(values, "--dso");
         value.normalization = TextOr(values, "--normalize", L"weight");
+        value.matching = TextOr(values, "--match", L"symbol");
+        if (value.matching != L"symbol" && value.matching != L"identity")
+            return Bad(error, L"--match requires symbol or identity");
         value.calltree = Has(flags, "--calltree");
         value.json = Has(flags, "--json");
         value.csv = Has(flags, "--csv");
@@ -348,7 +362,7 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
         return true;
     }
     if (command == "buildid-list") {
-        request = BuildIdListRequest{W(values, "--input"), Has(flags, "--json"), Has(flags, "--csv")};
+        request = BuildIdListRequest{W(values, "--input"), Has(flags, "--json"), Has(flags, "--csv"), Has(flags, "--hash")};
         return true;
     }
     if (command == "list") {

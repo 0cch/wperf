@@ -74,6 +74,9 @@ $symbolPath = Split-Path -Parent $Wperf
 Assert-JsonContract "stat output" @(
     "stat", "--duration", "1", "--json", "--", "cmd.exe", "/d", "/c", "exit 0"
 ) (Join-Path $SchemaDirectory "stat.schema.json")
+Assert-JsonContract "stat thread output" @(
+    "stat", "-p", "$PID", "--duration", "10", "--per-thread", "--json"
+) (Join-Path $SchemaDirectory "stat.schema.json")
 
 Assert-JsonContract "trace metadata" @(
     "trace", "-i", $sched, "-e", "sched", "--json", "--metadata", "--max", "10"

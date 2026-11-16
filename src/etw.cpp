@@ -298,7 +298,7 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
 
     ULONG metadata_status=EventRegister(&kWperfMetadataGuid,nullptr,nullptr,&metadata_provider_);
     if(metadata_status==ERROR_SUCCESS)metadata_status=EnableTraceEx2(handle_,&kWperfMetadataGuid,
-        EVENT_CONTROL_CODE_ENABLE_PROVIDER,TRACE_LEVEL_INFORMATION,0,0,0,nullptr);
+        EVENT_CONTROL_CODE_ENABLE_PROVIDER,TRACE_LEVEL_INFORMATION,0,0,5000,nullptr);
     if(metadata_status==ERROR_SUCCESS) {
         std::ostringstream metadata; metadata<<"wperf-meta-v1\nsession "<<HexText(options.session_name)<<'\n';
         if(configured_interval_!=0)metadata<<"period "<<original_interval_.Source<<' '<<configured_interval_<<'\n';
@@ -309,7 +309,10 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         }
         const auto text=metadata.str(); EVENT_DESCRIPTOR descriptor{}; descriptor.Id=1; descriptor.Level=TRACE_LEVEL_INFORMATION;
         EVENT_DATA_DESCRIPTOR data{}; EventDataDescCreate(&data,text.data(),static_cast<ULONG>(text.size()));
-        metadata_status=EventWrite(metadata_provider_,&descriptor,1,&data);
+        // Timeout=0 enablement is asynchronous; writing before enable completes
+        // can succeed without logging the metadata required to interpret counters.
+        metadata_status = EventEnabled(metadata_provider_, &descriptor)
+            ? EventWrite(metadata_provider_, &descriptor, 1, &data) : ERROR_NOT_READY;
     }
     if(metadata_status!=ERROR_SUCCESS) { Stop(nullptr); if(error)*error=LastErrorWith(L"write capture metadata",metadata_status); return false; }
     return true;

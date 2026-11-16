@@ -76,6 +76,7 @@ inline nlohmann::ordered_json QualityJson(const TraceData& trace) {
     value["budget_estimated_bytes"] = q.budget_estimated_bytes;
     value["budget_exceeded"] = q.budget_exceeded;
     value["stacks_loaded"] = trace.stacks_loaded;
+    value["stack_assessment"] = trace.stacks_loaded ? "loaded" : "not-loaded";
     value["incomplete"] = q.incomplete;
     return value;
 }

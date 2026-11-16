@@ -74,6 +74,10 @@ struct OptionCase {
 void TestPublicOptions() {
     const std::vector<OptionCase> cases = {
         {{L"record", L"--elevate"}, L"record"},
+        {{L"report", L"--weight", L"period"}, L"report"},
+        {{L"report", L"--source", L"19"}, L"report"},
+        {{L"diff", L"--match", L"symbol"}, L"diff"},
+        {{L"buildid-list", L"--hash"}, L"buildid-list"},
         {{L"record", L"-F", L"99"}, L"record"},
         {{L"record", L"--freq", L"99"}, L"record"},
         {{L"record", L"-g"}, L"record"},

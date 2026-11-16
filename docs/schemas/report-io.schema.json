@@ -3,54 +3,170 @@
   "$id": "https://github.com/0cch/wperf/schemas/report-io.schema.json",
   "title": "wperf I/O report",
   "type": "object",
-  "required": ["quality", "rows"],
+  "required": [
+    "quality",
+    "rows"
+  ],
   "properties": {
     "quality": {
       "type": "object",
-      "required": ["samples", "samples_dropped", "lost_events", "lost_buffers", "incomplete"],
+      "required": [
+        "samples",
+        "samples_dropped",
+        "lost_events",
+        "lost_buffers",
+        "incomplete"
+      ],
       "properties": {
-        "samples": { "type": "integer", "minimum": 0 },
-        "samples_dropped": { "type": "integer", "minimum": 0 },
-        "lost_events": { "type": "integer", "minimum": 0 },
-        "lost_buffers": { "type": "integer", "minimum": 0 },
-        "io_init_events": { "type": "integer", "minimum": 0 },
-        "io_complete_events": { "type": "integer", "minimum": 0 },
-        "io_orphaned": { "type": "integer", "minimum": 0 },
-        "incomplete": { "type": "boolean" }
+        "samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "samples_dropped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lost_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lost_buffers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "io_init_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "io_complete_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "io_orphaned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "incomplete": {
+          "type": "boolean"
+        },
+        "stack_assessment": {
+          "enum": [
+            "loaded",
+            "not-loaded"
+          ]
+        }
       },
       "additionalProperties": true
     },
     "rows": {
       "type": "object",
-      "required": ["file_io", "disk_io", "init", "complete", "orphan", "file_duration_count", "file_duration_total_ns", "file_duration_max_ns", "disk_duration_count", "disk_duration_total_ns", "disk_duration_max_ns", "files"],
+      "required": [
+        "file_io",
+        "disk_io",
+        "init",
+        "complete",
+        "orphan",
+        "file_duration_count",
+        "file_duration_total_ns",
+        "file_duration_max_ns",
+        "disk_duration_count",
+        "disk_duration_total_ns",
+        "disk_duration_max_ns",
+        "files",
+        "quality_scope"
+      ],
       "properties": {
-        "file_io": { "type": "integer", "minimum": 0 },
-        "disk_io": { "type": "integer", "minimum": 0 },
-        "init": { "type": "integer", "minimum": 0 },
-        "complete": { "type": "integer", "minimum": 0 },
-        "orphan": { "type": "integer", "minimum": 0 },
-        "file_duration_count": { "type": "integer", "minimum": 0 },
-        "file_duration_total_ns": { "type": "integer", "minimum": 0 },
-        "file_duration_max_ns": { "type": "integer", "minimum": 0 },
-        "disk_duration_count": { "type": "integer", "minimum": 0 },
-        "disk_duration_total_ns": { "type": "integer", "minimum": 0 },
-        "disk_duration_max_ns": { "type": "integer", "minimum": 0 },
+        "file_io": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "disk_io": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "init": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "orphan": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "file_duration_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "file_duration_total_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "file_duration_max_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "disk_duration_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "disk_duration_total_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "disk_duration_max_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
         "files": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["path", "operation", "operations", "bytes", "p50_ns", "p95_ns", "p99_ns"],
+            "required": [
+              "path",
+              "operation",
+              "operations",
+              "bytes",
+              "p50_ns",
+              "p95_ns",
+              "p99_ns"
+            ],
             "properties": {
-              "path": { "type": "string" },
-              "operation": { "type": "integer", "minimum": 0 },
-              "operations": { "type": "integer", "minimum": 0 },
-              "bytes": { "type": "integer", "minimum": 0 },
-              "p50_ns": { "type": "integer", "minimum": 0 },
-              "p95_ns": { "type": "integer", "minimum": 0 },
-              "p99_ns": { "type": "integer", "minimum": 0 }
+              "path": {
+                "type": "string"
+              },
+              "operation": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "operations": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "p50_ns": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "p95_ns": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "p99_ns": {
+                "type": "integer",
+                "minimum": 0
+              }
             },
             "additionalProperties": true
           }
+        },
+        "quality_scope": {
+          "const": "capture"
         }
       },
       "additionalProperties": true

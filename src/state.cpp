@@ -71,6 +71,12 @@ bool StateStore::Write(const RunState& state, std::wstring* error) const {
     value["updated_utc"] = ToUtf8(copy.updated_utc);
     stream << value.dump(2) << "\n";
     stream.close();
+    if (!stream) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        if (error) *error = L"cannot persist state file: " + path_.wstring();
+        return false;
+    }
 
     if (!MoveFileExW(temporary.c_str(), path_.c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
@@ -83,6 +89,25 @@ bool StateStore::Write(const RunState& state, std::wstring* error) const {
         return false;
     }
     return true;
+}
+
+bool StateStore::WriteRecovery(const RunState& state, std::wstring* error) const {
+    return StateStore(path_.wstring() + L".restore").Write(state, error);
+}
+
+std::optional<RunState> StateStore::ReadRecovery() const {
+    std::ifstream stream(std::filesystem::path(path_.wstring() + L".restore"), std::ios::binary);
+    if (!stream) return std::nullopt;
+    const auto value = nlohmann::ordered_json::parse(stream, nullptr, false);
+    if (value.is_discarded() || !value.is_object()) return std::nullopt;
+    RunState state;
+    state.correlation_id = JsonStringValue(value, "correlation_id");
+    state.worker_pid = JsonNumberValue(value, "worker_pid");
+    state.restore_source = JsonNumberValue(value, "restore_source");
+    state.restore_interval = JsonNumberValue(value, "restore_interval");
+    state.configured_interval = JsonNumberValue(value, "configured_interval");
+    state.restore_clear_pmc = JsonNumberValue(value, "restore_clear_pmc");
+    return state;
 }
 
 std::vector<RunState> StateStore::ReadAll(

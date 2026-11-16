@@ -7,6 +7,7 @@
 #include <mutex>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -35,6 +36,8 @@ struct ResolvedSymbol {
 };
 
 std::wstring SymbolAggregateKey(const ResolvedSymbol& symbol);
+std::wstring SymbolComparisonKey(const ResolvedSymbol& symbol, bool strict_identity,
+                                 std::wstring_view unmapped_scope = {});
 
 struct ModuleIdentity {
     bool valid = false;

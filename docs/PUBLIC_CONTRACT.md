@@ -99,7 +99,29 @@ not numeric zero.
 
 ## Estimated values
 
-- CPU sample weights are nanosecond periods.
+- CPU sample weights are nanosecond periods. CPU/PMC sample tables, trees and
+  folded output default to `--weight period`; `--weight samples` selects counts.
+  Any selected unknown period causes a whole-report count fallback, identified
+  by `overhead_basis` and `normalization_fallback`. Different sample domains are
+  rejected unless narrowed with `--source`.
+- Streaming report quality is finalized after sample consumption. With
+  `stacks_loaded:false`, `stack_assessment:"not-loaded"` means no stack quality
+  was evaluated, and omitted stacks are not reported as missing.
+- I/O/PMC snapshot selection covers PID/TID/comm/children/CPU/time. Quality gates
+  describe the full capture. Inapplicable symbol, stack, scope, weight, sort and
+  percent options are errors. Empty I/O/PMC selections exit 5.
+- `diff --match symbol` aligns resolved module/function names; identity mode and
+  unresolved addresses retain strict build/RVA keys. Rows expose matching mode
+  and added/removed/matched status.
+  Unmapped addresses use trace-local keys and are not matched across traces.
+- `buildid-list` PE timestamp/checksum are recorded ETL values. Current file
+  metadata is in `local_identity`; status is matching/mismatched/missing.
+  `--hash` requests cached SHA256 of the local file, not the captured binary.
+- `stat --per-thread` JSON contains observation-delta thread rows; its CSV uses
+  the documented process/thread header. Observed exited threads are retained,
+  discovery occurs every 50 ms, and unobserved short-lived threads may be missed.
+  `threads_complete` describes access to observed counters only.
+- `script -o` writes UTF-8 without BOM and LF line endings to the requested file.
 - PMC interrupt periods are source-specific event counts.
 - CSwitch snapshots are estimated deltas and are always `exact:false` with
   `semantics:"event-snapshot-derived"`.

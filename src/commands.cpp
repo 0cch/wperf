@@ -33,6 +33,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -603,7 +604,7 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
         state.restore_source=restore.source; state.restore_interval=restore.original_interval;
         state.configured_interval=restore.configured_interval; state.restore_clear_pmc=restore.clear_pmc;
         state.phase=L"CONFIGURING";
-        return state_store.Write(state,&error);
+        return state_store.WriteRecovery(state,&error);
     });
     if (!session.Start(trace_options, &error)) {
         logger.Log(LogLevel::Error, L"WORKER_READY", error);
@@ -740,14 +741,22 @@ int RunGuard(const std::vector<std::wstring>& arguments) {
         restore.original_interval = internal.restore_interval;
         restore.configured_interval = internal.configured_interval;
         restore.clear_pmc = internal.clear_pmc;
-        if(state.restore_interval||state.restore_clear_pmc) {
+        const auto checkpoint = StateStore(state_path).ReadRecovery();
+        if (checkpoint && checkpoint->correlation_id == correlation_id &&
+            checkpoint->worker_pid == worker_pid) {
+            restore = {checkpoint->restore_source, checkpoint->restore_interval,
+                       checkpoint->configured_interval, checkpoint->restore_clear_pmc != 0};
+        } else if(state.restore_interval||state.restore_clear_pmc) {
             restore={state.restore_source,state.restore_interval,state.configured_interval,state.restore_clear_pmc!=0};
         }
         EnablePrivilege(L"SeSystemProfilePrivilege", nullptr);
         if (!RestoreProfileConfiguration(restore, &error)) {
             logger.Log(LogLevel::Error, L"WORKER_LOST", error);
             result = 4;
-        } else { state.restore_interval=state.configured_interval=state.restore_clear_pmc=0; }
+        } else {
+            state.restore_interval=state.configured_interval=state.restore_clear_pmc=0;
+            state_store.WriteRecovery(state, nullptr);
+        }
         state_store.Write(state, nullptr);
     } else if (wait != WAIT_OBJECT_0) {
         result = 9;
@@ -791,6 +800,7 @@ bool BuildRecordOptions(const RecordRequest& request, RecordOptions& options,
     options.pmc_source_set = request.pmc_source.has_value();
     if (request.period && *request.period > UINT32_MAX) { error = L"--period value is out of range"; return false; }
     options.pmc_interval = static_cast<uint32_t>(request.period.value_or(0));
+    options.pmc_counter_sources = request.pmc_counters;
     options.stack_cache = request.stack_cache;
     options.lbr = request.lbr;
     options.context_registers = request.context_registers;
@@ -850,6 +860,10 @@ bool BuildRecordOptions(const RecordRequest& request, RecordOptions& options,
         return false;
     }
     const bool pmc = options.profile == L"pmu" || options.pmc_source_set;
+    if (pmc && !options.pmc_counter_sources.empty()) {
+        error = L"PMC interrupt sampling and CSwitch snapshots require separate captures";
+        return false;
+    }
     if ((pmc && options.frequency_explicit) || (!pmc && options.pmc_interval != 0)) {
         error = L"use --period for PMC event counts and -F for CPU sampling frequency";
         return false;
@@ -1224,42 +1238,72 @@ std::wstring FormatMilliseconds(uint64_t value_100ns) {
     return std::to_wstring(value_100ns / 10000) + L" ms";
 }
 
-void PrintThreadStats(uint32_t pid) {
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
-        return;
+class ThreadStatsObserver {
+public:
+    explicit ThreadStatsObserver(uint32_t pid) : pid_(pid) {
+        FILETIME now{}; GetSystemTimeAsFileTime(&now);
+        start_100ns_ = FileTimeToUint64(now);
+        Poll();
     }
-    THREADENTRY32 entry{};
-    entry.dwSize = sizeof(entry);
-    std::wcout << L"  tid  user_ms  sys_ms  cycles\n";
-    if (Thread32First(snapshot, &entry)) {
-        do {
-            if (entry.th32OwnerProcessID != pid) {
-                continue;
-            }
-            HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE,
-                                       entry.th32ThreadID);
-            if (thread == nullptr) {
-                continue;
-            }
+    void Poll() {
+        ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+        if (snapshot.get() == INVALID_HANDLE_VALUE) { complete_ = false; return; }
+        THREADENTRY32 entry{}; entry.dwSize = sizeof(entry);
+        if (Thread32First(snapshot.get(), &entry)) do {
+            if (entry.th32OwnerProcessID != pid_) continue;
+            ScopedHandle opened(OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID));
+            if (!opened.get()) { complete_ = false; continue; }
             FILETIME creation{}, exit{}, kernel{}, user{};
+            if (!GetThreadTimes(opened.get(), &creation, &exit, &kernel, &user)) { complete_ = false; continue; }
+            const uint64_t created = FileTimeToUint64(creation);
+            const auto key = std::make_pair(entry.th32ThreadID, created);
+            if (rows_.contains(key)) continue;
+            auto row = std::make_unique<Row>();
+            row->tid = entry.th32ThreadID; row->created = created;
+            // Retain a handle so exited threads and reused TIDs stay distinct.
+            HANDLE retained = nullptr;
+            if (!DuplicateHandle(GetCurrentProcess(), opened.get(), GetCurrentProcess(), &retained,
+                                 0, FALSE, DUPLICATE_SAME_ACCESS)) { complete_ = false; continue; }
+            row->handle = std::make_unique<ScopedHandle>(retained);
+            row->before_user = created <= start_100ns_ ? FileTimeToUint64(user) : 0;
+            row->before_kernel = created <= start_100ns_ ? FileTimeToUint64(kernel) : 0;
             ULONG64 cycles = 0;
-            if (GetThreadTimes(thread, &creation, &exit, &kernel, &user)) {
-                const uint64_t user_ms = FileTimeToUint64(user) / 10000;
-                const uint64_t kernel_ms = FileTimeToUint64(kernel) / 10000;
-                if (QueryThreadCycleTime(thread, &cycles)) {
-                    std::wcout << L"  " << entry.th32ThreadID << L"  " << user_ms
-                               << L"  " << kernel_ms << L"  " << cycles << L"\n";
-                } else {
-                    std::wcout << L"  " << entry.th32ThreadID << L"  " << user_ms
-                               << L"  " << kernel_ms << L"  n/a\n";
-                }
-            }
-            CloseHandle(thread);
-        } while (Thread32Next(snapshot, &entry));
+            row->cycles_baseline_valid = QueryThreadCycleTime(retained, &cycles) != FALSE;
+            row->before_cycles = created <= start_100ns_ ? cycles : 0;
+            rows_.emplace(key, std::move(row));
+        } while (Thread32Next(snapshot.get(), &entry));
+        for (auto& [key,row] : rows_) {
+            (void)key;
+            FILETIME creation{}, exit{}, kernel{}, user{};
+            row->available = GetThreadTimes(row->handle->get(), &creation, &exit, &kernel, &user) != FALSE;
+            if (!row->available) { complete_ = false; continue; }
+            row->user = Delta(FileTimeToUint64(user), row->before_user);
+            row->kernel = Delta(FileTimeToUint64(kernel), row->before_kernel);
+            ULONG64 cycles = 0;
+            row->cycles_valid = row->cycles_baseline_valid && QueryThreadCycleTime(row->handle->get(), &cycles);
+            row->cycles = Delta(cycles, row->before_cycles);
+        }
     }
-    CloseHandle(snapshot);
-}
+    template<typename Consumer>
+    void ForEach(const Consumer& consume) const {
+        for (const auto& [key,row] : rows_) {
+            (void)key;
+            consume(*row);
+        }
+    }
+    bool Complete() const { return complete_; }
+private:
+    struct Row {
+        uint32_t tid = 0;
+        uint64_t created=0, before_user=0, before_kernel=0, before_cycles=0, user=0, kernel=0, cycles=0;
+        bool available=false, cycles_baseline_valid=false, cycles_valid=false;
+        std::unique_ptr<ScopedHandle> handle;
+    };
+    uint32_t pid_;
+    uint64_t start_100ns_ = 0;
+    bool complete_ = true;
+    std::map<std::pair<uint32_t,uint64_t>,std::unique_ptr<Row>> rows_;
+};
 
 int RunStat(const StatRequest& request) {
     const std::optional<uint32_t> pid = request.pid;
@@ -1521,6 +1565,8 @@ int RunStat(const StatRequest& request) {
         return sample;
     };
 
+    std::unique_ptr<ThreadStatsObserver> thread_stats;
+    if (per_thread) thread_stats = std::make_unique<ThreadStatsObserver>(target_pid);
     std::vector<StatSample> samples;
     const ULONGLONG start_tick = GetTickCount64();
     DWORD target_exit = STILL_ACTIVE;
@@ -1528,16 +1574,21 @@ int RunStat(const StatRequest& request) {
     while (true) {
         const uint64_t remaining = elapsed_ms >= duration_ms ? 0 : duration_ms - elapsed_ms;
         const uint64_t wait_ms = interval_ms == 0 ? remaining : std::min(interval_ms, remaining);
+        const uint64_t poll_ms = per_thread ? std::min<uint64_t>(wait_ms, 50) : wait_ms;
         const DWORD wait = WaitForSingleObject(
-            process, static_cast<DWORD>(std::min<uint64_t>(wait_ms == 0 ? 1 : wait_ms,
-                                                            UINT32_MAX)));
+            process, static_cast<DWORD>(std::min<uint64_t>(poll_ms == 0 ? 1 : poll_ms, UINT32_MAX)));
         elapsed_ms = GetTickCount64() - start_tick;
         DWORD exit_code = STILL_ACTIVE;
         GetExitCodeProcess(process, &exit_code);
         if (exit_code != STILL_ACTIVE) target_exit = exit_code;
-        ReadProcessStats(process, after);
-        samples.push_back(make_sample(after, elapsed_ms));
-        if (wait == WAIT_OBJECT_0 || target_exit != STILL_ACTIVE || elapsed_ms >= duration_ms) break;
+        if (thread_stats) thread_stats->Poll();
+        const bool finished = wait == WAIT_OBJECT_0 || target_exit != STILL_ACTIVE || elapsed_ms >= duration_ms;
+        const bool interval_due = interval_ms != 0 && elapsed_ms >= (samples.size()+1)*interval_ms;
+        if (finished || interval_due) {
+            if (!ReadProcessStats(process, after)) after = before;
+            samples.push_back(make_sample(after, elapsed_ms));
+        }
+        if (finished) break;
     }
     const StatSample total = make_sample(after, elapsed_ms);
     const std::optional<uint32_t> target_exit_json =
@@ -1570,6 +1621,21 @@ int RunStat(const StatRequest& request) {
         writer.Unsigned(total.write_operations);
         writer.Key(L"io_write_bytes");
         writer.Unsigned(total.write_bytes);
+        if (thread_stats) {
+            writer.Key(L"threads"); writer.BeginArray();
+            thread_stats->ForEach([&](const auto& row) {
+                nlohmann::ordered_json item;
+                item["tid"] = row.tid; item["thread_start_100ns"] = row.created;
+                item["available"] = row.available;
+                item["user_ms"] = row.available ? nlohmann::ordered_json(row.user / 10000) : nlohmann::ordered_json(nullptr);
+                item["sys_ms"] = row.available ? nlohmann::ordered_json(row.kernel / 10000) : nlohmann::ordered_json(nullptr);
+                item["cycles"] = row.available && row.cycles_valid ? nlohmann::ordered_json(row.cycles) : nlohmann::ordered_json(nullptr);
+                writer.Item(item);
+            });
+            writer.EndArray();
+            writer.Key(L"threads_complete"); writer.Bool(thread_stats->Complete());
+            writer.Key(L"thread_counter_scope"); writer.String(L"observation-delta");
+        }
         writer.Key(L"samples");
         writer.BeginArray();
         for (const auto& sample : samples) {
@@ -1589,9 +1655,12 @@ int RunStat(const StatRequest& request) {
         writer.EndObject();
         std::wcout << L"\n";
     } else if (csv) {
-        std::wcout << L"elapsed_ms,user_ms,sys_ms,cycles,page_faults,io_read_ops,io_read_bytes,io_write_ops,io_write_bytes,target_exit_code\n";
+        if (per_thread) std::wcout << L"row_type,elapsed_ms,pid,tid,thread_start_100ns,user_ms,sys_ms,cycles,page_faults,io_read_ops,io_read_bytes,io_write_ops,io_write_bytes,target_exit_code\n";
+        else std::wcout << L"elapsed_ms,user_ms,sys_ms,cycles,page_faults,io_read_ops,io_read_bytes,io_write_ops,io_write_bytes,target_exit_code\n";
         for (const auto& sample : samples) {
-            std::wcout << sample.elapsed_ms << L',' << sample.user_100ns / 10000 << L','
+            if (per_thread) std::wcout << L"process," << sample.elapsed_ms << L',' << target_pid << L",,,";
+            else std::wcout << sample.elapsed_ms << L',';
+            std::wcout << sample.user_100ns / 10000 << L','
                        << sample.kernel_100ns / 10000 << L',';
             if (sample.cycles_valid) std::wcout << sample.cycles; else std::wcout << L"n/a";
             std::wcout << L',' << sample.page_faults << L',' << sample.read_operations
@@ -1600,6 +1669,16 @@ int RunStat(const StatRequest& request) {
             if (target_exit_json) std::wcout << *target_exit_json; else std::wcout << L"n/a";
             std::wcout << L'\n';
         }
+        if (thread_stats) thread_stats->ForEach([&](const auto& row) {
+            std::wcout << L"thread," << elapsed_ms << L',' << target_pid << L',' << row.tid << L',' << row.created << L',';
+            if (row.available) std::wcout << row.user / 10000;
+            std::wcout << L',';
+            if (row.available) std::wcout << row.kernel / 10000;
+            std::wcout << L',';
+            if (row.available && row.cycles_valid) std::wcout << row.cycles;
+            std::wcout << L',';
+            std::wcout << L",,,,," << L'\n';
+        });
     } else {
         std::wcout << L"Process: "
                    << (image_name.empty() ? std::to_wstring(target_pid) : image_name)
@@ -1616,7 +1695,17 @@ int RunStat(const StatRequest& request) {
                        << L" io-write=" << sample.write_operations << L"/" << sample.write_bytes
                        << L"\n";
         }
-        if (per_thread && target_exit_json == std::nullopt) PrintThreadStats(target_pid);
+        if (per_thread) {
+            std::wcout << L"  Threads (observation deltas; discovery polls every 50 ms):\n  tid user_ms sys_ms cycles\n";
+            thread_stats->ForEach([&](const auto& row) {
+                std::wcout << L"  " << row.tid << L" "
+                           << (row.available ? std::to_wstring(row.user / 10000) : L"n/a") << L" "
+                           << (row.available ? std::to_wstring(row.kernel / 10000) : L"n/a") << L" "
+                           << (row.available && row.cycles_valid ? std::to_wstring(row.cycles) : L"n/a");
+                std::wcout << L"\n";
+            });
+            if (!thread_stats->Complete()) std::wcerr << L"wperf: some thread counters were unavailable\n";
+        }
     }
 
     CloseHandle(process);

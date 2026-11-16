@@ -52,11 +52,16 @@ std::vector<uint64_t> SampleWeights(const TraceData& trace) {
 std::map<std::wstring, AggregateValue> AggregateSymbols(
     const TraceData& trace, Symbolizer& symbolizer,
     const std::optional<uint32_t>& pid, const std::wstring& dso_filter,
-    bool calltree) {
+    bool calltree, bool strict_identity) {
     std::map<std::wstring, AggregateValue> result;
     symbolizer.PrepareTrace(trace);
     const std::vector<uint64_t> weights = SampleWeights(trace);
     const std::wstring dso_lower = Lower(dso_filter);
+    const std::wstring trace_key = Lower(std::filesystem::absolute(trace.source_path).lexically_normal().wstring());
+    const auto comparison_key = [&](const ResolvedSymbol& symbol, const SampleRecord& sample, uint64_t address) {
+        const auto scope = trace_key + L"|" + std::to_wstring(sample.pid) + L"|" + std::to_wstring(address);
+        return SymbolComparisonKey(symbol, strict_identity, scope);
+    };
     for (size_t index = 0; index < trace.samples.size(); ++index) {
         const auto& sample = trace.samples[index];
         if (pid.has_value() && sample.pid != *pid) {
@@ -70,7 +75,7 @@ std::map<std::wstring, AggregateValue> AggregateSymbols(
                 Lower(symbol.module).find(dso_lower) == std::wstring::npos) {
                 continue;
             }
-            const std::wstring key = SymbolAggregateKey(symbol);
+            const std::wstring key = comparison_key(symbol, sample, address);
             auto& value = result[key];
             ++value.samples;
             value.weight_ns += weights[index];
@@ -81,6 +86,8 @@ std::map<std::wstring, AggregateValue> AggregateSymbols(
         std::vector<uint64_t> stack = sample.stack;
         if (stack.empty()) {
             stack.push_back(sample.instruction_pointer);
+        } else if (sample.instruction_pointer != 0 && stack.front() != sample.instruction_pointer) {
+            stack.insert(stack.begin(), sample.instruction_pointer);
         }
         std::reverse(stack.begin(), stack.end());
         std::wstring key;
@@ -97,7 +104,7 @@ std::map<std::wstring, AggregateValue> AggregateSymbols(
                 key += L";";
             }
             first = false;
-            key += SymbolAggregateKey(symbol);
+            key += comparison_key(symbol, sample, stack[frame]);
         }
         if (!leaf_matches) {
             continue;
@@ -121,6 +128,7 @@ int RunDiff(const DiffRequest& request) {
     std::optional<uint32_t> second_pid = request.second_pid;
     std::wstring normalization = request.normalization;
     const bool calltree = request.calltree;
+    const bool strict_identity = request.matching == L"identity";
     const bool json = request.json;
     const bool csv = request.csv;
     if (json && csv) {
@@ -167,15 +175,19 @@ int RunDiff(const DiffRequest& request) {
     const std::optional<uint32_t> before_pid = first_pid ? first_pid : pid;
     const std::optional<uint32_t> after_pid = second_pid ? second_pid : pid;
     const auto before = AggregateSymbols(first_trace, first_symbolizer, before_pid,
-                                         dso_filter, calltree);
+                                         dso_filter, calltree, strict_identity);
     const auto after = AggregateSymbols(second_trace, second_symbolizer, after_pid,
-                                        dso_filter, calltree);
+                                        dso_filter, calltree, strict_identity);
 
     uint64_t before_total=0,after_total=0,before_weight_total=0,after_weight_total=0;
     for(const auto& [key,value]:before) { (void)key; before_total+=value.samples; before_weight_total+=value.weight_ns; }
     for(const auto& [key,value]:after) { (void)key; after_total+=value.samples; after_weight_total+=value.weight_ns; }
     bool normalization_fallback = false;
-    if (normalization == L"weight" && (before_weight_total == 0 || after_weight_total == 0)) {
+    uint64_t before_known=0, after_known=0;
+    for (const auto& [key,value]:before) { (void)key; before_known+=value.known_period_samples; }
+    for (const auto& [key,value]:after) { (void)key; after_known+=value.known_period_samples; }
+    if (normalization == L"weight" && (before_weight_total == 0 || after_weight_total == 0 ||
+        before_known != before_total || after_known != after_total)) {
         normalization = L"samples"; normalization_fallback = true;
     }
     std::set<std::pair<SampleKind,uint32_t>> first_sources,second_sources;
@@ -231,6 +243,9 @@ int RunDiff(const DiffRequest& request) {
         for (const auto& row : diff_rows) {
             nlohmann::ordered_json item;
             item["key"] = ToUtf8(row.key);
+            item["matching"] = ToUtf8(request.matching);
+            item["match_status"] = row.old_value.samples == 0 ? "added" :
+                                   row.new_value.samples == 0 ? "removed" : "matched";
             item["samples_before"] = row.old_value.samples;
             item["samples_after"] = row.new_value.samples;
             item["delta_samples"] = row.sample_delta;
@@ -260,12 +275,13 @@ int RunDiff(const DiffRequest& request) {
     }
     if (csv) {
         std::wcout << L"samples_before,samples_after,delta_samples,"
-                      L"weight_before_ns,weight_after_ns,delta_weight_ns,delta_pp,approximate_95_margin_pp,key\n";
+                      L"weight_before_ns,weight_after_ns,delta_weight_ns,delta_pp,approximate_95_margin_pp,key,matching,match_status\n";
         for (const auto& row : diff_rows) {
             std::wcout << row.old_value.samples << L"," << row.new_value.samples << L","
                        << row.sample_delta << L"," << row.old_value.weight_ns << L","
                        << row.new_value.weight_ns << L"," << row.weight_delta << L","
-                       << row.delta_pp << L"," << row.margin << L"," << EscapeCsv(row.key) << L"\n";
+                       << row.delta_pp << L"," << row.margin << L"," << EscapeCsv(row.key) << L"," << request.matching << L","
+                       << (row.old_value.samples == 0 ? L"added" : row.new_value.samples == 0 ? L"removed" : L"matched") << L"\n";
         }
         return 0;
     }
@@ -793,16 +809,29 @@ int RunBuildIdList(const BuildIdListRequest& request) {
         std::wstring sha256;
         std::wstring status;
     };
+    struct LocalFile { ModuleIdentity identity; std::wstring sha256; };
+    std::map<std::wstring, LocalFile> local_files;
+    std::map<std::wstring, std::wstring> normalized_paths;
     std::vector<Row> rows;
     rows.reserve(trace.images.size());
     for (const auto& image : trace.images) {
         if (image.path.empty()) continue;
         Row row;
         row.image = &image;
-        row.identity = ReadModuleIdentity(ModuleFilePath(image));
-        row.sha256 = FileSha256(ModuleFilePath(image));
+        auto [path_it,new_path] = normalized_paths.try_emplace(image.path);
+        if (new_path) path_it->second = ModuleFilePath(image);
+        const auto& path = path_it->second;
+        auto [local_it,new_file] = local_files.try_emplace(Lower(path));
+        if (new_file) {
+            local_it->second.identity = ReadModuleIdentity(path);
+            if (request.hash && local_it->second.identity.valid)
+                local_it->second.sha256 = FileSha256(path);
+        }
+        row.identity = local_it->second.identity;
+        row.sha256 = local_it->second.sha256;
         row.pdb_guid = row.identity.has_pdb_guid ? FormatGuid(row.identity.pdb_guid) : L"";
-        row.status = row.identity.valid ? L"available" : L"missing";
+        row.status = !row.identity.valid ? L"missing" :
+            ModuleIdentityMatches(image, row.identity) ? L"matching" : L"mismatched";
         rows.push_back(std::move(row));
     }
 
@@ -814,14 +843,20 @@ int RunBuildIdList(const BuildIdListRequest& request) {
             item["base"] = row.image->base;
             item["size"] = row.image->size;
             item["pid"] = row.image->pid;
-            item["pe_timestamp"] = row.identity.timestamp;
-            item["pe_checksum"] = row.identity.checksum;
+            item["pe_timestamp"] = row.image->timestamp;
+            item["pe_checksum"] = row.image->checksum;
             item["machine"] = row.identity.machine;
             item["pdb_guid"] = ToUtf8(row.pdb_guid);
             item["pdb_age"] = row.identity.pdb_age;
             item["module_sha256"] = ToUtf8(row.sha256);
             item["path"] = ToUtf8(row.image->path);
             item["status"] = ToUtf8(row.status);
+            item["recorded_identity"] = {{"pe_timestamp",row.image->timestamp},{"pe_checksum",row.image->checksum},{"size_of_image",row.image->size}};
+            item["local_identity"] = {{"valid",row.identity.valid},{"pe_timestamp",row.identity.timestamp},
+                {"pe_checksum",row.identity.checksum},{"size_of_image",row.identity.size_of_image},
+                {"machine",row.identity.machine},{"pdb_guid",ToUtf8(row.pdb_guid)},{"pdb_age",row.identity.pdb_age}};
+            item["module_sha256_source"] = "local-file";
+            item["hash_status"] = !request.hash ? "not-requested" : row.sha256.empty() ? "unavailable" : "computed";
             writer.Item(item);
         }
         writer.EndArray();
@@ -830,14 +865,16 @@ int RunBuildIdList(const BuildIdListRequest& request) {
     }
 
     if (csv) {
-        std::wcout << L"base,size,pid,pe_timestamp,pe_checksum,machine,pdb_guid,pdb_age,module_sha256,path,status\n";
+        std::wcout << L"base,size,pid,pe_timestamp,pe_checksum,machine,pdb_guid,pdb_age,module_sha256,path,status,local_pe_timestamp,local_pe_checksum,local_size_of_image,hash_status\n";
         for (const auto& row : rows) {
             std::wcout << row.image->base << L',' << row.image->size << L','
-                       << row.image->pid << L',' << row.identity.timestamp << L','
-                       << row.identity.checksum << L',' << row.identity.machine << L','
+                       << row.image->pid << L',' << row.image->timestamp << L','
+                       << row.image->checksum << L',' << row.identity.machine << L','
                        << EscapeCsv(row.pdb_guid) << L',' << row.identity.pdb_age << L','
                        << row.sha256 << L',' << EscapeCsv(row.image->path) << L','
-                       << EscapeCsv(row.status) << L"\n";
+                       << EscapeCsv(row.status) << L',' << row.identity.timestamp << L',' << row.identity.checksum
+                       << L',' << row.identity.size_of_image << L','
+                       << (!request.hash ? L"not-requested" : row.sha256.empty() ? L"unavailable" : L"computed") << L"\n";
         }
         return ExitStatus(ExitCode::Success);
     }
@@ -847,8 +884,8 @@ int RunBuildIdList(const BuildIdListRequest& request) {
         std::wcout << std::hex << std::setw(16) << std::setfill(L'0') << row.image->base
                    << L" " << std::setw(8) << row.image->size << std::dec
                    << std::setfill(L' ') << L" " << std::setw(8) << row.image->pid
-                   << L" " << std::setw(10) << row.identity.timestamp
-                   << L" " << std::setw(10) << row.identity.checksum
+                   << L" " << std::setw(10) << row.image->timestamp
+                   << L" " << std::setw(10) << row.image->checksum
                    << L" " << std::setw(32) << row.pdb_guid << L" " << std::setw(10)
                    << row.status << L" " << row.image->path << L"\n";
     }

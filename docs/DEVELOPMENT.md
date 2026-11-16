@@ -340,3 +340,9 @@ without reproducible evidence.
 7. Submit a PR with the exact commands/results used.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for reporting and PR checklists.
+
+Priority-fix regression coverage lives in `tests/priority_fixes_tests.cpp` and
+`tests/priority_cli_test.ps1`. It verifies numerical weights, independent recovery
+checkpoints, cross-build keys, interval boundaries, streaming quality, filtering,
+file output and thread CSV/JSON. Recovery checkpoints use `<state>.restore`;
+controller status files must never be used as the sole recovery checkpoint.

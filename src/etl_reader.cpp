@@ -544,7 +544,7 @@ void ConsumeEventRecord(PEVENT_RECORD record) {
             if(sample.pid==0||sample.pid==UINT32_MAX) {
                 if(const auto* thread=context->thread_index.Find(sample.tid,sample.timestamp_ns))sample.pid=thread->pid;
             }
-            ++trace->quality.samples_total; ++trace->quality.samples_without_stack;
+            ++trace->quality.samples_total;
             if(sample.kind==SampleKind::Pmc)++trace->quality.pmc_samples;
             (*context->sample_consumer)(sample);
         }
@@ -886,6 +886,7 @@ void FinishReplay(ReplayContext& context, TraceData& trace, bool derive_off_cpu)
 
     EnrichTraceEvents(trace);
     if (derive_off_cpu) BuildOffCpuIntervals(trace);
+    FinalizeTraceQuality(trace);
 }
 
 }  // namespace

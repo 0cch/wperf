@@ -65,11 +65,13 @@ void TestDefaults() {
     Check(Build("report", {}, {}, request), L"report request should build");
     if (const auto* value = Get<wperf::ReportRequest>(request)) {
         Check(value->scope == L"all", L"report scope default is wrong");
+        Check(value->weight == L"period" && !value->weight_explicit && !value->source, L"report weighting defaults are wrong");
     }
 
     Check(Build("diff", {}, {}, request), L"diff request should build");
     if (const auto* value = Get<wperf::DiffRequest>(request)) {
         Check(value->normalization == L"weight", L"diff normalization default is wrong");
+        Check(value->matching == L"symbol", L"diff matching default is wrong");
     }
 
     Check(Build("archive", {}, {}, request), L"archive request should build");
@@ -86,6 +88,13 @@ void TestDefaults() {
 void TestPublicMappings() {
     std::wstring target_command = L"app.exe";
     wperf::CommandRequest request;
+    Check(Build("report", {{"--weight","samples"},{"--source","19"}}, {}, request), L"weight/source request mapping failed");
+    if (const auto* value=Get<wperf::ReportRequest>(request))
+        Check(value->weight==L"samples" && value->weight_explicit && value->source==19, L"weight/source typed values were lost");
+    Check(Build("diff", {{"--match","identity"}}, {}, request), L"identity matching request failed");
+    if (const auto* value=Get<wperf::DiffRequest>(request)) Check(value->matching==L"identity", L"matching typed value was lost");
+    Check(Build("buildid-list", {}, {{"--hash",true}}, request), L"hash request failed");
+    if (const auto* value=Get<wperf::BuildIdListRequest>(request)) Check(value->hash, L"hash typed value was lost");
     const wperf::OptionValues record_values{
         {"--freq", "999"},
         {"--pid", "42"},
@@ -258,6 +267,11 @@ void TestInvalidValues() {
         {"record", {"--period", "0"}},
         {"record", {"--pmc-counters", "19,"}},
         {"report", {"--call-graph", "sideways"}},
+        {"report", {"--weight", "bogus"}},
+        {"report", {"--source", "-1"}},
+        {"report", {"--sort", "bogus"}},
+        {"report", {"--time-start", "18446744073709551615"}},
+        {"diff", {"--match", "bogus"}},
     };
     for (const auto& [command, value] : cases) {
         error.clear();

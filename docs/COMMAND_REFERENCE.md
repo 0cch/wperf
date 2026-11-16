@@ -79,6 +79,7 @@ Notes:
 - System capture requires administrator rights; --elevate starts one hidden elevated worker.
 - System ETW call stacks are enabled by default. Use --no-call-graph to disable them.
 - cpu-sched, sched, and all also request CSwitch/ReadyThread stack tracing.
+- PMC interrupt sampling and --pmc-counters CSwitch snapshots require separate captures.
 
 ## `report`
 
@@ -104,7 +105,9 @@ Aliases: `rep`
 | `--symbol-path DIR` | Add a local PDB search directory. |
 | `--archive DIR` | Resolve unavailable paths through verified modules.tsv. |
 | `--percent-limit N` | Hide rows below N percent. |
-| `-s, --sort FIELD` | Sort by samples, comm, dso, or symbol. |
+| `-s, --sort FIELD` | Sort by weight, samples, comm, dso, or symbol. |
+| `--weight MODE` | CPU/PMC sample weights: period (default) or samples. |
+| `--source ID` | Select one CPU/PMC sample source or PMC snapshot counter. |
 | `-g, --call-graph MODE` | Text call tree; MODE is callee or caller. |
 | `--metadata` | With --json, include quality metadata and rows. |
 | `--strict-quality` | Fail on lost, dropped, or malformed data. |
@@ -140,7 +143,10 @@ Notes:
 
 - Quality diagnostics go to stderr; --quiet suppresses them and --verbose prints every counter.
 - --folded/--collapsed and --call-graph cannot be combined with --json or --csv.
-- Folded output is directly accepted by FlameGraph scripts. Counts are samples for CPU profiles and nanoseconds for off-CPU profiles.
+- CPU overhead and folded output use periods (CPU ns or PMC events); --weight samples uses counts. Unknown periods fall back to counts with a warning.
+- Mixed sample sources require --source ID. Off-CPU weights remain nanoseconds.
+- I/O and PMC snapshots support PID/TID/comm/children/CPU/time selection and loss/strict gates; symbol, stack, scope, weight, sort and percent options are rejected.
+- PMC snapshots also support --csv; I/O supports text/JSON. --max-missing-stacks requires loaded CPU/off-CPU stacks.
 - -o writes UTF-8 without BOM and LF line endings.
 
 ## `script`
@@ -252,7 +258,7 @@ Elevation: not required
 |---|---|
 | `-p, --pid PID` | Observe an existing process. |
 | `--duration MS` | Observation duration (default: 1000). |
-| `--per-thread` | Print per-thread counters. |
+| `--per-thread` | Include observation-delta thread counters in text, JSON, or CSV. |
 | `--interval MS` | Sample interval for repeated process statistics. |
 | `--pmu` | Use an ETW PMC profile source. |
 | `-e, --event SOURCE` | Select a PMC source name or numeric ID. |
@@ -270,7 +276,9 @@ wperf stat --pmu -e TotalCycles -- .\app.exe
 
 Notes:
 
-- Without -p, stat launches the command after -- and observes that process tree.
+- Without -p, stat launches the command after -- and observes its root process.
+- --per-thread discovers threads every 50 ms, retains observed exited threads, and reports deltas since observation. Short-lived unobserved threads may be missed.
+- --per-thread JSON adds threads and threads_complete; CSV uses process/thread row_type records. PMC mode does not support --per-thread.
 - PMC mode uses an ETW profile source; it does not access PMU MSRs directly.
 
 ## `top`
@@ -366,6 +374,7 @@ Aliases: `dif`
 | `--first-pid PID` | PID filter for the first trace. |
 | `--second-pid PID` | PID filter for the second trace. |
 | `--normalize MODE` | Normalize shares by weight or samples (default: weight). |
+| `--match MODE` | Match by module/function symbol (default) or strict identity. |
 | `--calltree, --weighted` | Compare call-tree weights. |
 | `--json` | Print JSON rows. |
 | `--csv` | Print CSV rows. |
@@ -381,6 +390,7 @@ Notes:
 
 - Positive values indicate growth in the second profile; negative values indicate reduction.
 - --calltree and --weighted are equivalent.
+- Symbol matching ignores build paths, timestamps and RVAs for resolved functions. Unresolved addresses retain strict identity keys; unmapped IPs use trace-local keys. match_status identifies added/removed rows.
 
 ## `archive`
 
@@ -422,6 +432,7 @@ Elevation: not required
 | Option | Description |
 |---|---|
 | `-i, --input FILE` | Read FILE. |
+| `--hash` | Hash each distinct local module file once (SHA256; optional). |
 | `--json` | Print JSON module identity rows. |
 | `--csv` | Print CSV module identity rows. |
 | `-h, --help` | Show this help. |
@@ -429,7 +440,8 @@ Elevation: not required
 Examples:
 
 ```powershell
-Output includes module base, size, process, PE/PDB identity, SHA256 when available, and image path.
+Output preserves ETL PE timestamp/checksum and mapping rows, and separates recorded_identity from local_identity.
+Status is matching, mismatched, or missing. --hash adds local-file SHA256; without it hash_status is not-requested.
 ```
 
 ## `list`

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -600,6 +601,18 @@ void Symbolizer::WriteCache(const ModuleLoad& module) {
 
 std::wstring SymbolAggregateKey(const ResolvedSymbol& symbol) {
     return symbol.module_identity + L"|" + std::to_wstring(symbol.function_rva) + L"|" + symbol.symbol;
+}
+
+std::wstring SymbolComparisonKey(const ResolvedSymbol& symbol, bool strict_identity,
+                                 std::wstring_view unmapped_scope) {
+    if (!symbol.resolved && symbol.module_identity.empty() && !unmapped_scope.empty())
+        return L"unmapped|" + std::wstring(unmapped_scope);
+    if (strict_identity || !symbol.resolved)
+        return L"identity|" + SymbolAggregateKey(symbol);
+    std::wstring module = symbol.module;
+    std::transform(module.begin(), module.end(), module.begin(),
+                   [](wchar_t ch) { return wchar_t(std::towlower(ch)); });
+    return L"symbol|" + module + L"!" + symbol.symbol;
 }
 
 SymbolizerStats Symbolizer::Stats() const {

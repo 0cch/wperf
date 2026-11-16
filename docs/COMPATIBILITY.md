@@ -76,7 +76,14 @@ has not been implemented.
 - `stat` JSON distinguishes Windows process API counters (`windows-api`) from
   event-sampled ETW PMC data (`etw-pmc-sampling`).
 - `diff --normalize weight|samples` changes the denominator used for share
-  comparisons; incompatible sample sources are rejected.
+  comparisons; incompatible sample sources are rejected. Symbol matching is
+  the default; `--match identity` restores strict build/RVA matching.
+- CPU/PMC sample reports default to period weights with explicit count fallback
+  for unknown periods; `--weight samples` selects sample counts.
+- `buildid-list` preserves recorded PE metadata, labels local mismatches, and
+  computes local-file hashes only with `--hash`.
+- Thread stat counters are observation deltas with 50 ms discovery; observed
+  exited threads are retained, while shorter unobserved threads may be missed.
 
 ## Semantics that differ from Linux perf
 

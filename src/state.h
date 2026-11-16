@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace wperf {
@@ -31,6 +32,9 @@ public:
 
     const std::filesystem::path& Path() const;
     bool Write(const RunState& state, std::wstring* error = nullptr) const;
+    // Worker-owned checkpoint, independent of controller status updates.
+    bool WriteRecovery(const RunState& state, std::wstring* error = nullptr) const;
+    std::optional<RunState> ReadRecovery() const;
 
     static std::vector<RunState> ReadAll(
         const std::filesystem::path& sessions_directory);

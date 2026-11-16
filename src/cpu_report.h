@@ -20,6 +20,8 @@ public:
 };
 
 struct CpuReportOptions {
+    enum class WeightMode { Period, Samples } weight_mode = WeightMode::Period;
+    bool quiet = false;
     std::optional<uint32_t> pid;
     std::optional<uint32_t> tid;
     std::optional<uint32_t> profile_source;

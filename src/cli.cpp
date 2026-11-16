@@ -90,6 +90,7 @@ std::vector<CommandSpec> BuildCatalog() {
             "System capture requires administrator rights; --elevate starts one hidden elevated worker.",
             "System ETW call stacks are enabled by default. Use --no-call-graph to disable them.",
             "cpu-sched, sched, and all also request CSwitch/ReadyThread stack tracing.",
+            "PMC interrupt sampling and --pmc-counters CSwitch snapshots require separate captures.",
         });
 
     AddCommand(catalog, "report", {"rep"},
@@ -106,7 +107,9 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("--symbol-path", "DIR", "Add a local PDB search directory."),
             Value("--archive", "DIR", "Resolve unavailable paths through verified modules.tsv."),
             Value("--percent-limit", "N", "Hide rows below N percent."),
-            Value("-s,--sort", "FIELD", "Sort by samples, comm, dso, or symbol."),
+            Value("-s,--sort", "FIELD", "Sort by weight, samples, comm, dso, or symbol."),
+            Value("--weight", "MODE", "CPU/PMC sample weights: period (default) or samples."),
+            Value("--source", "ID", "Select one CPU/PMC sample source or PMC snapshot counter."),
             Value("-g,--call-graph", "MODE", "Text call tree; MODE is callee or caller.", true),
             Flag("--metadata", "With --json, include quality metadata and rows."),
             Flag("--strict-quality", "Fail on lost, dropped, or malformed data."),
@@ -136,7 +139,10 @@ std::vector<CommandSpec> BuildCatalog() {
         }, {
             "Quality diagnostics go to stderr; --quiet suppresses them and --verbose prints every counter.",
             "--folded/--collapsed and --call-graph cannot be combined with --json or --csv.",
-            "Folded output is directly accepted by FlameGraph scripts. Counts are samples for CPU profiles and nanoseconds for off-CPU profiles.",
+            "CPU overhead and folded output use periods (CPU ns or PMC events); --weight samples uses counts. Unknown periods fall back to counts with a warning.",
+            "Mixed sample sources require --source ID. Off-CPU weights remain nanoseconds.",
+            "I/O and PMC snapshots support PID/TID/comm/children/CPU/time selection and loss/strict gates; symbol, stack, scope, weight, sort and percent options are rejected.",
+            "PMC snapshots also support --csv; I/O supports text/JSON. --max-missing-stacks requires loaded CPU/off-CPU stacks.",
             "-o writes UTF-8 without BOM and LF line endings.",
         });
 
@@ -200,7 +206,7 @@ std::vector<CommandSpec> BuildCatalog() {
         {
             Value("-p,--pid", "PID", "Observe an existing process."),
             Value("--duration", "MS", "Observation duration (default: 1000)."),
-            Flag("--per-thread", "Print per-thread counters."),
+            Flag("--per-thread", "Include observation-delta thread counters in text, JSON, or CSV."),
             Value("--interval", "MS", "Sample interval for repeated process statistics."),
             Flag("--pmu", "Use an ETW PMC profile source."),
             Value("-e,--event", "SOURCE", "Select a PMC source name or numeric ID."),
@@ -212,7 +218,9 @@ std::vector<CommandSpec> BuildCatalog() {
             "wperf stat -p 1234 --duration 2000",
             "wperf stat --pmu -e TotalCycles -- .\\app.exe",
         }, {
-            "Without -p, stat launches the command after -- and observes that process tree.",
+            "Without -p, stat launches the command after -- and observes its root process.",
+            "--per-thread discovers threads every 50 ms, retains observed exited threads, and reports deltas since observation. Short-lived unobserved threads may be missed.",
+            "--per-thread JSON adds threads and threads_complete; CSV uses process/thread row_type records. PMC mode does not support --per-thread.",
             "PMC mode uses an ETW profile source; it does not access PMU MSRs directly.",
         });
 
@@ -269,6 +277,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("--first-pid", "PID", "PID filter for the first trace."),
             Value("--second-pid", "PID", "PID filter for the second trace."),
             Value("--normalize", "MODE", "Normalize shares by weight or samples (default: weight)."),
+            Value("--match", "MODE", "Match by module/function symbol (default) or strict identity."),
             Flag("--calltree,--weighted", "Compare call-tree weights."),
             Flag("--json", "Print JSON rows."),
             Flag("--csv", "Print CSV rows."),
@@ -276,6 +285,7 @@ std::vector<CommandSpec> BuildCatalog() {
         {"wperf diff -1 before.etl -2 after.etl --calltree --json"}, {
             "Positive values indicate growth in the second profile; negative values indicate reduction.",
             "--calltree and --weighted are equivalent.",
+            "Symbol matching ignores build paths, timestamps and RVAs for resolved functions. Unresolved addresses retain strict identity keys; unmapped IPs use trace-local keys. match_status identifies added/removed rows.",
         });
 
     AddCommand(catalog, "archive", {},
@@ -298,10 +308,12 @@ std::vector<CommandSpec> BuildCatalog() {
         "wperf buildid-list -i FILE [options]", false,
         {
             Value("-i,--input", "FILE", "Read FILE."),
+            Flag("--hash", "Hash each distinct local module file once (SHA256; optional)."),
             Flag("--json", "Print JSON module identity rows."),
             Flag("--csv", "Print CSV module identity rows."),
         }, {
-            "Output includes module base, size, process, PE/PDB identity, SHA256 when available, and image path.",
+            "Output preserves ETL PE timestamp/checksum and mapping rows, and separates recorded_identity from local_identity.",
+            "Status is matching, mismatched, or missing. --hash adds local-file SHA256; without it hash_status is not-requested.",
         });
 
     AddCommand(catalog, "list", {},
