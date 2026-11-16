@@ -1,6 +1,6 @@
 # wperf Changelog
 
-## Unreleased
+## 0.9.0.0 - 2026-11-16
 
 - Preserved global image PID 0 in modern ETW image payloads instead of replacing it with the collector's header PID, restoring target kernel-module attribution in offline and live reports; added raw-payload/lifetime/report regressions.
 
@@ -17,7 +17,7 @@
 - Implemented `script -o` UTF-8/LF output and observation-delta thread stat output in text/JSON/CSV, retaining observed exited threads; corrected PMC name examples to use `-e`.
 - Updated help, generated command reference, usage, compatibility/public contracts, schemas, and regression tests together.
 
-Compatibility: CPU/folded defaults use periods; use `--weight samples` for the prior count mode. Diff defaults to symbol matching; use `--match identity` for prior keys. Buildid PE fields now describe the capture, status values changed, and hashes require `--hash`; CSV adds local-identity/hash columns. These pre-1.0 default/meaning changes must be released as a minor version, not a compatible patch.
+Compatibility: CPU/folded defaults use periods; use `--weight samples` for the prior count mode. Diff defaults to symbol matching; use `--match identity` for prior keys. Buildid PE fields now describe the capture, status values changed, and hashes require `--hash`; CSV adds local-identity/hash columns. These pre-1.0 default/meaning changes are released as a minor version rather than a compatible patch.
 
 ## 0.8.2.0 - 2026-11-16
 
