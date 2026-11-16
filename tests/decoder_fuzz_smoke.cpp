@@ -36,6 +36,8 @@ int main() {
         if (wperf::DecodeLbrPayload(payload.data(), payload.size(), pointer_size, lbr)) ++decoded;
         wperf::ContextRegisterRecord registers;
         if (wperf::DecodeContextRegisters(record, pointer_size, registers)) ++decoded;
+        wperf::ImageRecord image;
+        if (wperf::DecodeImagePayload(record, pointer_size, 10000000, image)) ++decoded;
     }
     if (decoded == 0) {
         std::cerr << "decoder fuzz smoke decoded no records\n";

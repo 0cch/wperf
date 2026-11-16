@@ -257,3 +257,23 @@ CTest deadlines were retained.
 Scope of this run: CPU, scheduler, PMC sampling/snapshots, output contracts and
 cleanup on this AMD/Windows combination. The Intel LBR/context evidence above
 remains a separate hardware validation run.
+
+## Global kernel image identity regression — 2026-11-16
+
+The modern image decoder now preserves payload PID 0 instead of substituting
+the emitting collector PID. Validation on the same AMD/Windows host:
+
+- Both Release builds (Zydis on/off): 59 non-live tests and 5 elevated live tests
+  passed, 64/64 per build, with warnings as errors.
+- The new deterministic test failed on the prior decoder, then passed after the
+  fix. It covers 32/64-bit payloads, versions 1–3, load/rundown/unload records,
+  version-0 and unavailable-PID fallbacks, malformed lengths, cross-process user
+  isolation, offline report lookup, live snapshots, and collector termination.
+- Fresh live ETL capture verifies global kernel mapping PIDs and kernel CPU
+  report attribution to the recorded ntoskrnl image without a diagnostic overlay.
+- Five existing self-profile ETLs were replayed by the normal CLI with matching
+  local kernel symbols. Target sample counts were unchanged (669, 644, 1900,
+  922, 2541); unknown-module overhead fell from 60–82% to 0–0.053%.
+
+Original ETLs and local replay outputs remain under the ignored `out/` tree;
+no machine-specific trace data is included in these regressions.

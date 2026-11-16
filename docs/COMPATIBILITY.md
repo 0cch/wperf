@@ -91,6 +91,9 @@ has not been implemented.
   semantics.
 - PMC results are sample-derived unless explicitly documented otherwise.
 - Kernel/user address attribution depends on ETW metadata and symbol identity.
+- Modern image payload PID 0 remains global; kernel modules can be looked up
+  from any target PID. Version-0 image records use header identity because their
+  payload contains no PID. User-module mappings remain process-specific.
 - Syscall arguments and kernel-internal memory are not reconstructed.
 - LBR is a finite branch history, not Processor Trace.
 - Windows sampling configuration is machine-global; unrelated ETW sessions can

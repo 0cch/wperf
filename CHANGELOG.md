@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserved global image PID 0 in modern ETW image payloads instead of replacing it with the collector's header PID, restoring target kernel-module attribution in offline and live reports; added raw-payload/lifetime/report regressions.
+
 - Separated worker recovery checkpoints from controller status and validated guard checkpoint identity.
 - Corrected CPU table/tree/folded overhead to period weights; added `--weight period|samples` and `--source`, with whole-report fallback for unknown periods and rejection of mixed domains.
 - Applied I/O/PMC PID/TID/comm/children/CPU/time selection, preserved PMC baselines across filters, added PMC CSV, and unified loss/strict gates; incompatible options now fail explicitly.

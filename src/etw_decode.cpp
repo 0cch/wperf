@@ -173,7 +173,9 @@ bool DecodeImagePayload(const EVENT_RECORD& record,uint32_t p,uint64_t frequency
     image.base=Pointer(record,0,p);
     image.size=version==0 ? Read<uint32_t>(record.UserData,p) : Pointer(record,p,p);
     image.pid=version==0 ? record.EventHeader.ProcessId : Read<uint32_t>(record.UserData,2*p);
-    if(image.pid==0||image.pid==UINT32_MAX) image.pid=record.EventHeader.ProcessId;
+    // Modern payload PID 0 denotes a global image (e.g. kernel rundown).
+    // The header PID is the emitting context, not the image owner.
+    if(image.pid==UINT32_MAX) image.pid=record.EventHeader.ProcessId;
     if(version>=2) { image.checksum=Read<uint32_t>(record.UserData,2*p+4); image.timestamp=Read<uint32_t>(record.UserData,2*p+8); }
     image.path=Wide(record,offset);
     return true;

@@ -117,6 +117,10 @@ not numeric zero.
 - `buildid-list` PE timestamp/checksum are recorded ETL values. Current file
   metadata is in `local_identity`; status is matching/mismatched/missing.
   `--hash` requests cached SHA256 of the local file, not the captured binary.
+- Image PID 0 in modern payloads denotes global ownership, including kernel
+  rundown. It must not be relabeled as the collector's event-header PID.
+  Delivery/decode `quality.incomplete` does not guarantee PDB symbol coverage;
+  a mapped module may still be reported as module+RVA without matching symbols.
 - `stat --per-thread` JSON contains observation-delta thread rows; its CSV uses
   the documented process/thread header. Observed exited threads are retained,
   discovery occurs every 50 ms, and unobserved short-lived threads may be missed.

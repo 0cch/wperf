@@ -121,6 +121,11 @@ The model keeps the raw value and its provenance where they differ:
 
 - Process and thread lifetime records disambiguate PID/TID reuse.
 - Images carry timestamp, checksum, size, path, and resolved path.
+- Modern image payload PID 0 is a valid global owner, including kernel rundown;
+  it is not replaced with the emitting header PID. Kernel address lookup shares
+  PID 0/4 images across target processes while respecting load/unload lifetimes.
+  Version-0 payloads have no PID and use the header; unavailable payload PID
+  `UINT32_MAX` retains the header fallback.
 - Symbol aggregation keys include process instance, thread instance, module
   identity, and module-relative address where the report needs them.
 - StackWalkRef/Def keys are lifetime-aware; stale references are rejected or

@@ -121,6 +121,10 @@ add_executable(wperf_priority_fixes_tests tests/priority_fixes_tests.cpp)
 target_compile_options(wperf_priority_fixes_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_priority_fixes_tests PRIVATE wperf_core)
 add_test(NAME priority_fixes COMMAND wperf_priority_fixes_tests)
+add_executable(wperf_kernel_image_identity_tests tests/kernel_image_identity_tests.cpp)
+target_compile_options(wperf_kernel_image_identity_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_kernel_image_identity_tests PRIVATE wperf_core)
+add_test(NAME kernel_image_identity COMMAND wperf_kernel_image_identity_tests)
 add_executable(wperf_regression_tests tests/regression_tests.cpp)
 target_compile_options(wperf_regression_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
@@ -156,6 +160,11 @@ add_test(NAME live_pmc_json_smoke
          COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/live_pmc_json_smoke.ps1
          -Wperf $<TARGET_FILE:wperf>)
 set_tests_properties(live_pmc_json_smoke PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE
+                     SKIP_RETURN_CODE 77 LABELS integration)
+add_test(NAME live_kernel_image_smoke
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/live_kernel_image_smoke.ps1
+         -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_kernel_image_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
                      SKIP_RETURN_CODE 77 LABELS integration)
 add_test(NAME cli_version COMMAND wperf --version)
 add_test(NAME cli_version_format COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/version_test.ps1 -Wperf $<TARGET_FILE:wperf>)
