@@ -27,6 +27,7 @@ struct RecordRequest {
     bool lbr = false;
     bool context_registers = false;
     std::optional<GUID> provider;
+    std::optional<uint32_t> pool_tag;
     std::wstring session;
     std::vector<std::wstring> target;
 };
@@ -138,6 +139,7 @@ struct BuildIdListRequest {
 
 struct ListRequest {
     bool providers = false;
+    bool pool_tags = false;
     uint64_t max = 500;
     bool json = false;
 };

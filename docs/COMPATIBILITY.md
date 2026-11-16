@@ -40,6 +40,10 @@ device configuration.
 | Page faults | Classic ETW page-fault events |
 | File/disk I/O | Init/completion correlation by IRP and file identity where available |
 | Off-CPU | Blocked/ready intervals with truncated-boundary and wakeup-source reporting |
+| DPC/ISR | Classic PerfInfo execution spans; system ownership and inclusive/union time |
+| Native heap | PID-scoped ETW allocation lifetimes after attachment; no pre-capture baseline or managed/custom allocator coverage |
+| Kernel pool | Pool tag/type/session lifetimes; requires a tag filter; system ownership; observed-unfreed does not prove a leak |
+| Driver calls | DiskIo dispatch/complete-request call spans with labeled scheduler context; no inferred minifilter or device service-time split |
 | PMC interrupts | Windows ETW profile sources; source-specific periods |
 | CSwitch snapshots | Estimated per-CPU/old-thread deltas; always `exact:false` |
 | Intel LBR | Supported on capable Intel systems; depth is finite and not Intel PT |

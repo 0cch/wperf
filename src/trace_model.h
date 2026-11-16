@@ -1,5 +1,8 @@
 #pragma once
 
+#include "shared_stack.h"
+#include "diagnostic_model.h"
+
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -35,29 +38,11 @@ struct ImageRecord {
     uint64_t unload_ns = 0;
     std::wstring path;
     std::wstring resolved_path;  // Validated archive location; path remains the recorded identity.
+    bool snapshot_only = false;
 };
 
 enum class SampleKind { Cpu, Pmc };
-enum class StackQuality { Missing, Exact, Approximate };
 
-class SharedStack {
-public:
-    SharedStack() = default;
-    SharedStack(std::initializer_list<uint64_t> frames) : data_(std::make_shared<std::vector<uint64_t>>(frames)) {}
-    SharedStack& operator=(std::initializer_list<uint64_t> frames) { data_=std::make_shared<std::vector<uint64_t>>(frames); return *this; }
-    SharedStack& operator=(const std::vector<uint64_t>& frames) { data_=std::make_shared<std::vector<uint64_t>>(frames); return *this; }
-    void Share(std::shared_ptr<std::vector<uint64_t>> frames) { data_=std::move(frames); }
-    bool empty() const { return !data_ || data_->empty(); }
-    size_t size() const { return data_ ? data_->size() : 0; }
-    uint64_t front() const { return View().front(); }
-    uint64_t operator[](size_t index) const { return View()[index]; }
-    auto begin() const { return View().begin(); }
-    auto end() const { return View().end(); }
-    const std::vector<uint64_t>& View() const { static const std::vector<uint64_t> empty; return data_ ? *data_ : empty; }
-    operator std::vector<uint64_t>() const { return View(); }
-private:
-    std::shared_ptr<std::vector<uint64_t>> data_;
-};
 
 struct LbrBranchRecord {
     uint64_t from_address = 0;
@@ -211,6 +196,7 @@ struct TraceQuality {
     uint64_t lost_events = 0;
     uint64_t lost_buffers = 0;
     uint64_t decode_errors = 0;
+    uint64_t diagnostic_unsupported = 0;
     uint64_t metadata_dropped = 0;
     uint64_t correlation_evicted = 0;
     uint64_t syscall_orphaned = 0;
@@ -243,6 +229,10 @@ struct TraceData {
     std::vector<ImageRecord> images;
     std::vector<SampleRecord> samples;
     std::vector<TraceEvent> events;
+    std::vector<InterruptRecord> interrupts;
+    std::vector<AllocationRecord> allocations;
+    std::vector<DriverRecord> driver_events;
+    std::vector<SchedulingContextRecord> scheduling_contexts;
     std::vector<ContextRegisterRecord> context_registers;
     std::vector<LbrSampleRecord> lbr_samples;
     std::vector<OffCpuInterval> off_cpu_intervals;
@@ -259,6 +249,9 @@ struct TraceData {
     std::unordered_map<uint32_t,std::wstring> pmc_source_names;
     std::map<std::wstring, uint64_t> unknown_event_keys;
     bool stacks_loaded = true;
+    uint32_t heap_target_pid = 0;
+    uint32_t pool_tag_filter = 0;
+    bool heap_snapshot_metadata = false;
 };
 
 const wchar_t* TraceEventKindName(TraceEventKind kind);

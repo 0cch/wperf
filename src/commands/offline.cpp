@@ -15,6 +15,7 @@
 #include "trace_events.h"
 #include "off_cpu_report.h"
 #include "trace_model.h"
+#include "diagnostic_report.h"
 
 #include <algorithm>
 #include <atomic>
@@ -885,6 +886,7 @@ bool WriteReportFile(const std::filesystem::path& path, const std::wstring& text
 }
 
 int RunReport(const ReportRequest& request) {
+    if (IsDiagnosticKind(request.kind)) return RunDiagnosticReport(request);
     std::filesystem::path input = request.input;
     std::filesystem::path output_path = request.output;
     std::wstring symbol_path = request.symbol_path;

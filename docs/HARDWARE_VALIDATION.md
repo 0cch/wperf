@@ -277,3 +277,43 @@ the emitting collector PID. Validation on the same AMD/Windows host:
 
 Original ETLs and local replay outputs remain under the ignored `out/` tree;
 no machine-specific trace data is included in these regressions.
+
+## Interrupt, heap/pool, and driver diagnostics (2026-11-16)
+
+Validation used AMD Ryzen 7 8700G / Windows 11 build 26200, MSVC Release x64,
+warnings as errors, and both Zydis-enabled and disabled configurations. Each
+configuration passed 61 non-live tests and all six elevated integration tests
+(67/67, no skips). The live diagnostic test uses the dedicated DPC/ISR profiles,
+native HeapAlloc/HeapReAlloc/HeapFree with 64 KiB retained allocations, the
+`File` pool tag, and uncached/write-through I/O for driver calls. Capture loss,
+unsupported layouts, and decode errors are rejected, not accepted as success.
+
+Raw-payload regressions cover both pointer widths, truncation, unsupported
+versions, inclusive/union time, time clipping, address reuse, heap/process
+termination, native realloc notifications following their internal alloc/free
+events, driver unique-ID mismatches, and missing context. Start/end rundown
+boundary regressions restore pre-existing metadata without inventing creation,
+exit, or unload times. The unchanged scheduler fixture now has 363 unknown-PID
+correlations rather than the former 10,623; event/sample counts and ETL bytes
+remain unchanged.
+
+An independent xperf `tracestats -detail storage` pass on the same kernel ETL
+reported 11,269 DPC + 239 timer-DPC events, 5,493 message-signaled + 743 other ISR
+events, and 834,206 driver dispatch entries / 834,198 returns. wperf reports
+11,508 DPC and 6,236 ISR executions with zero unknown module rows, plus 834,198
+paired dispatch spans and eight unclosed entries. Inclusive execution/call spans
+and clock-resolution zero-duration observations retain their documented meanings;
+they are not exclusive CPU time or decomposed minifilter/device service time.
+
+Initial unfiltered pool experiments enabled unrelated memory/page-list traffic
+and caused excessive trace volume/loss. The implemented pool profile uses only
+the pool group, a required tag filter, compact scheduling context, and selective
+replay. Kernel/driver/pool captures use bounded 128 KiB buffers, 32 minimum and
+256 maximum. A high-rate kernel capture that lost events was rejected; the
+dedicated profiles and final test runs passed the loss gates.
+
+Heap module attribution uses a controller-side attach snapshot of loaded PE
+headers, with explicit snapshot provenance; dynamic DLL lifecycle completeness
+is not claimed. Allocation stacks can be missing and remain counted. Unmatched
+pool frees reflect the unknown pre-capture baseline, and observed live bytes do
+not prove a leak. Raw ETLs, xperf output, and test logs remain in ignored `out/`.

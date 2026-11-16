@@ -227,7 +227,7 @@ void FinalizeTraceQuality(TraceData& trace) {
     trace.quality.incomplete = trace.quality.incomplete ||
         q.samples_dropped != 0 || q.stack_key_mismatch != 0 ||
         q.lost_events != 0 || q.lost_buffers != 0 || q.ring_dropped != 0 ||
-        q.decode_errors != 0 || q.metadata_dropped != 0 ||
+        q.decode_errors != 0 || q.diagnostic_unsupported != 0 || q.metadata_dropped != 0 ||
         q.correlation_evicted != 0 || q.sched_unknown_pid != 0 ||
         q.io_orphaned != 0 || q.syscall_orphaned != 0 ||
         q.off_cpu_evicted != 0 || q.off_cpu_duplicate_ready != 0 ||

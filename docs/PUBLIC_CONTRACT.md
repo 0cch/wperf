@@ -71,6 +71,8 @@ Versioned schemas live in [`schemas/`](schemas/):
 - `report-off-cpu.schema.json` — `report --off-cpu --json --metadata`;
 - `report-io.schema.json` — `report --kind io --json --metadata`;
 - `report-pmc.schema.json` — `report --kind pmc --json --metadata`;
+- `diagnostic-execution.schema.json` — DPC/ISR/interrupt/driver reports;
+- `diagnostic-memory.schema.json` — heap/pool reports;
 - `trace.schema.json` — `trace -i FILE ... --json`;
 - `trace-metadata.schema.json` — `trace -i FILE ... --json --metadata`;
 - `stat.schema.json` — `stat ... --json`;
@@ -98,6 +100,14 @@ deprecation notice. Empty values mean unavailable or intentionally omitted data,
 not numeric zero.
 
 ## Estimated values
+
+Diagnostic reports use the contracts in [DIAGNOSTICS.md](DIAGNOSTICS.md).
+DPC/ISR and pool are system-owned and use null PID/TID where applicable.
+Execution durations are inclusive intervals, driver durations are bounded call
+spans, and memory live bytes mean observed-unfreed allocations. These values
+must not be silently relabeled as exclusive CPU time, minifilter/device latency,
+or proven leaks. Diagnostic `--metadata` includes `quality.analysis`; unsupported
+layouts and dropped analysis state affect `incomplete`. Empty selections exit 5.
 
 - CPU sample weights are nanosecond periods. CPU/PMC sample tables, trees and
   folded output default to `--weight period`; `--weight samples` selects counts.

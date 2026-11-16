@@ -147,7 +147,8 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
             value.profile != L"sched" && value.profile != L"syscall" &&
             value.profile != L"vm" && value.profile != L"io" &&
             value.profile != L"kernel" && value.profile != L"all" &&
-            value.profile != L"pmu") {
+            value.profile != L"pmu" && value.profile != L"dpc" && value.profile != L"isr" &&
+            value.profile != L"heap" && value.profile != L"pool" && value.profile != L"driver") {
             return Bad(error, L"unsupported record profile: " + value.profile);
         }
         if (values.contains("--provider")) {
@@ -156,6 +157,14 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
                 return Bad(error, L"--provider requires a valid GUID");
             }
             value.provider = guid;
+        }
+        if (values.contains("--pool-tag")) {
+            const auto& tag = values.at("--pool-tag");
+            if (tag.size() != 4 || std::any_of(tag.begin(), tag.end(), [](unsigned char ch) { return ch < 32 || ch > 126; }))
+                return Bad(error, L"--pool-tag requires exactly four printable ASCII characters");
+            uint32_t packed = 0;
+            for (size_t index = 0; index < 4; ++index) packed |= static_cast<uint32_t>(static_cast<unsigned char>(tag[index])) << (8 * index);
+            value.pool_tag = packed;
         }
         request = std::move(value);
         return true;
@@ -368,6 +377,8 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
     if (command == "list") {
         ListRequest value;
         value.providers = values.contains("@mode") && values.at("@mode") == "providers";
+        value.pool_tags = Has(flags, "--pool-tags");
+        if (value.providers && value.pool_tags) return Bad(error, L"list providers and --pool-tags are mutually exclusive");
         value.json = Has(flags, "--json");
         std::optional<uint64_t> maximum;
         if (!ReadU64(values, "--max", maximum, error)) return false;

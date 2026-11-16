@@ -36,6 +36,7 @@ developer loop:
 | Inspect call trees and FlameGraphs | `report --call-graph`, `report --folded` |
 | Diagnose stalls and scheduling | `record --profile sched`, `report --off-cpu`, `trace -e sched` |
 | Inspect syscalls, faults, and I/O | `trace -e syscall`, `trace -e pagefault`, `trace -e io` |
+| Diagnose interrupts, native allocations, and driver calls | `report --kind dpc\|isr\|heap\|pool\|driver` |
 | Hardware profiling | PMC intervals, CSwitch snapshots, Intel LBR, AMD64 context registers |
 | Compare before/after | `diff --calltree` |
 | Reproduce symbols later | `archive`, `buildid-list`, `.symcache` |
@@ -92,6 +93,10 @@ single source when an ETL contains multiple sample domains.
 recorded and local module identity; use `--hash` for cached local-file SHA256.
 
 ## Common workflows
+
+See [diagnostic workflows](docs/DIAGNOSTICS.md) for DPC/ISR execution spans,
+native heap/pool lifetimes, and observable driver call spans. These are dedicated
+ETW captures with explicit ownership, boundary, and baseline limitations.
 
 ### Live CPU view
 

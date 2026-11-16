@@ -321,6 +321,35 @@ bool DecodeWperfMetadata(const EVENT_RECORD& record,TraceData& metadata) {
             if(metadata.session_name.empty())metadata.session_name=name;
             continue;
         }
+        if (kind == "pool-tag") {
+            if (!(file >> metadata.pool_tag_filter) || !metadata.pool_tag_filter) return false;
+            continue;
+        }
+        if (kind == "heap-target") {
+            uint32_t pid = 0;
+            if (!(file >> pid) || pid == 0 || pid == UINT32_MAX || (metadata.heap_target_pid && metadata.heap_target_pid != pid)) return false;
+            metadata.heap_target_pid = pid;
+            continue;
+        }
+        if (kind == "snapshot-process") {
+            uint32_t pid = 0; std::string encoded; std::wstring name;
+            if (!(file >> pid >> encoded) || !UnhexText(encoded, name) || pid == 0 || pid == UINT32_MAX) return false;
+            if (!metadata.heap_target_pid || pid != metadata.heap_target_pid) return false;
+            metadata.heap_snapshot_metadata = true;
+            if (!FindProcess(metadata, pid, EtwTimestampNs(record, metadata.qpc_frequency)))
+                metadata.processes.push_back({pid, 0, name, L"", 0, 0});
+            continue;
+        }
+        if (kind == "snapshot-image") {
+            ImageRecord image; std::string encoded;
+            if (!(file >> image.pid >> image.base >> image.size >> image.timestamp >> image.checksum >> encoded) ||
+                !UnhexText(encoded, image.path) || !image.base || !image.size || image.size > UINT64_MAX - image.base ||
+                image.pid != metadata.heap_target_pid || metadata.images.size() >= 512) return false;
+            image.snapshot_only = true;
+            image.load_ns = EtwTimestampNs(record, metadata.qpc_frequency);
+            metadata.images.push_back(std::move(image));
+            continue;
+        }
         uint32_t source=0; if(!(file>>source))return false;
         if(kind=="counter") {
             std::string name; std::wstring decoded;

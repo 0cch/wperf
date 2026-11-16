@@ -15,7 +15,7 @@ Generated from the same command catalog used by wperf runtime validation. Do not
 | Command | Aliases | Purpose |
 |---|---|---|
 | `record` | `rec` | Capture ETW profile samples or trace events. |
-| `report` | `rep` | Produce a perf-style CPU, I/O, PMC, or off-CPU report from an ETL trace. |
+| `report` | `rep` | Produce CPU, I/O, PMC, off-CPU, interrupt, memory, or driver reports from an ETL trace. |
 | `script` | `scr` | Export one line per sample. |
 | `trace` | - | Print scheduler, syscall, page-fault, I/O, LBR, or context-register events. |
 | `sched` | - | Summarize scheduler activity and wakeup latency. |
@@ -25,7 +25,7 @@ Generated from the same command catalog used by wperf runtime validation. Do not
 | `diff` | `dif` | Compare two CPU profiles; positive values indicate growth in the second trace. |
 | `archive` | - | Copy referenced modules and write reproducible archive manifests. |
 | `buildid-list` | - | List module identity and symbolization metadata from an ETL. |
-| `list` | - | List profile sources and active sessions, or private providers. |
+| `list` | - | List profile sources, sessions, private providers, or pool tag snapshots. |
 | `doctor` | - | Check elevation, ETW capabilities, state and recent runs. |
 | `test` | - | Run a lightweight non-invasive self-test. |
 | `recover` | - | Stop stale wperf-owned ETW sessions. |
@@ -56,7 +56,7 @@ Aliases: `rec`
 | `-d, --duration MS` | Capture duration in milliseconds; default is until Ctrl-C. |
 | `-o, --output FILE` | Write the ETL trace to FILE. |
 | `-e, --event NAME\|ID` | Select a CPU profile, ETW source name or source ID. |
-| `--profile NAME` | cpu, cpu-sched, sched, syscall, vm, io, kernel, all, or pmu. |
+| `--profile NAME` | cpu, cpu-sched, sched, syscall, vm, io, kernel, all, pmu, dpc, isr, heap, pool, or driver. |
 | `--pmc-source ID` | Select an ETW PMC profile source. |
 | `--period N` | PMC events per interrupt (source-specific count). |
 | `--pmc-counters IDS` | Counter snapshots on CSwitch (comma-separated IDs). |
@@ -64,6 +64,7 @@ Aliases: `rec`
 | `-b, --lbr` | Enable LBR call-stack collection when supported. |
 | `--context-registers` | Enable context-register collection when supported. |
 | `--provider GUID` | Capture a private ETW provider session. |
+| `--pool-tag TAG` | Required with --profile pool: four printable ASCII characters, including spaces. |
 | `--session NAME` | Use an explicit ETW session name. |
 | `-h, --help` | Show this help. |
 
@@ -80,10 +81,13 @@ Notes:
 - System ETW call stacks are enabled by default. Use --no-call-graph to disable them.
 - cpu-sched, sched, and all also request CSwitch/ReadyThread stack tracing.
 - PMC interrupt sampling and --pmc-counters CSwitch snapshots require separate captures.
+- heap requires --pid of an existing process; only allocations after attachment are observed.
+- pool requires --pool-tag to bound high-rate capture; list --pool-tags shows current tag usage.
+- dpc/isr/heap/pool/driver are opt-in event captures; -F, PMC, LBR and private providers cannot be combined with them.
 
 ## `report`
 
-Produce a perf-style CPU, I/O, PMC, or off-CPU report from an ETL trace.
+Produce CPU, I/O, PMC, off-CPU, interrupt, memory, or driver reports from an ETL trace.
 
 ```text
 wperf report -i FILE [options]
@@ -128,7 +132,7 @@ Aliases: `rep`
 | `--verbose` | Print complete quality counters to stderr. |
 | `--csv` | Print CSV rows. |
 | `--json` | Print JSON rows. |
-| `--kind KIND` | Select cpu, io, or pmc report. |
+| `--kind KIND` | Select cpu, io, pmc, dpc, isr, interrupt, heap, pool, or driver report. |
 | `-h, --help` | Show this help. |
 
 Examples:
@@ -146,7 +150,10 @@ Notes:
 - CPU overhead and folded output use periods (CPU ns or PMC events); --weight samples uses counts. Unknown periods fall back to counts with a warning.
 - Mixed sample sources require --source ID. Off-CPU weights remain nanoseconds.
 - I/O and PMC snapshots support PID/TID/comm/children/CPU/time selection and loss/strict gates; symbol, stack, scope, weight, sort and percent options are rejected.
-- PMC snapshots also support --csv; I/O supports text/JSON. --max-missing-stacks requires loaded CPU/off-CPU stacks.
+- PMC snapshots also support --csv; I/O supports text/JSON. --max-missing-stacks requires loaded CPU/off-CPU or allocation stacks.
+- Diagnostic kinds support text/JSON/CSV, symbols, archives, CPU/time selectors and quality gates; graph, stream, weight, source, scope, sort and percent options are rejected.
+- DPC/ISR/interrupt/pool are system-owned and reject PID/TID/comm/children filters. Heap/driver support these selectors.
+- Heap/pool time and thread/CPU filters select allocation cohorts; releases through the selected end are always consumed. Observed live bytes do not prove a leak.
 - -o writes UTF-8 without BOM and LF line endings.
 
 ## `script`
@@ -446,7 +453,7 @@ Status is matching, mismatched, or missing. --hash adds local-file SHA256; witho
 
 ## `list`
 
-List profile sources and active sessions, or private providers.
+List profile sources, sessions, private providers, or pool tag snapshots.
 
 ```text
 wperf list [providers] [options]
@@ -456,8 +463,9 @@ Elevation: not required
 
 | Option | Description |
 |---|---|
-| `--max N` | Limit provider output. |
-| `--json` | Print JSON profile sources, sessions, or providers. |
+| `--max N` | Limit provider or pool-tag output. |
+| `--json` | Print JSON profile sources, sessions, providers, or pool tags. |
+| `--pool-tags` | List current system pool tag counters; use --max to limit rows. |
 | `-h, --help` | Show this help. |
 
 Examples:
@@ -469,8 +477,8 @@ wperf list providers --max 20
 
 Notes:
 
-- Without providers, list profile sources and active wperf-owned sessions.
-- Provider enumeration can be bounded with --max.
+- Without providers or --pool-tags, list profile sources and active wperf-owned sessions.
+- Provider and pool-tag enumeration can be bounded with --max. Pool counters are snapshots and allocation/free counters may wrap.
 
 ## `doctor`
 

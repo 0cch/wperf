@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "etw_decode.h"
+#include "diagnostic_decode.h"
 #include <sstream>
 
 #include <algorithm>
@@ -107,7 +108,7 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
     const size_t logger_bytes = (options.session_name.size() + 1) * sizeof(wchar_t);
     const size_t log_offset = sizeof(EVENT_TRACE_PROPERTIES);
     const size_t logger_offset = AlignUp(log_offset + log_bytes, kAlignment);
-    const size_t total_size = logger_offset + logger_bytes;
+    const size_t total_size = logger_offset + logger_bytes + (options.heap_pid || options.enable_pool ? 96u : 0u);
     auto buffer = MakePropertiesBuffer(total_size - sizeof(EVENT_TRACE_PROPERTIES));
     auto* properties = InitializeProperties(buffer, options.session_name, log_file);
     properties->BufferSize = options.buffer_size_kb;
@@ -124,6 +125,37 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         EVENT_TRACE_USE_GLOBAL_SEQUENCE |
         (options.system_logger ? EVENT_TRACE_SYSTEM_LOGGER_MODE : 0);
 
+    if (options.heap_pid != 0) {
+        // Native heap sessions use the ETW properties extension protocol (PID
+        // and stack hooks), also used by xperf/TraceEvent. No IFEO state is set.
+        properties->Wnode.Guid = kHeapGuid;
+        properties->LogFileMode &= ~EVENT_TRACE_SYSTEM_LOGGER_MODE;
+        const size_t offset = AlignUp(properties->LoggerNameOffset +
+            (options.session_name.size() + 1) * sizeof(wchar_t), sizeof(ULONG));
+        std::vector<ULONG> extension{0, (2u << 16) | 2u, options.heap_pid};
+        if (options.enable_stack_tracing) {
+            extension.insert(extension.end(), {(3u << 16) | 3u, 0x1021u, 0x1022u});
+        }
+        extension[0] = static_cast<ULONG>(extension.size()) |
+            ((options.enable_stack_tracing ? 2u : 1u) << 16);
+        if (offset >= 65536 || offset + extension.size() * sizeof(ULONG) > buffer.size()) {
+            if (error) *error = L"heap session properties exceed the extension limit";
+            return false;
+        }
+        std::memcpy(buffer.data() + offset, extension.data(), extension.size() * sizeof(ULONG));
+        properties->EnableFlags = 0x80ff0000u | static_cast<ULONG>(offset);
+    }
+    if (options.enable_pool) {
+        if (!options.pool_tag) { if (error) *error = L"pool capture requires a tag filter"; return false; }
+        const size_t offset = AlignUp(properties->LoggerNameOffset + (options.session_name.size() + 1) * sizeof(wchar_t), sizeof(ULONG));
+        // ETW_EXT_ENABLE_FLAGS (eight group masks) and ETW_EXT_POOLTAG_FILTER.
+        const ULONG extension[] = {(2u << 16) | 12u, (1u << 16) | 9u,
+            options.enable_flags, 0x40u, 0, 0, 0, 0, 0, 0, (4u << 16) | 2u, options.pool_tag};
+        if (offset >= 65536 || offset + sizeof(extension) > buffer.size()) { if (error) *error = L"pool extension exceeds properties limits"; return false; }
+        std::memcpy(buffer.data() + offset, extension, sizeof(extension));
+        properties->EnableFlags = 0x80ff0000u | static_cast<ULONG>(offset);
+    }
+
     if(options.pmc_profile && !options.pmc_counter_sources.empty()) {
         if(error)*error=L"PMC interrupt sampling and event-counter snapshots require separate captures";
         return false;
@@ -135,7 +167,7 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         if(!query_error.empty()||!owners.empty()) { if(error)*error=L"PMC counters are unavailable or already owned"; return false; }
         properties->EnableFlags|=EVENT_TRACE_FLAG_CSWITCH;
     }
-    const bool needs_profile = options.system_logger &&
+    const bool needs_profile = options.system_logger && options.heap_pid == 0 &&
         (options.pmc_profile || (options.enable_flags & EVENT_TRACE_FLAG_PROFILE) != 0);
     if (needs_profile && !ConfigureProfile(options, error)) return false;
     TRACEHANDLE handle = 0;
@@ -167,9 +199,11 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         }
     }
 
+    if (options.heap_pid != 0) return WriteCaptureMetadata(options, error);
     if (!options.system_logger) {
         return true;
     }
+
 
     if (options.pmc_profile) {
         struct GroupMask { ULONG masks[8]; } mask{};
@@ -203,12 +237,19 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         if(status!=ERROR_SUCCESS) { Stop(nullptr); if(error)*error=LastErrorWith(L"configure ETW stack cache",status); return false; }
     }
     if (options.enable_stack_tracing) {
-        CLASSIC_EVENT_ID stack_event{};
-        stack_event.EventGuid = kPerfInfoGuid;
-        stack_event.Type = options.pmc_profile ? 47 : 46;
-        const ULONG stack_result = TraceSetInformation(
-            handle_, TraceStackTracingInfo, &stack_event, sizeof(stack_event));
-        if (stack_result != ERROR_SUCCESS) {
+        std::vector<CLASSIC_EVENT_ID> stack_events;
+        const auto add = [&](const GUID& guid, UCHAR type) {
+            CLASSIC_EVENT_ID event{}; event.EventGuid = guid; event.Type = type;
+            stack_events.push_back(event);
+        };
+        if (needs_profile) add(kPerfInfoGuid, options.pmc_profile ? 47 : 46);
+        if (options.enable_pool) { add(kPoolGuid, 32); add(kPoolGuid, 33); }
+        // Driver events already contain the routine address. Stack walking
+        // every driver call also amplifies ETL writer I/O and is unnecessary.
+        const ULONG stack_result = stack_events.empty() ? ERROR_SUCCESS : TraceSetInformation(
+            handle_, TraceStackTracingInfo, stack_events.data(),
+            static_cast<ULONG>(stack_events.size() * sizeof(CLASSIC_EVENT_ID)));
+        if (!stack_events.empty() && stack_result != ERROR_SUCCESS) {
             std::wstring stop_error;
             Stop(&stop_error);
             if (error != nullptr) {
@@ -296,11 +337,17 @@ bool EtwSession::Start(const TraceOptions& options, std::wstring* error) {
         }
     }
 
+    return WriteCaptureMetadata(options, error);
+}
+
+bool EtwSession::WriteCaptureMetadata(const TraceOptions& options, std::wstring* error) {
     ULONG metadata_status=EventRegister(&kWperfMetadataGuid,nullptr,nullptr,&metadata_provider_);
     if(metadata_status==ERROR_SUCCESS)metadata_status=EnableTraceEx2(handle_,&kWperfMetadataGuid,
         EVENT_CONTROL_CODE_ENABLE_PROVIDER,TRACE_LEVEL_INFORMATION,0,0,5000,nullptr);
     if(metadata_status==ERROR_SUCCESS) {
         std::ostringstream metadata; metadata<<"wperf-meta-v1\nsession "<<HexText(options.session_name)<<'\n';
+        if (options.heap_pid) metadata << "heap-target " << options.heap_pid << '\n';
+        if (options.enable_pool) metadata << "pool-tag " << options.pool_tag << '\n';
         if(configured_interval_!=0)metadata<<"period "<<original_interval_.Source<<' '<<configured_interval_<<'\n';
         const auto sources=QueryProfileSources(nullptr);
         for(uint32_t id:options.pmc_counter_sources) {
@@ -544,6 +591,12 @@ ULONG TraceFlagsForProfile(std::wstring_view profile) {
     ULONG flags = EVENT_TRACE_FLAG_PROCESS | EVENT_TRACE_FLAG_THREAD |
                   EVENT_TRACE_FLAG_IMAGE_LOAD | EVENT_TRACE_FLAG_PROFILE;
     if (profile == L"pmu") flags &= ~EVENT_TRACE_FLAG_PROFILE;
+    if (profile == L"dpc" || profile == L"isr" || profile == L"heap" || profile == L"pool" || profile == L"driver")
+        flags &= ~EVENT_TRACE_FLAG_PROFILE;
+    if (profile == L"pool") flags |= EVENT_TRACE_FLAG_CSWITCH;
+    if (profile == L"dpc") flags |= EVENT_TRACE_FLAG_DPC;
+    if (profile == L"isr") flags |= EVENT_TRACE_FLAG_INTERRUPT;
+    if (profile == L"driver") flags |= EVENT_TRACE_FLAG_DRIVER | EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_DISK_IO_INIT | EVENT_TRACE_FLAG_CSWITCH;
     if (profile == L"cpu-sched" || profile == L"sched") {
         flags |= EVENT_TRACE_FLAG_CSWITCH | EVENT_TRACE_FLAG_DISPATCHER;
     }

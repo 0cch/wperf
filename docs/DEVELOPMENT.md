@@ -97,6 +97,8 @@ an access-denied or empty capture cannot be mistaken for a pass.
 | CLI fixtures | `CMakeLists.txt` `add_test` entries | Option validation and checked-in ETL workflows |
 | Live integration | `tests/live_integration_tests.cpp` | Real ETW capture, STOP, orphan cleanup |
 | Live JSON | `tests/live_trace_json_smoke.ps1`, `tests/live_pmc_json_smoke.ps1` | Streaming trace and PMC JSON contracts |
+| Diagnostic regression/contracts | `tests/diagnostic_tests.cpp`, `tests/diagnostic_contract_test.ps1` | Interrupt/memory/driver payloads, lifetimes, interval semantics and schemas |
+| Live diagnostics | `tests/live_diagnostics_smoke.ps1` | Real interrupts, heap/pool allocation events and driver I/O calls |
 | Live controller smoke | `tests/live_top_smoke.ps1` | Worker/controller decode and rendering |
 | Replay contract | `scripts/replay_contract.ps1` | Stable report/JSON contract on fixture data |
 

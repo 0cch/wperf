@@ -77,8 +77,9 @@ When the child exits, capture stops automatically.
 
 Without `--duration`, system-wide capture runs until Ctrl+C; when a target command
 is supplied, it stops when that root process exits. `-p` observes an existing process
-and is currently implemented as system-wide ETW capture plus analysis filtering,
-not as a kernel-level per-process attach.
+uses system-wide ETW capture plus analysis filtering for system profiles.
+`--profile heap -p PID` instead enables native heap tracing for that existing
+process; allocations before attachment are outside its baseline.
 
 ### Profiles and events
 
@@ -95,6 +96,10 @@ not as a kernel-level per-process attach.
 | `kernel` | Kernel event set |
 | `all` | Broad system trace set |
 | `pmu` | ETW PMC interrupt sampling |
+| `dpc`, `isr` | Dedicated DPC or ISR execution events, without CPU sampling |
+| `heap` | Native heap alloc/free/realloc for an existing `-p PID` |
+| `pool` | Pool alloc/free events and allocation stacks; requires `--pool-tag TAG` |
+| `driver` | Driver call/return boundaries plus I/O events |
 
 `-e NAME|ID` accepts a CPU profile name, an ETW profile-source name, or a
 numeric source ID. Use `wperf list` to inspect available profile sources.
@@ -198,6 +203,14 @@ wperf report -i FILE [options]
 | Blocked/ready wait time | `--off-cpu` |
 | I/O summary | `--kind io` |
 | PMC snapshot deltas | `--kind pmc --json --metadata` |
+| Interrupt routine time | `--kind dpc`, `isr`, or combined `interrupt` |
+| Native allocation lifetimes | `--kind heap` or `pool` |
+| Observable driver calls | `--kind driver` |
+
+These diagnostic kinds support text/JSON/CSV and file output. See
+[DIAGNOSTICS.md](DIAGNOSTICS.md) for capture examples, supported selectors,
+quality fields, and the distinction between inclusive time, observed live
+allocations, and measurable driver call spans.
 
 ### Flat CPU profile
 
@@ -223,7 +236,8 @@ I/O and PMC snapshot reports support PID/TID/comm/children/CPU/time selection,
 deltas whose two endpoints are within the window; filtering retains counter
 baselines. PMC snapshots support CSV and `--source ID`. I/O supports text/JSON.
 Symbol/stack/scope/weight/sort/percent options are rejected for these kinds;
-missing-stack gates require CPU/off-CPU stacks. I/O init/complete/orphan diagnostics
+missing-stack gates apply to CPU/off-CPU or heap/pool allocation stacks, not
+I/O/PMC snapshots. I/O init/complete/orphan diagnostics
 and report quality gates describe the full capture; I/O event/file metrics describe
 the selection. An empty I/O/PMC selection exits 5.
 

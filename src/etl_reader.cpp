@@ -3,6 +3,7 @@
 #include "analysis.h"
 #include "common.h"
 #include "etw_decode.h"
+#include "diagnostic_decode.h"
 #include "lbr.h"
 #include "trace_events.h"
 
@@ -196,8 +197,10 @@ void ParseProcess(const EVENT_RECORD& record, TraceData& trace,
     ProcessRecord process;
     if(!DecodeProcessPayload(record,trace.pointer_size,trace.qpc_frequency,process)) { ++trace.quality.decode_errors; return; }
     const uint8_t opcode=record.EventHeader.EventDescriptor.Opcode;
+    if (opcode == 4) return;  // End rundown reports presence, not termination.
     const uint32_t pid=process.pid;
     const uint64_t timestamp_ns=process.start_ns;
+    if (opcode == 3) process.start_ns = 0;  // Present at capture start, not born when rundown is delivered.
     auto& active = indexes.processes_by_pid[pid];
     if (opcode == 2 || opcode == 4) {
         for (auto iterator = active.rbegin(); iterator != active.rend();
@@ -229,8 +232,10 @@ void ParseThread(const EVENT_RECORD& record, TraceData& trace,
     ThreadRecord thread;
     if(!DecodeThreadPayload(record,trace.qpc_frequency,thread)) { ++trace.quality.decode_errors; return; }
     const uint8_t opcode=record.EventHeader.EventDescriptor.Opcode;
+    if (opcode == 4) return;
     const uint32_t pid=thread.pid,tid=thread.tid;
     const uint64_t timestamp_ns=thread.start_ns;
+    if (opcode == 3) thread.start_ns = 0;
     auto& active = indexes.threads_by_pid_tid[IndexKey{pid, tid}];
     if (opcode == 2 || opcode == 4) {
         for (auto iterator = active.rbegin(); iterator != active.rend();
@@ -262,6 +267,8 @@ void ParseImage(const EVENT_RECORD& record, TraceData& trace,
     ImageRecord image;
     if(!DecodeImagePayload(record,trace.pointer_size,trace.qpc_frequency,image)) { ++trace.quality.decode_errors; return; }
     const uint8_t opcode=record.EventHeader.EventDescriptor.Opcode;
+    if (opcode == 4) return;  // Only an actual unload closes the image lifetime.
+    if (opcode == 3) image.load_ns = 0;
     auto& active =
         indexes.images_by_pid_base[IndexKey{image.pid, image.base}];
     if (opcode == 2 || opcode == 4) {
@@ -512,6 +519,7 @@ struct ReplayContext {
     ReplayIndexes indexes;
     StackStore stacks;
     bool metadata_only=false;
+    std::wstring diagnostic_kind;
     const std::function<void(const SampleRecord&)>* sample_consumer=nullptr;
     TraceData sampling_metadata;
     ThreadIndex thread_index;
@@ -554,7 +562,12 @@ void ConsumeEventRecord(PEVENT_RECORD record) {
     const auto event_time=EtwTimestampNs(*record,trace->qpc_frequency);
     trace->start_ns=std::min(trace->start_ns,event_time); trace->end_ns=std::max(trace->end_ns,event_time);
     if(IsEqualGUID(record->EventHeader.ProviderId,kWperfMetadataGuid)) {
+        const size_t images_before = trace->images.size(), processes_before = trace->processes.size();
         if(!DecodeWperfMetadata(*record,*trace))++trace->quality.decode_errors;
+        for (size_t index = images_before; index < trace->images.size(); ++index)
+            context->indexes.images_by_pid_base[IndexKey{trace->images[index].pid, trace->images[index].base}].push_back(index);
+        for (size_t index = processes_before; index < trace->processes.size(); ++index)
+            context->indexes.processes_by_pid[trace->processes[index].pid].push_back(index);
         return;
     }
     if ((record->EventHeader.Flags & EVENT_HEADER_FLAG_32_BIT_HEADER) != 0) {
@@ -578,12 +591,52 @@ void ConsumeEventRecord(PEVENT_RECORD record) {
         }
         if(!lifecycle)return;
     }
+    if (!context->diagnostic_kind.empty()) {
+        const auto& kind = context->diagnostic_kind;
+        const bool lifecycle = IsEqualGUID(class_guid, kProcessGuid) || IsEqualGUID(class_guid, kThreadGuid) || IsEqualGUID(class_guid, kImageGuid);
+        const bool memory = kind == L"heap" || kind == L"pool";
+        const bool selected = (memory && IsEqualGUID(class_guid, kStackWalkGuid)) ||
+            (kind == L"heap" && IsEqualGUID(class_guid, kHeapGuid)) || (kind == L"pool" && IsEqualGUID(class_guid, kPoolGuid)) ||
+            ((kind == L"driver" || kind == L"pool") && IsEqualGUID(class_guid, kThreadGuid) && opcode == 36) ||
+            (kind == L"driver" && IsEqualGUID(class_guid, kDiagnosticDiskGuid) && (opcode == 34 || opcode == 35 || opcode == 37 || opcode == 52 || opcode == 53)) ||
+            ((kind == L"dpc" || kind == L"isr" || kind == L"interrupt") && IsEqualGUID(class_guid, kDiagnosticPerfGuid) &&
+             ((kind != L"dpc" && (opcode == 50 || opcode == 67)) || (kind != L"isr" && (opcode == 66 || opcode == 68 || opcode == 69))));
+        if (!lifecycle && !selected) return;
+    }
+    const size_t interrupts_before = trace->interrupts.size(), allocations_before = trace->allocations.size(), drivers_before = trace->driver_events.size();
+    if (!context->diagnostic_kind.empty() && IsEqualGUID(class_guid, kThreadGuid) && opcode == 36) {
+        TraceEvent event;
+        if (!DecodeKernelEvent(*record, trace->pointer_size, trace->qpc_frequency, TraceEventKind::ContextSwitch, event)) ++trace->quality.decode_errors;
+        else trace->scheduling_contexts.push_back({event.timestamp_ns, event.cpu, static_cast<uint32_t>(event.value1)});
+        context->charged_bytes += 2 * sizeof(SchedulingContextRecord);
+        trace->quality.budget_estimated_bytes = context->charged_bytes;
+        if (context->charged_bytes > 512ull * 1024 * 1024) {
+            context->failure = L"diagnostic scheduling context exceeded the replay budget";
+            trace->quality.budget_exceeded = true; trace->quality.incomplete = true;
+        }
+        return;
+    }
+    if (DecodeDiagnosticRecord(*record, class_guid, *trace)) {
+        context->charged_bytes += 2 * ((trace->interrupts.size() - interrupts_before) * sizeof(InterruptRecord) +
+            (trace->allocations.size() - allocations_before) * sizeof(AllocationRecord) + (trace->driver_events.size() - drivers_before) * sizeof(DriverRecord));
+        if (trace->allocations.size() > allocations_before) context->charged_bytes += 2 * trace->allocations.back().stack.size() * sizeof(uint64_t);
+        trace->quality.budget_estimated_bytes = context->charged_bytes;
+        if (context->charged_bytes > 512ull * 1024 * 1024) {
+            context->failure = L"diagnostic replay exceeded 512 MiB managed budget; use a shorter capture";
+            trace->quality.budget_exceeded = true; trace->quality.incomplete = true;
+        }
+        return;
+    }
     const bool stored=IsEqualGUID(class_guid,kProcessGuid)||IsEqualGUID(class_guid,kThreadGuid)||
         IsEqualGUID(class_guid,kImageGuid)||IsEqualGUID(class_guid,kStackWalkGuid)||IsEqualGUID(class_guid,kPageFaultGuid)||
         IsEqualGUID(class_guid,kDiskIoGuid)||IsEqualGUID(class_guid,kFileIoGuid)||IsEqualGUID(class_guid,kLbrGuid)||
-        (IsEqualGUID(class_guid,kPerfInfoGuid)&&(opcode==46||opcode==47||opcode==51||opcode==52||opcode==122));
-    if(stored)context->charged_bytes+=(IsEqualGUID(class_guid,kStackWalkGuid)?4:2)*
-        (uint64_t{record->UserDataLength}+sizeof(SampleRecord)+sizeof(TraceEvent));
+        (IsEqualGUID(class_guid,kPerfInfoGuid)&&(opcode==46||opcode==47||opcode==50||opcode==51||opcode==52||opcode==66||opcode==67||opcode==68||opcode==69||opcode==122));
+    if (stored) {
+        if (IsEqualGUID(class_guid, kStackWalkGuid) && !context->diagnostic_kind.empty())
+            context->charged_bytes += 4 * (uint64_t{record->UserDataLength} + sizeof(StackRecord));
+        else context->charged_bytes += (IsEqualGUID(class_guid,kStackWalkGuid)?4:2) *
+            (uint64_t{record->UserDataLength}+sizeof(SampleRecord)+sizeof(TraceEvent));
+    }
     trace->quality.budget_estimated_bytes=context->charged_bytes;
     if(context->charged_bytes>512ull*1024*1024) {
         context->failure=L"replay exceeded 512 MiB managed budget; use report --stream or a shorter capture";
@@ -824,7 +877,34 @@ void FinishReplay(ReplayContext& context, TraceData& trace, bool derive_off_cpu)
         }
     }
 
+    std::map<uint32_t, std::vector<std::pair<uint64_t, uint32_t>>> running;
+    for (const auto& event : trace.scheduling_contexts) running[event.cpu].emplace_back(event.timestamp_ns, event.tid);
+    for (const auto& event : trace.events) if (event.kind == TraceEventKind::ContextSwitch)
+        running[event.cpu].emplace_back(event.timestamp_ns, static_cast<uint32_t>(event.value1));
+    for (auto& [cpu, switches] : running) { (void)cpu; std::stable_sort(switches.begin(), switches.end()); }
+    for (auto& allocation : trace.allocations) {
+        if (!allocation.stack.empty() ||
+            (allocation.operation != MemoryOperation::Allocate && allocation.operation != MemoryOperation::Reallocate)) continue;
+        uint32_t stack_tid = allocation.tid;
+        if (allocation.domain == MemoryDomain::Pool && (stack_tid == 0 || stack_tid == UINT32_MAX)) {
+            const auto cpu = running.find(allocation.cpu);
+            if (cpu != running.end()) {
+                const auto upper = std::upper_bound(cpu->second.begin(), cpu->second.end(), std::pair{allocation.timestamp_ns, UINT32_MAX});
+                if (upper != cpu->second.begin()) stack_tid = std::prev(upper)->second;
+            }
+        }
+        const auto found = resolved_stacks.find(StackKey{allocation.timestamp_ns, stack_tid, allocation.cpu});
+        if (found != resolved_stacks.end() && !found->second.ambiguous && found->second.candidates.size() == 1) {
+            const auto& frames = found->second.candidates.front();
+            auto& shared = interned[frames];
+            if (!shared) shared = std::make_shared<std::vector<uint64_t>>(frames);
+            allocation.stack.Share(shared);
+            allocation.stack_quality = StackQuality::Exact;
+        }
+    }
+
     for (TraceEvent& event : trace.events) {
+        if (!trace.stacks_loaded || !context.diagnostic_kind.empty()) continue;
         if (event.kind != TraceEventKind::ContextSwitch &&
             event.kind != TraceEventKind::ReadyThread) {
             continue;
@@ -892,13 +972,15 @@ void FinishReplay(ReplayContext& context, TraceData& trace, bool derive_off_cpu)
 }  // namespace
 
 bool ReadEtwPass(const std::filesystem::path& path, TraceData& trace,
-                 std::wstring* error,bool metadata_only,const std::function<void(const SampleRecord&)>* consumer,bool derive_off_cpu) {
+                 std::wstring* error,bool metadata_only,const std::function<void(const SampleRecord&)>* consumer,bool derive_off_cpu,std::wstring_view diagnostic_kind = {}) {
     if(!consumer)trace = TraceData{};
     trace.source_path = path.wstring();
     trace.quality.budget_limit_bytes = 512ull * 1024 * 1024;
 
     ReplayContext context;
     context.trace = &trace;
+    context.diagnostic_kind = diagnostic_kind;
+    if (!diagnostic_kind.empty() && diagnostic_kind != L"heap" && diagnostic_kind != L"pool") trace.stacks_loaded = false;
     if(consumer)context.thread_index.Build(trace);
     context.metadata_only=metadata_only; context.sample_consumer=consumer;
     context.sampling_metadata.pointer_size=trace.pointer_size; context.sampling_metadata.qpc_frequency=trace.qpc_frequency;
@@ -947,8 +1029,8 @@ bool ReadEtwPass(const std::filesystem::path& path, TraceData& trace,
     return true;
 }
 
-bool ReadEtwFile(const std::filesystem::path& path,TraceData& trace,std::wstring* error,bool derive_off_cpu) {
-    return ReadEtwPass(path,trace,error,false,nullptr,derive_off_cpu);
+bool ReadEtwFile(const std::filesystem::path& path,TraceData& trace,std::wstring* error,bool derive_off_cpu,std::wstring_view diagnostic_kind) {
+    return ReadEtwPass(path,trace,error,false,nullptr,derive_off_cpu,diagnostic_kind);
 }
 bool ReadEtwMetadata(const std::filesystem::path& path,TraceData& trace,std::wstring* error) {
     trace.stacks_loaded=false;
@@ -962,9 +1044,9 @@ bool StreamEtwSamples(const std::filesystem::path& path,TraceData& trace,
     return ReadEtwPass(path,trace,error,false,&consumer,false);
 }
 
-bool ReadEtwRecords(std::span<const EVENT_RECORD> records,TraceData& trace,uint64_t frequency) {
+bool ReadEtwRecords(std::span<const EVENT_RECORD> records,TraceData& trace,uint64_t frequency,std::wstring_view diagnostic_kind) {
     trace={}; trace.qpc_frequency=frequency;
-    ReplayContext context; context.trace=&trace;
+    ReplayContext context; context.trace=&trace; context.diagnostic_kind=diagnostic_kind;
     for(const auto& source:records) {
         EVENT_RECORD record=source; record.UserContext=&context;
         EventRecordCallback(&record);

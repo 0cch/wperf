@@ -1,0 +1,15 @@
+#pragma once
+#include "trace_model.h"
+#include <windows.h>
+#include <evntcons.h>
+
+namespace wperf {
+inline constexpr GUID kDiagnosticPerfGuid = {0xce1dbfb4,0x137e,0x4da6,{0x87,0xb0,0x3f,0x59,0xaa,0x10,0x2c,0xbc}};
+inline constexpr GUID kDiagnosticDiskGuid = {0x3d6fa8d4,0xfe05,0x11d0,{0x9d,0xda,0x00,0xc0,0x4f,0xd7,0xba,0x7c}};
+inline constexpr GUID kHeapGuid = {0x222962ab,0x6180,0x4b88,{0xa8,0x25,0x34,0x6b,0x75,0xf2,0xa2,0x4a}};
+inline constexpr GUID kPoolGuid = {0x0268a8b6,0x74fd,0x4302,{0x9d,0xd0,0x6e,0x8f,0x17,0x95,0xc0,0xcf}};
+// Returns true for handled events, including rejected payloads. Unknown events
+// remain available to the reader's provider/opcode accounting.
+bool DecodeDiagnosticRecord(const EVENT_RECORD& record, const GUID& event_class, TraceData& trace);
+bool IsDiagnosticClass(const GUID& event_class);
+}  // namespace wperf

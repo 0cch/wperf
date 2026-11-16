@@ -14,8 +14,8 @@ provides it.
 
 Examples:
 
-- tag `v0.9.0` on run 42 produces release `0.9.0.42`;
-- tag `v0.9.0.0` produces release `0.9.0.0` directly.
+- tag `v0.10.0` on run 42 produces release `0.10.0.42`;
+- tag `v0.10.0.0` produces release `0.10.0.0` directly.
 
 Release tags are immutable once published. Do not reuse or force-move a tag.
 
@@ -33,7 +33,7 @@ Override the output or version when needed:
 ```powershell
 pwsh -NoProfile -File .\scripts\build_release.ps1 `
   -OutputDirectory artifacts\release `
-  -VersionMajor 0 -VersionMinor 9 -VersionPatch 0 -BuildNumber 0
+  -VersionMajor 0 -VersionMinor 10 -VersionPatch 0 -BuildNumber 0
 ```
 
 ## Release contents
@@ -50,7 +50,7 @@ The release package also contains:
 - `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, and third-party notices;
 - `docs/COMPATIBILITY.md`, `docs/USAGE.md`, `docs/ARCHITECTURE.md`,
   `docs/DEVELOPMENT.md`, `docs/PUBLIC_CONTRACT.md`, `docs/RELEASE.md`,
-  `docs/HARDWARE_VALIDATION.md`, and `docs/schemas/`;
+  `docs/HARDWARE_VALIDATION.md`, `docs/DIAGNOSTICS.md`, and `docs/schemas/`;
 - `RELEASE.txt` with version/commit/build metadata.
 
 ## Tag-triggered GitHub release
@@ -59,8 +59,8 @@ The workflow is `.github/workflows/release.yml` and triggers on tags matching
 `v*`.
 
 ```powershell
-git tag -a v0.9.0.0 -m "wperf 0.9.0.0"
-git push origin v0.9.0.0
+git tag -a v0.10.0.0 -m "wperf 0.10.0.0"
+git push origin v0.10.0.0
 ```
 
 The workflow:
@@ -88,7 +88,7 @@ unsupported hardware step must not be treated as a pass.
 ## Post-release verification
 
 ```powershell
-gh release view v0.9.0.0
+gh release view v0.10.0.0
 gh run list --workflow release.yml --limit 5
 ```
 

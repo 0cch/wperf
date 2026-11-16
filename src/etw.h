@@ -53,6 +53,9 @@ struct TraceOptions {
     bool enable_lbr = false;
     bool stack_cache = false;
     std::vector<uint32_t> pmc_counter_sources;
+    bool enable_pool = false;
+    uint32_t pool_tag = 0;
+    uint32_t heap_pid = 0;
 };
 
 struct ProfileRestoreInfo {
@@ -92,6 +95,7 @@ private:
     uint32_t configured_interval_ = 0;
     TraceQuality final_quality_;
     bool ConfigureProfile(const TraceOptions& options, std::wstring* error);
+    bool WriteCaptureMetadata(const TraceOptions& options, std::wstring* error);
     bool RestoreProfile(std::wstring* error);
     std::wstring context_register_status_;
     std::wstring lbr_status_;

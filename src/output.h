@@ -8,6 +8,7 @@
 
 #include "common.h"
 #include "trace_model.h"
+#include "pool_tags.h"
 
 namespace wperf {
 
@@ -63,6 +64,9 @@ inline nlohmann::ordered_json QualityJson(const TraceData& trace) {
     value["io_complete_events"] = q.io_complete_events;
     value["io_orphaned"] = q.io_orphaned;
     value["decode_errors"] = q.decode_errors;
+    value["diagnostic_unsupported"] = q.diagnostic_unsupported;
+    if (trace.heap_target_pid) value["heap_module_lifecycle"] = trace.heap_snapshot_metadata ? "attach-snapshot" : "unavailable";
+    if (trace.pool_tag_filter) value["pool_tag_filter"] = ToUtf8(PoolTagText(trace.pool_tag_filter));
     value["correlation_evicted"] = q.correlation_evicted;
     value["syscall_orphaned"] = q.syscall_orphaned;
     value["unknown_events"] = q.unknown_events;

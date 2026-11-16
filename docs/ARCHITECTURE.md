@@ -45,6 +45,7 @@ unbounded aggregation stay outside the elevated process.
 | ETL replay/model | `src/etl_reader.cpp`, `src/trace_model.cpp`, `src/trace_events.cpp` |
 | Live capture | `src/live_top.cpp`, `src/live_data.cpp`, `src/commands/live_worker.cpp` |
 | Analysis | `src/analysis.cpp`, `src/cpu_report.cpp`, `src/off_cpu_report.cpp` |
+| Interrupt/memory/driver diagnostics | `src/diagnostic_model.h`, `src/diagnostic_decode.cpp`, `src/diagnostic_report.cpp`, `src/commands/diagnostics.cpp` |
 | Symbols and archives | `src/symbolizer.cpp`, `src/dbghelp_loader.cpp`, `src/archive.cpp` |
 | Disassembly | `src/disassembler.cpp` |
 | Rendering/output | `src/top_renderer.cpp`, `src/output.h` |
@@ -119,7 +120,10 @@ The model keeps the raw value and its provenance where they differ:
 
 ## Correlation and identity
 
-- Process and thread lifetime records disambiguate PID/TID reuse.
+- Process and thread lifetime records disambiguate PID/TID reuse. Start-rundown
+  describes an initial baseline (start/load 0) rather than a birth at the delayed
+  metadata delivery time; actual start/load events keep their timestamps. End
+  rundown reports continued presence and never acts as exit/unload.
 - Images carry timestamp, checksum, size, path, and resolved path.
 - Modern image payload PID 0 is a valid global owner, including kernel rundown;
   it is not replaced with the emitting header PID. Kernel address lookup shares
@@ -186,6 +190,16 @@ registers in the documented order. The trace command exposes those fields only
 for the validated architecture. ARM64 payload decoding is not claimed.
 
 ## Output and compatibility
+
+Diagnostic reports use independent interrupt, allocation, and driver records.
+The shared reader can retain only the requested domain plus lifecycle metadata
+and required allocation stacks; irrelevant high-rate events do not consume its
+managed replay budget. Heap uses a native ETW heap-session PID extension rather
+than persistent IFEO configuration. Pool enables only the pool group mask and a tag filter, avoiding unrelated
+high-rate memory/page-list events. Driver capture adds CSwitch for explicitly
+labeled entry-context reconstruction.
+Domain analysis preserves global interrupt/pool ownership and correlates memory
+lifetimes before allocation-cohort selection. See [DIAGNOSTICS.md](DIAGNOSTICS.md).
 
 Text output is for humans. JSON/CSV and exit codes are the automation contract.
 JSON is serialized through nlohmann/json and the shared streaming writer, so

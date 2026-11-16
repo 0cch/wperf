@@ -5,19 +5,120 @@
   "type": "object",
   "oneOf": [
     {
-      "required": ["profile_source_count", "profile_sources", "active_sessions", "session_query_error"],
+      "required": [
+        "profile_source_count",
+        "profile_sources",
+        "active_sessions",
+        "session_query_error"
+      ],
       "properties": {
-        "profile_source_count": { "type": "integer", "minimum": 0 },
-        "profile_sources": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
-        "active_sessions": { "type": "array", "items": { "type": "string" } },
-        "session_query_error": { "type": "string" }
+        "profile_source_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "profile_sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "active_sessions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "session_query_error": {
+          "type": "string"
+        }
       }
     },
     {
-      "required": ["provider_count", "providers"],
+      "required": [
+        "provider_count",
+        "providers"
+      ],
       "properties": {
-        "provider_count": { "type": "integer", "minimum": 0 },
-        "providers": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        "provider_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "required": [
+        "semantics",
+        "pool_tag_count",
+        "pool_tags"
+      ],
+      "properties": {
+        "semantics": {
+          "const": "system-pool-tag-snapshot"
+        },
+        "pool_tag_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pool_tags": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "tag",
+              "tag_value",
+              "paged_bytes",
+              "nonpaged_bytes",
+              "paged_allocs",
+              "paged_frees",
+              "nonpaged_allocs",
+              "nonpaged_frees"
+            ],
+            "properties": {
+              "tag": {
+                "type": "string",
+                "minLength": 4,
+                "maxLength": 4
+              },
+              "tag_value": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "paged_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "nonpaged_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "paged_allocs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "paged_frees": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "nonpaged_allocs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "nonpaged_frees": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": true
+          }
+        }
       }
     }
   ],

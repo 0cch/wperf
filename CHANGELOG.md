@@ -1,5 +1,14 @@
 # wperf Changelog
 
+## 0.10.0.0 - 2026-11-16
+
+- Added dedicated DPC, ISR, native heap, kernel pool, and driver ETW capture profiles and text/JSON/CSV diagnostic reports.
+- Preserved system ownership for interrupts/pool, explicit allocation baselines and observed-unfreed semantics, and event-bounded driver call spans without inferring minifilter/device latency.
+- Corrected delayed start-rundown metadata to an initial process/thread/image baseline, restoring early interrupt-module and scheduler-context attribution.
+- Added selective diagnostic replay, bounded lifecycle/call correlation, schema/CLI/raw-payload regressions and elevated native workload smoke coverage.
+- Added pool tag snapshot discovery and required tag filtering; avoided unrelated high-rate memory/page-list events and labeled scheduler-derived driver contexts.
+- Avoided unnecessary per-driver-call stack walking and synchronized CLI help, generated reference, diagnostic contracts and compatibility documentation.
+
 ## 0.9.0.0 - 2026-11-16
 
 - Preserved global image PID 0 in modern ETW image payloads instead of replacing it with the collector's header PID, restoring target kernel-module attribution in offline and live reports; added raw-payload/lifetime/report regressions.

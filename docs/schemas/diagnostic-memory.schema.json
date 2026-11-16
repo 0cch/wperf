@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/diagnostic-memory.schema.json",
+  "title": "wperf diagnostic-memory",
+  "oneOf": [
+    {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/row"
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "rows",
+        "quality"
+      ],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/row"
+          }
+        },
+        "quality": {
+          "type": "object",
+          "required": [
+            "lost_events",
+            "lost_buffers",
+            "decode_errors",
+            "diagnostic_unsupported",
+            "incomplete"
+          ],
+          "properties": {
+            "incomplete": {
+              "type": "boolean"
+            },
+            "diagnostic_unsupported": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "analysis": {
+              "type": "object",
+              "properties": {
+                "unmatched_frees": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "address_reuse": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "unmatched_entries": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "unmatched_returns": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "duplicate_entries": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completion_points": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "budget_dropped": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "missing_stacks": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  ],
+  "$defs": {
+    "row": {
+      "type": "object",
+      "required": [
+        "kind",
+        "pid",
+        "owner",
+        "tag",
+        "session_id",
+        "dso",
+        "symbol",
+        "semantics",
+        "allocation_stack",
+        "process_start_ns",
+        "heap",
+        "tag_value",
+        "pool_type",
+        "allocations",
+        "allocated_bytes",
+        "frees",
+        "freed_bytes",
+        "live_allocations",
+        "live_bytes",
+        "peak_live_bytes",
+        "lifecycle_released_bytes",
+        "missing_stacks",
+        "invalidated_bytes",
+        "module_provenance"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "heap",
+            "pool"
+          ]
+        },
+        "pid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "owner": {
+          "enum": [
+            "system",
+            "process"
+          ]
+        },
+        "tag": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "dso": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "semantics": {
+          "const": "observed-unfreed"
+        },
+        "allocation_stack": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "ip",
+              "dso",
+              "symbol"
+            ],
+            "properties": {
+              "ip": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "dso": {
+                "type": "string"
+              },
+              "symbol": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "process_start_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "heap": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tag_value": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pool_type": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "allocations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "allocated_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frees": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "freed_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "live_allocations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "live_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "peak_live_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lifecycle_released_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_stacks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "invalidated_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "module_provenance": {
+          "enum": [
+            "etw",
+            "attach-snapshot",
+            "unavailable"
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

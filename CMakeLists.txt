@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 set(WPERF_VERSION_MAJOR 0 CACHE STRING "wperf major version")
-set(WPERF_VERSION_MINOR 9 CACHE STRING "wperf minor version")
+set(WPERF_VERSION_MINOR 10 CACHE STRING "wperf minor version")
 set(WPERF_VERSION_PATCH 0 CACHE STRING "wperf patch version")
 set(WPERF_BUILD_NUMBER 0 CACHE STRING "wperf build number")
 foreach(part WPERF_VERSION_MAJOR WPERF_VERSION_MINOR WPERF_VERSION_PATCH WPERF_BUILD_NUMBER)
@@ -45,6 +45,10 @@ add_library(wperf_core STATIC
     src/state.cpp
     src/etw.cpp
     src/etw_decode.cpp
+    src/diagnostic_decode.cpp
+    src/diagnostic_report.cpp
+    src/heap_metadata.cpp
+    src/pool_tags.cpp
     src/session_guard.cpp
     src/ipc.cpp
     src/elevation.cpp
@@ -85,6 +89,7 @@ add_executable(wperf
     src/cli.cpp
     src/commands/advanced.cpp
     src/commands/offline.cpp
+    src/commands/diagnostics.cpp
     src/commands/live_worker.cpp
     src/commands/top.cpp
 )
@@ -100,6 +105,9 @@ add_custom_target(generate-command-reference
 add_executable(wperf_cpu_burn tests/workloads/cpu_burn.cpp)
 target_compile_definitions(wperf_cpu_burn PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(wperf_cpu_burn PRIVATE /W4 /permissive- /utf-8 /EHsc)
+add_executable(wperf_diagnostic_workload tests/workloads/diagnostic_workload.cpp)
+target_compile_definitions(wperf_diagnostic_workload PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+target_compile_options(wperf_diagnostic_workload PRIVATE /W4 /permissive- /utf-8 /EHsc)
 
 enable_testing()
 
@@ -125,6 +133,16 @@ add_executable(wperf_kernel_image_identity_tests tests/kernel_image_identity_tes
 target_compile_options(wperf_kernel_image_identity_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_kernel_image_identity_tests PRIVATE wperf_core)
 add_test(NAME kernel_image_identity COMMAND wperf_kernel_image_identity_tests)
+add_executable(wperf_diagnostic_tests tests/diagnostic_tests.cpp)
+target_compile_options(wperf_diagnostic_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+target_link_libraries(wperf_diagnostic_tests PRIVATE wperf_core)
+add_test(NAME diagnostic_tests COMMAND wperf_diagnostic_tests)
+add_test(NAME diagnostic_contract_test
+    COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/diagnostic_contract_test.ps1
+        -Tests $<TARGET_FILE:wperf_diagnostic_tests> -Wperf $<TARGET_FILE:wperf>
+        -SchemaDirectory ${CMAKE_CURRENT_SOURCE_DIR}/docs/schemas
+        -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl)
+set_tests_properties(diagnostic_contract_test PROPERTIES TIMEOUT 90)
 add_executable(wperf_regression_tests tests/regression_tests.cpp)
 target_compile_options(wperf_regression_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
@@ -165,6 +183,11 @@ add_test(NAME live_kernel_image_smoke
          COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/live_kernel_image_smoke.ps1
          -Wperf $<TARGET_FILE:wperf>)
 set_tests_properties(live_kernel_image_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE
+                     SKIP_RETURN_CODE 77 LABELS integration)
+add_test(NAME live_diagnostics_smoke
+    COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/live_diagnostics_smoke.ps1
+        -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_diagnostics_smoke PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
                      SKIP_RETURN_CODE 77 LABELS integration)
 add_test(NAME cli_version COMMAND wperf --version)
 add_test(NAME cli_version_format COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/version_test.ps1 -Wperf $<TARGET_FILE:wperf>)

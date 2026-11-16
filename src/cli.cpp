@@ -73,7 +73,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("-d,--duration", "MS", "Capture duration in milliseconds; default is until Ctrl-C."),
             Value("-o,--output", "FILE", "Write the ETL trace to FILE."),
             Value("-e,--event", "NAME|ID", "Select a CPU profile, ETW source name or source ID."),
-            Value("--profile", "NAME", "cpu, cpu-sched, sched, syscall, vm, io, kernel, all, or pmu."),
+            Value("--profile", "NAME", "cpu, cpu-sched, sched, syscall, vm, io, kernel, all, pmu, dpc, isr, heap, pool, or driver."),
             Value("--pmc-source", "ID", "Select an ETW PMC profile source."),
             Value("--period", "N", "PMC events per interrupt (source-specific count)."),
             Value("--pmc-counters", "IDS", "Counter snapshots on CSwitch (comma-separated IDs)."),
@@ -81,6 +81,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Flag("-b,--lbr", "Enable LBR call-stack collection when supported."),
             Flag("--context-registers", "Enable context-register collection when supported."),
             Value("--provider", "GUID", "Capture a private ETW provider session."),
+            Value("--pool-tag", "TAG", "Required with --profile pool: four printable ASCII characters, including spaces."),
             Value("--session", "NAME", "Use an explicit ETW session name."),
         },
         {
@@ -91,10 +92,13 @@ std::vector<CommandSpec> BuildCatalog() {
             "System ETW call stacks are enabled by default. Use --no-call-graph to disable them.",
             "cpu-sched, sched, and all also request CSwitch/ReadyThread stack tracing.",
             "PMC interrupt sampling and --pmc-counters CSwitch snapshots require separate captures.",
+            "heap requires --pid of an existing process; only allocations after attachment are observed.",
+            "pool requires --pool-tag to bound high-rate capture; list --pool-tags shows current tag usage.",
+            "dpc/isr/heap/pool/driver are opt-in event captures; -F, PMC, LBR and private providers cannot be combined with them.",
         });
 
     AddCommand(catalog, "report", {"rep"},
-        "Produce a perf-style CPU, I/O, PMC, or off-CPU report from an ETL trace.",
+        "Produce CPU, I/O, PMC, off-CPU, interrupt, memory, or driver reports from an ETL trace.",
         "wperf report -i FILE [options]", false,
         {
             Value("-i,--input", "FILE", "Read FILE."),
@@ -130,7 +134,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Flag("--verbose", "Print complete quality counters to stderr."),
             Flag("--csv", "Print CSV rows."),
             Flag("--json", "Print JSON rows."),
-            Value("--kind", "KIND", "Select cpu, io, or pmc report."),
+            Value("--kind", "KIND", "Select cpu, io, pmc, dpc, isr, interrupt, heap, pool, or driver report."),
         },
         {
             "wperf report -i cpu.etl --symbol-path .\\build\\Release --call-graph",
@@ -142,7 +146,10 @@ std::vector<CommandSpec> BuildCatalog() {
             "CPU overhead and folded output use periods (CPU ns or PMC events); --weight samples uses counts. Unknown periods fall back to counts with a warning.",
             "Mixed sample sources require --source ID. Off-CPU weights remain nanoseconds.",
             "I/O and PMC snapshots support PID/TID/comm/children/CPU/time selection and loss/strict gates; symbol, stack, scope, weight, sort and percent options are rejected.",
-            "PMC snapshots also support --csv; I/O supports text/JSON. --max-missing-stacks requires loaded CPU/off-CPU stacks.",
+            "PMC snapshots also support --csv; I/O supports text/JSON. --max-missing-stacks requires loaded CPU/off-CPU or allocation stacks.",
+            "Diagnostic kinds support text/JSON/CSV, symbols, archives, CPU/time selectors and quality gates; graph, stream, weight, source, scope, sort and percent options are rejected.",
+            "DPC/ISR/interrupt/pool are system-owned and reject PID/TID/comm/children filters. Heap/driver support these selectors.",
+            "Heap/pool time and thread/CPU filters select allocation cohorts; releases through the selected end are always consumed. Observed live bytes do not prove a leak.",
             "-o writes UTF-8 without BOM and LF line endings.",
         });
 
@@ -317,15 +324,16 @@ std::vector<CommandSpec> BuildCatalog() {
         });
 
     AddCommand(catalog, "list", {},
-        "List profile sources and active sessions, or private providers.",
+        "List profile sources, sessions, private providers, or pool tag snapshots.",
         "wperf list [providers] [options]", false,
         {
-            Value("--max", "N", "Limit provider output."),
-            Flag("--json", "Print JSON profile sources, sessions, or providers."),
+            Value("--max", "N", "Limit provider or pool-tag output."),
+            Flag("--json", "Print JSON profile sources, sessions, providers, or pool tags."),
+            Flag("--pool-tags", "List current system pool tag counters; use --max to limit rows."),
         },
         {"wperf list", "wperf list providers --max 20"}, {
-            "Without providers, list profile sources and active wperf-owned sessions.",
-            "Provider enumeration can be bounded with --max.",
+            "Without providers or --pool-tags, list profile sources and active wperf-owned sessions.",
+            "Provider and pool-tag enumeration can be bounded with --max. Pool counters are snapshots and allocation/free counters may wrap.",
         });
 
     AddCommand(catalog, "doctor", {},

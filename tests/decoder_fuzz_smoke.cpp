@@ -1,5 +1,6 @@
 #include "etw_decode.h"
 #include "lbr.h"
+#include "diagnostic_decode.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -38,6 +39,10 @@ int main() {
         if (wperf::DecodeContextRegisters(record, pointer_size, registers)) ++decoded;
         wperf::ImageRecord image;
         if (wperf::DecodeImagePayload(record, pointer_size, 10000000, image)) ++decoded;
+        const GUID* diagnostic_classes[] = {&wperf::kDiagnosticPerfGuid, &wperf::kDiagnosticDiskGuid, &wperf::kHeapGuid, &wperf::kPoolGuid};
+        wperf::TraceData diagnostic;
+        diagnostic.pointer_size = pointer_size;
+        if (wperf::DecodeDiagnosticRecord(record, *diagnostic_classes[iteration % 4], diagnostic)) ++decoded;
     }
     if (decoded == 0) {
         std::cerr << "decoder fuzz smoke decoded no records\n";

@@ -26,6 +26,8 @@
 #include "logger.h"
 #include "state.h"
 #include "symbolizer.h"
+#include "heap_metadata.h"
+#include "pool_tags.h"
 
 #include <atomic>
 #include <filesystem>
@@ -65,6 +67,27 @@ BOOL WINAPI ConsoleControlHandler(DWORD control_type) {
 }
 
 int RunList(const ListRequest& request) {
+    if (request.pool_tags) {
+        std::wstring error;
+        const auto tags = QueryPoolTags(&error);
+        if (!error.empty()) { PrintError(error); return 5; }
+        std::unique_ptr<JsonStreamWriter> writer;
+        if (request.json) {
+            writer = std::make_unique<JsonStreamWriter>(std::wcout);
+            writer->BeginObject(); writer->Key(L"semantics"); writer->String(L"system-pool-tag-snapshot");
+            writer->Key(L"pool_tag_count"); writer->Unsigned(tags.size()); writer->Key(L"pool_tags"); writer->BeginArray();
+        } else std::wcout << L"System pool tag snapshot (allocation/free counters may wrap)\nTag PagedBytes NonpagedBytes PagedAllocs PagedFrees NonpagedAllocs NonpagedFrees\n";
+        for (size_t index = 0; index < tags.size() && index < request.max; ++index) {
+            const auto& row = tags[index];
+            if (writer) writer->Item({{"tag", ToUtf8(PoolTagText(row.tag))}, {"tag_value", row.tag}, {"paged_bytes", row.paged_bytes},
+                {"nonpaged_bytes", row.nonpaged_bytes}, {"paged_allocs", row.paged_allocs}, {"paged_frees", row.paged_frees},
+                {"nonpaged_allocs", row.nonpaged_allocs}, {"nonpaged_frees", row.nonpaged_frees}});
+            else std::wcout << PoolTagText(row.tag) << L" " << row.paged_bytes << L" " << row.nonpaged_bytes << L" " << row.paged_allocs
+                << L" " << row.paged_frees << L" " << row.nonpaged_allocs << L" " << row.nonpaged_frees << L"\n";
+        }
+        if (writer) { writer->EndArray(); writer->EndObject(); std::wcout << L"\n"; }
+        return 0;
+    }
     if (request.providers) {
         std::wstring error;
         const auto providers = QueryProviders(&error);
@@ -365,6 +388,8 @@ struct WorkerRequest {
     uint32_t pmc_source = 0;
     uint32_t pmc_interval = 0;
     uint32_t controller_pid = 0;
+    uint32_t heap_pid = 0;
+    uint32_t pool_tag = 0;
     bool pmc_source_set = false;
     bool lbr = false;
     bool context_registers = false;
@@ -394,6 +419,8 @@ bool ParseWorkerRequest(const std::vector<std::wstring>& arguments,
         else if (argument == L"--profile") { if (!value(request.profile)) return false; }
         else if (argument == L"--provider") { if (!value(request.provider)) return false; }
         else if (argument == L"--stack-cache") { request.stack_cache = true; }
+        else if (argument == L"--heap-pid") { if (!value(text) || !ParseUint32(text, request.heap_pid)) return false; }
+        else if (argument == L"--pool-tag") { if (!value(text) || !ParseUint32(text, request.pool_tag)) return false; }
         else if (argument == L"--controller-pid") { if (!value(text) || !ParseUint32(text, request.controller_pid)) return false; }
         else if (argument == L"--duration-ms") { if (!value(text) || !ParseUnsigned(text, request.duration_ms)) return false; }
         else if (argument == L"--profile-interval") { if (!value(text) || !ParseUint32(text, request.profile_interval)) return false; }
@@ -535,6 +562,15 @@ int RunWorker(const std::vector<std::wstring>& arguments) {
     trace_options.output_path = output;
     trace_options.profile_interval_100ns = profile_interval;
     trace_options.enable_flags = TraceFlagsForProfile(profile_text);
+    trace_options.enable_pool = profile_text == L"pool";
+    trace_options.pool_tag = internal.pool_tag;
+    if (trace_options.enable_pool || profile_text == L"driver" || profile_text == L"kernel") {
+        trace_options.buffer_size_kb = 128;
+        trace_options.minimum_buffers = 32;
+        trace_options.maximum_buffers = 256;
+    }
+    trace_options.heap_pid = profile_text == L"heap" ? internal.heap_pid : 0;
+    if (profile_text == L"heap") trace_options.system_logger = false;
     trace_options.pmc_profile = profile_text == L"pmu" || internal.pmc_source_set;
     trace_options.pmc_source = pmc_source;
     trace_options.pmc_interval = internal.pmc_interval;
@@ -786,6 +822,7 @@ struct RecordOptions {
     bool context_registers = false;
     bool call_graph = true;
     std::optional<GUID> provider;
+    std::optional<uint32_t> pool_tag;
     bool elevate = false;
 };
 
@@ -806,6 +843,7 @@ bool BuildRecordOptions(const RecordRequest& request, RecordOptions& options,
     options.context_registers = request.context_registers;
     options.call_graph = request.call_graph;
     options.provider = request.provider;
+    options.pool_tag = request.pool_tag;
     options.elevate = request.elevate;
     options.duration_ms = request.duration_ms.value_or(0);
     options.duration_explicit = request.duration_ms.has_value();
@@ -831,7 +869,8 @@ bool BuildRecordOptions(const RecordRequest& request, RecordOptions& options,
                    request.event == L"sched" || request.event == L"syscall" ||
                    request.event == L"vm" || request.event == L"io" ||
                    request.event == L"kernel" || request.event == L"all" ||
-                   request.event == L"pmu") {
+                   request.event == L"pmu" || request.event == L"dpc" || request.event == L"isr" ||
+                   request.event == L"heap" || request.event == L"pool" || request.event == L"driver") {
             options.profile = request.event;
         } else {
             std::wstring source_error;
@@ -853,6 +892,22 @@ bool BuildRecordOptions(const RecordRequest& request, RecordOptions& options,
     }
     if (options.pid && !options.target.empty()) {
         error = L"--pid and a target command are mutually exclusive";
+        return false;
+    }
+    const bool diagnostic = options.profile == L"dpc" || options.profile == L"isr" ||
+        options.profile == L"heap" || options.profile == L"pool" || options.profile == L"driver";
+    if (diagnostic && (options.provider || options.pmc_source_set || options.pmc_interval ||
+        !options.pmc_counter_sources.empty() || options.frequency_explicit || options.lbr ||
+        options.context_registers || options.stack_cache)) {
+        error = L"diagnostic profiles cannot be combined with a private provider, sampling frequency, PMC, LBR, context registers, or stack cache";
+        return false;
+    }
+    if (options.profile == L"heap" && (!options.pid || *options.pid == 0)) {
+        error = L"heap capture requires --pid of an existing process; tracing begins at attachment";
+        return false;
+    }
+    if ((options.profile == L"pool" && !options.pool_tag) || (options.profile != L"pool" && options.pool_tag)) {
+        error = L"--profile pool requires --pool-tag TAG; use list --pool-tags to select a tag. Other profiles reject --pool-tag";
         return false;
     }
     if (options.stack_cache && !options.call_graph) {
@@ -961,6 +1016,8 @@ int RunRecord(const RecordRequest& request, uint32_t* captured_pid = nullptr, bo
         L"--context-registers", options.context_registers ? L"1" : L"0",
         L"--duration-ms", std::to_wstring(options.duration_ms),
     };
+    if (options.profile == L"heap") { worker_arguments.push_back(L"--heap-pid"); worker_arguments.push_back(std::to_wstring(*options.pid)); }
+    if (options.pool_tag) { worker_arguments.push_back(L"--pool-tag"); worker_arguments.push_back(std::to_wstring(*options.pool_tag)); }
     if(options.stack_cache)worker_arguments.push_back(L"--stack-cache");
     if(!options.pmc_counter_sources.empty()) {
         std::wstring values;
@@ -1033,7 +1090,9 @@ int RunRecord(const RecordRequest& request, uint32_t* captured_pid = nullptr, bo
     }
     state.phase = L"CAPTURING";
     state_store.Write(state, nullptr);
-    if (!quiet) std::wcout << L"capturing: " << session_name << L"\n";
+    if (options.profile == L"heap" && !WriteHeapAttachSnapshot(*options.pid, session_name, &error))
+        std::wcerr << L"wperf: " << error << L"; allocation counters remain usable with unresolved module sites\n";
+    if (!quiet) std::wcout << L"capturing: " << session_name << L"\n" << std::flush;
 
     ProcessLaunchResult target_launch;
     HANDLE observed_process = nullptr;
@@ -1099,7 +1158,7 @@ int RunRecord(const RecordRequest& request, uint32_t* captured_pid = nullptr, bo
                 state.phase = L"CAPTURING";
                 state_store.Write(state, nullptr);
             } else if (StartsWith(line, L"READY ")) {
-                if (!quiet) std::wcout << L"capturing: " << session_name << L"\n";
+                if (!quiet) std::wcout << L"capturing: " << session_name << L"\n" << std::flush;
             } else if (StartsWith(line, L"STATUS ")) {
                 if (!quiet) std::wcout << L"status: " << line.substr(7) << L"\n";
             } else if (StartsWith(line, L"ERROR ")) {
