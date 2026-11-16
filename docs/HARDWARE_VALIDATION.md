@@ -216,7 +216,7 @@ command-catalog refactor and the DbgHelp symbol-server loader fix.
 | PMC snapshots | 6,044 rows, all marked estimated and `event-snapshot-derived` |
 | Real off-CPU trace | 14,056 blocked and 18,755 ready intervals; 0 lost events and 0 decode errors |
 | Public symbols | `ntdll!RtlUserThreadStart`, `kernel32!BaseThreadInitThunk`, and `wperf_cpu_burn!Burn` resolved |
-| Symbol cache | Public PDBs downloaded through `_NT_SYMBOL_PATH` into `D:\Symbols` |
+| Symbol cache | Public PDBs downloaded through `_NT_SYMBOL_PATH` into `%LOCALAPPDATA%\Symbols` |
 
 The run also validated live scheduler trace, live top, normal and PMC stat,
 Zydis annotation, doctor bundle generation, stale-session recovery, and argument

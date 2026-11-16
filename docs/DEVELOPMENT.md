@@ -46,13 +46,13 @@ in the controller. The elevated worker never performs arbitrary file parsing.
 Dependencies are managed by the repository vcpkg manifest (`vcpkg.json`). The
 project uses the `x64-windows-static-md` triplet so release binaries do not
 carry non-system runtime DLLs. Set `VCPKG_ROOT` to the vcpkg checkout (for
-example `D:\Codes\vcpkg`).
+the root of an existing vcpkg checkout).
 
 ## Build and test
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=D:/Codes/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
   -DVCPKG_MANIFEST_MODE=ON `
   -DWPERF_WARNINGS_AS_ERRORS=ON
@@ -64,7 +64,7 @@ No-disassembly build:
 
 ```powershell
 cmake -S . -B build-off -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=D:/Codes/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
   -DVCPKG_MANIFEST_MODE=ON `
   -DWPERF_ENABLE_DISASM=OFF

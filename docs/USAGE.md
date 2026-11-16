@@ -445,7 +445,7 @@ For public Microsoft symbols, configure a local cache and server in
 `_NT_SYMBOL_PATH`:
 
 ```powershell
-$env:_NT_SYMBOL_PATH = 'srv*D:\Symbols*https://msdl.microsoft.com/download/symbols'
+$env:_NT_SYMBOL_PATH = "srv*$env:LOCALAPPDATA\Symbols*https://msdl.microsoft.com/download/symbols"
 wperf report -i cpu.etl --call-graph --verbose
 ```
 

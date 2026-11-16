@@ -47,7 +47,7 @@ developer loop:
 ```powershell
 # 1. Build
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=D:/Codes/vcpkg/scripts/buildsystems/vcpkg.cmake `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
   -DVCPKG_MANIFEST_MODE=ON
 cmake --build build --config Release --parallel

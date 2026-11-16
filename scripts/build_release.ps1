@@ -16,9 +16,6 @@ if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
 if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
     $VcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
 }
-if ([string]::IsNullOrWhiteSpace($VcpkgRoot) -and (Test-Path "D:\Codes\vcpkg")) {
-    $VcpkgRoot = "D:\Codes\vcpkg"
-}
 if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
     throw "vcpkg root was not found; set VCPKG_ROOT or pass -VcpkgRoot"
 }
@@ -40,11 +37,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 }
 $cmake = (Get-Command cmake.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
 $ctest = (Get-Command ctest.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-if ([string]::IsNullOrWhiteSpace($cmake)) {
-    $cmake = "C:\Program Files\CMake\bin\cmake.exe"
-}
-if ([string]::IsNullOrWhiteSpace($ctest)) {
-    $ctest = "C:\Program Files\CMake\bin\ctest.exe"
+if ([string]::IsNullOrWhiteSpace($cmake) -or [string]::IsNullOrWhiteSpace($ctest)) {
+    throw "cmake.exe and ctest.exe must be available on PATH"
 }
 $fullVersion = "$VersionMajor.$VersionMinor.$VersionPatch.$BuildNumber"
 Write-Host "Building wperf $fullVersion"
