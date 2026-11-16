@@ -49,7 +49,7 @@ unbounded aggregation stay outside the elevated process.
 | Symbols and archives | `src/symbolizer.cpp`, `src/dbghelp_loader.cpp`, `src/archive.cpp` |
 | Disassembly | `src/disassembler.cpp` |
 | Rendering/output | `src/top_renderer.cpp`, `src/output.h` |
-| Tests | `tests/`, `tests/data/`, `tests/workloads/` |
+| Tests | `tests/`, `tests/workloads/`, runtime-generated ETW fixtures under the build directory |
 
 ## CLI validation and documentation
 

@@ -27,28 +27,31 @@ function Assert-JsonContract {
 $cpu = Join-Path $FixtureDirectory "cpu-stack.etl"
 $sched = Join-Path $FixtureDirectory "sched.etl"
 $io = Join-Path $FixtureDirectory "io.etl"
+$cpuPid = (Get-Content -LiteralPath ($cpu + ".pid") -Raw).Trim()
+$schedPid = (Get-Content -LiteralPath ($sched + ".pid") -Raw).Trim()
+$ioPid = (Get-Content -LiteralPath ($io + ".pid") -Raw).Trim()
 
 Assert-JsonContract "CPU report" @(
-    "report", "-i", $cpu, "--json", "--metadata", "--percent-limit", "0", "--quiet"
+    "report", "-i", $cpu, "-p", $cpuPid, "--json", "--metadata", "--percent-limit", "0", "--quiet"
 ) (Join-Path $SchemaDirectory "report-cpu.schema.json")
 Assert-JsonContract "streamed CPU report" @(
-    "report", "-i", $cpu, "--stream", "--json", "--metadata", "--percent-limit", "0", "--quiet"
+    "report", "-i", $cpu, "-p", $cpuPid, "--stream", "--json", "--metadata", "--percent-limit", "0", "--quiet"
 ) (Join-Path $SchemaDirectory "report-cpu.schema.json")
 
 Assert-JsonContract "off-CPU report" @(
-    "report", "-i", $sched, "--off-cpu", "--json", "--metadata",
+    "report", "-i", $sched, "-p", $schedPid, "--off-cpu", "--json", "--metadata",
     "--percent-limit", "0", "--quiet"
 ) (Join-Path $SchemaDirectory "report-off-cpu.schema.json")
 
 Assert-JsonContract "I/O report" @(
-    "report", "-i", $io, "--kind", "io", "--json", "--metadata", "--quiet"
+    "report", "-i", $io, "-p", $ioPid, "--kind", "io", "--json", "--metadata", "--quiet"
 ) (Join-Path $SchemaDirectory "report-io.schema.json")
 
 Assert-JsonContract "trace events" @(
-    "trace", "-i", $sched, "-e", "sched", "--json", "--max", "10"
+    "trace", "-i", $sched, "-p", $schedPid, "-e", "sched", "--json", "--max", "10"
 ) (Join-Path $SchemaDirectory "trace.schema.json")
 
-$traceOutput = & $Wperf trace -i $sched -e sched --json --max 1 2>$null
+$traceOutput = & $Wperf trace -i $sched -p $schedPid -e sched --json --max 1 2>$null
 if ($LASTEXITCODE -ne 0) { throw "trace field command failed" }
 $traceEvent = (($traceOutput -join "`n") | ConvertFrom-Json)[0]
 foreach ($field in @("event_id", "operation_id", "file_key", "file_object",
@@ -59,7 +62,7 @@ foreach ($field in @("event_id", "operation_id", "file_key", "file_object",
     }
 }
 
-$cpuOutput = & $Wperf report -i $cpu --json --metadata --percent-limit 0 --quiet 2>$null
+$cpuOutput = & $Wperf report -i $cpu -p $cpuPid --json --metadata --percent-limit 0 --quiet 2>$null
 if ($LASTEXITCODE -ne 0) { throw "quality metadata command failed" }
 $cpuJson = ($cpuOutput -join "`n") | ConvertFrom-Json
 foreach ($field in @("events_total", "stack_events_total", "stack_key_mismatch",
@@ -79,7 +82,7 @@ Assert-JsonContract "stat thread output" @(
 ) (Join-Path $SchemaDirectory "stat.schema.json")
 
 Assert-JsonContract "trace metadata" @(
-    "trace", "-i", $sched, "-e", "sched", "--json", "--metadata", "--max", "10"
+    "trace", "-i", $sched, "-p", $schedPid, "-e", "sched", "--json", "--metadata", "--max", "10"
 ) (Join-Path $SchemaDirectory "trace-metadata.schema.json")
 
 Assert-JsonContract "scheduler output" @(
@@ -87,11 +90,11 @@ Assert-JsonContract "scheduler output" @(
 ) (Join-Path $SchemaDirectory "sched.schema.json")
 
 Assert-JsonContract "annotate output" @(
-    "annotate", "-i", $cpu, "--symbol-path", $symbolPath, "--disasm", "--json", "--limit", "3"
+    "annotate", "-i", $cpu, "-p", $cpuPid, "--symbol-path", $symbolPath, "--disasm", "--json", "--limit", "3"
 ) (Join-Path $SchemaDirectory "annotate.schema.json")
 
 Assert-JsonContract "diff output" @(
-    "diff", "-1", $cpu, "-2", $cpu, "--json"
+    "diff", "-1", $cpu, "-2", $cpu, "--first-pid", $cpuPid, "--second-pid", $cpuPid, "--json"
 ) (Join-Path $SchemaDirectory "diff.schema.json")
 
 Assert-JsonContract "list output" @(

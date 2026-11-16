@@ -1,16 +1,17 @@
-# Replay Fixtures
+# Runtime ETW Replay Fixtures
 
-These checked-in x64 ETLs are compressed with
-`xperf -merge -mergeonly -compress` and replay without administrator rights.
+No `.etl` binary is stored in this repository.
 
-- `cpu-stack.etl` — CPU samples, direct stacks, and StackWalk correlation.
-- `sched.etl` — CSwitch, ReadyThread, wait state/reason, and wakeup latency.
-- `syscall.etl` — syscall enter/exit. The captured kernel provider lacks usable
-  PID/TID data for some records, so the fixture intentionally does not fabricate
-  durations.
-- `io.etl` — FileIo/DiskIo initiation/completion correlation, status, and timing.
+The test suite creates controlled ETW traces in the build directory through
+`tests/generate_etw_fixtures.ps1` and `wperf_etw_fixture_workload.exe`.
+Generation runs only on an elevated Windows test runner and produces:
 
-Each fixture has a matching `*.expected.json` contract used by tests. Keep
-fixture bytes and expected contracts stable unless a change explicitly requires
-new evidence. Do not add traces containing sensitive command lines, user names,
-paths, or credentials without redaction and review.
+- `cpu-stack.etl` - CPU samples, direct stacks, and stack correlation
+- `sched.etl` - CSwitch, ReadyThread, wait state/reason, and wakeup latency
+- `syscall.etl` - syscall enter/exit correlation
+- `io.etl` - file/disk I/O initiation and completion correlation
+
+The generated files live under the CMake build directory, are ignored by Git,
+and are deleted by the `cleanup_etw_fixtures` CTest fixture cleanup test.
+Do not add captured ETL files, dumps, user names, command lines, or machine
+paths to the repository.

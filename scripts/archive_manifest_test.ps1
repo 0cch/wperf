@@ -5,8 +5,9 @@ param(
     [Parameter(Mandatory=$true)][string]$SchemaPath
 )
 $ErrorActionPreference = 'Stop'
+$fixturePid = (Get-Content -LiteralPath ($Fixture + ".pid") -Raw).Trim()
 $output = Join-Path $OutputDirectory ("archive-" + [guid]::NewGuid().ToString('N'))
-& $Wperf archive -i $Fixture -o $output --max-size-mb 1
+& $Wperf archive -i $Fixture -p $fixturePid -o $output --max-size-mb 1
 if ($LASTEXITCODE -ne 0) {
     throw "archive failed with exit code $LASTEXITCODE"
 }

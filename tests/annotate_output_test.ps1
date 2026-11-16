@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$Wperf,[Parameter(Mandatory=$true)][string]$Fixture,[Parameter(Mandatory=$true)][string]$SymbolPath)
 $ErrorActionPreference='Stop'
-$text = & $Wperf annotate -i $Fixture --symbol-path $SymbolPath --disasm --json --limit 5 2>$null
+$fixturePid=(Get-Content -LiteralPath ($Fixture + ".pid") -Raw).Trim()
+$text = & $Wperf annotate -i $Fixture -p $fixturePid --symbol-path $SymbolPath --disasm --json --limit 5 2>$null
 if ($LASTEXITCODE -ne 0) { throw "annotate --disasm --json failed: $LASTEXITCODE" }
 $rows = (($text -join "`n") | ConvertFrom-Json)
 if (@($rows).Count -eq 0) { throw 'annotate returned no rows' }

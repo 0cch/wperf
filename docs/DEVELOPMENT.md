@@ -94,18 +94,22 @@ an access-denied or empty capture cannot be mistaken for a pass.
 | Regression | `tests/regression_tests.cpp` | Raw event replay, quality gates, IPC, report contracts |
 | CLI parser | `tests/cli_unit_tests.cpp` | Every public command/option, aliases, arity, conflicts, and target forwarding |
 | CLI conformance | `tests/cli_conformance_test.ps1` | Process-level help consistency and checked-in generated reference |
-| CLI fixtures | `CMakeLists.txt` `add_test` entries | Option validation and checked-in ETL workflows |
+| Runtime CLI fixtures | `tests/generate_etw_fixtures.ps1`, `tests/workloads/etw_fixture_workload.cpp` | Option validation and end-to-end ETW workflows with no committed trace data |
 | Live integration | `tests/live_integration_tests.cpp` | Real ETW capture, STOP, orphan cleanup |
 | Live JSON | `tests/live_trace_json_smoke.ps1`, `tests/live_pmc_json_smoke.ps1` | Streaming trace and PMC JSON contracts |
 | Diagnostic regression/contracts | `tests/diagnostic_tests.cpp`, `tests/diagnostic_contract_test.ps1` | Interrupt/memory/driver payloads, lifetimes, interval semantics and schemas |
 | Live diagnostics | `tests/live_diagnostics_smoke.ps1` | Real interrupts, heap/pool allocation events and driver I/O calls |
 | Live controller smoke | `tests/live_top_smoke.ps1` | Worker/controller decode and rendering |
-| Replay contract | `scripts/replay_contract.ps1` | Stable report/JSON contract on fixture data |
+| Replay contract | `scripts/replay_contract.ps1` | Runtime-generated report/JSON contract checks |
 
-Checked-in fixtures live in `tests/data/` with `*.expected.json` contracts.
-Keep fixture bytes stable unless the change explicitly requires a new trace.
-Raw traces are compressed ETLs and may contain machine/process metadata; review
-redaction before adding new fixtures.
+Runtime ETW fixtures are generated into the CMake build directory by
+`tests/generate_etw_fixtures.ps1`. The controlled workload creates deterministic
+event categories while event counts and timing remain environment-dependent.
+Tests therefore validate schemas, correlations, quality rules, and bounded
+semantic invariants rather than raw event totals or file hashes.
+
+No captured ETL or `*.expected.json` fixture belongs in the repository. Do not
+commit dumps, logs, command lines, user names, or machine paths.
 
 ### What to test for a decoder change
 

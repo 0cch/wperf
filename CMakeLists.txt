@@ -24,6 +24,13 @@ add_link_options(/DEBUG)
 
 option(WPERF_ENABLE_DISASM "Build optional Zydis-based disassembly support" ON)
 option(WPERF_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+set(WPERF_RUNTIME_ETW_DEFAULT OFF)
+if("$ENV{WPERF_REQUIRE_LIVE_TESTS}" STREQUAL "1")
+    set(WPERF_RUNTIME_ETW_DEFAULT ON)
+endif()
+option(WPERF_RUNTIME_ETW_TESTS "Generate controlled ETW traces and run replay integration tests" ${WPERF_RUNTIME_ETW_DEFAULT})
+
+set(WPERF_GENERATED_ETW_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated-etw")
 
 find_package(CLI11 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
@@ -108,13 +115,16 @@ target_compile_options(wperf_cpu_burn PRIVATE /W4 /permissive- /utf-8 /EHsc)
 add_executable(wperf_diagnostic_workload tests/workloads/diagnostic_workload.cpp)
 target_compile_definitions(wperf_diagnostic_workload PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 target_compile_options(wperf_diagnostic_workload PRIVATE /W4 /permissive- /utf-8 /EHsc)
+add_executable(wperf_etw_fixture_workload tests/workloads/etw_fixture_workload.cpp)
+target_compile_definitions(wperf_etw_fixture_workload PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+target_compile_options(wperf_etw_fixture_workload PRIVATE /W4 /permissive- /utf-8 /EHsc)
 
 enable_testing()
 
 add_executable(wperf_unit_tests tests/unit_tests.cpp src/dbghelp_loader.cpp)
 target_compile_options(wperf_unit_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_compile_definitions(wperf_unit_tests PRIVATE
-    WPERF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+    WPERF_TEST_DATA_DIR="${WPERF_GENERATED_ETW_DIR}")
 target_link_libraries(wperf_unit_tests PRIVATE wperf_core)
 add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
 add_executable(wperf_cli_tests tests/cli_unit_tests.cpp src/cli.cpp)
@@ -141,13 +151,13 @@ add_test(NAME diagnostic_contract_test
     COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/diagnostic_contract_test.ps1
         -Tests $<TARGET_FILE:wperf_diagnostic_tests> -Wperf $<TARGET_FILE:wperf>
         -SchemaDirectory ${CMAKE_CURRENT_SOURCE_DIR}/docs/schemas
-        -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl)
+        -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl)
 set_tests_properties(diagnostic_contract_test PROPERTIES TIMEOUT 90)
 add_executable(wperf_regression_tests tests/regression_tests.cpp)
 target_compile_options(wperf_regression_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(wperf_regression_tests PRIVATE wperf_core)
 
-target_compile_definitions(wperf_regression_tests PRIVATE WPERF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+target_compile_definitions(wperf_regression_tests PRIVATE WPERF_TEST_DATA_DIR="${WPERF_GENERATED_ETW_DIR}")
 add_test(NAME wperf_regression_tests COMMAND wperf_regression_tests)
 set_tests_properties(wperf_regression_tests PROPERTIES TIMEOUT 20)
 add_executable(wperf_json_writer_tests tests/json_writer_tests.cpp)
@@ -206,40 +216,77 @@ add_test(NAME cli_annotate_help COMMAND wperf annotate --help)
 add_test(NAME cli_diff_help COMMAND wperf diff --help)
 add_test(NAME cli_archive_help COMMAND wperf archive --help)
 add_test(NAME cli_record_help COMMAND wperf record --help)
-add_test(NAME cli_report_io COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io)
-add_test(NAME cli_report_io_json COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/io.etl --kind io --json)
-add_test(NAME cli_folded_fixture COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --folded --percent-limit 5)
-add_test(NAME cli_folded_output COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/folded_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
-add_test(NAME cli_off_cpu_fixture COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --folded --percent-limit 0)
-add_test(NAME cli_off_cpu_json COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --json --percent-limit 0)
+add_test(NAME cli_report_io
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/io.etl
+                 -Command report -ApplyPid --kind io)
+add_test(NAME cli_report_io_json
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/io.etl
+                 -Command report -ApplyPid --kind io --json)
+add_test(NAME cli_folded_fixture
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl
+                 -Command report -ApplyPid --folded --percent-limit 5)
+add_test(NAME cli_folded_output COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/folded_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
+add_test(NAME cli_off_cpu_fixture
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl
+                 -Command report -ApplyPid --off-cpu --folded --percent-limit 0)
+add_test(NAME cli_off_cpu_json
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl
+                 -Command report -ApplyPid --off-cpu --json --percent-limit 0)
 add_test(NAME cli_off_cpu_folded_output
          COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/folded_output_test.ps1
-         -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl
+         -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl
          -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR} -OffCpu)
 add_test(NAME cli_off_cpu_missing_gate
-         COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --json --percent-limit 100 --max-missing-stacks 0)
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl
+                 -Command report -ApplyPid --off-cpu --json --percent-limit 100 --max-missing-stacks 0)
 set_tests_properties(cli_off_cpu_missing_gate PROPERTIES WILL_FAIL TRUE)
 add_test(NAME cli_off_cpu_strict_gate
-         COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl --off-cpu --json --percent-limit 100 --strict-quality)
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl
+                 -Command report -ApplyPid --off-cpu --json --percent-limit 100 --strict-quality)
 set_tests_properties(cli_off_cpu_strict_gate PROPERTIES WILL_FAIL TRUE)
-add_test(NAME cli_report_conflicting_formats COMMAND wperf report -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
-add_test(NAME cli_annotate_conflicting_formats COMMAND wperf annotate -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --json --csv)
-add_test(NAME cli_sched_fixture COMMAND wperf sched -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)
-add_test(NAME cli_syscall_fixture COMMAND wperf trace -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/syscall.etl -e syscall --max 10)
-add_test(NAME cli_script_fixture COMMAND wperf script -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --limit 3)
-add_test(NAME cli_script_csv COMMAND wperf script -i ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl --limit 3 -F timestamp,pid,comm,symbol --csv)
+add_test(NAME cli_report_conflicting_formats
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl
+                 -Command report -ApplyPid --json --csv)
+add_test(NAME cli_annotate_conflicting_formats
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl
+                 -Command annotate -ApplyPid --json --csv)
+add_test(NAME cli_sched_fixture
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl
+                 -Command sched)
+add_test(NAME cli_syscall_fixture
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/syscall.etl
+                 -Command trace -ApplyPid --event syscall --max 10)
+add_test(NAME cli_script_fixture
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl
+                 -Command script -ApplyPid --limit 3)
+add_test(NAME cli_script_csv
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl
+                 -Command script -ApplyPid --limit 3 --fields timestamp,pid,comm,symbol --csv)
 add_test(NAME cli_script_missing_value COMMAND wperf script -i)
 add_test(NAME cli_trace_missing_value COMMAND wperf trace -e)
-add_test(NAME archive_manifest_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/archive_manifest_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR} -SchemaPath ${CMAKE_CURRENT_SOURCE_DIR}/docs/schemas/archive.schema.json)
+add_test(NAME archive_manifest_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/archive_manifest_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR} -SchemaPath ${CMAKE_CURRENT_SOURCE_DIR}/docs/schemas/archive.schema.json)
 add_test(NAME cli_provider_list COMMAND wperf list providers --max 1)
 add_test(NAME cli_provider_bad_guid COMMAND wperf record --provider not-a-guid)
 add_test(NAME replay_contract COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/scripts/replay_contract.ps1
-         -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl
+         -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl
          -SymbolPath $<TARGET_FILE_DIR:wperf>)
 add_test(NAME json_contract_test
          COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/json_contract_test.ps1
          -Wperf $<TARGET_FILE:wperf>
-         -FixtureDirectory ${CMAKE_CURRENT_SOURCE_DIR}/tests/data
+         -FixtureDirectory ${WPERF_GENERATED_ETW_DIR}
          -SchemaDirectory ${CMAKE_CURRENT_SOURCE_DIR}/docs/schemas)
 set_tests_properties(json_contract_test PROPERTIES TIMEOUT 60)
 add_test(NAME cli_conformance_test
@@ -252,25 +299,83 @@ add_test(NAME cli_report_nan_rejected COMMAND wperf report --percent-limit nan)
 add_test(NAME cli_negative_limit_rejected COMMAND wperf script --limit -1)
 add_test(NAME exit_code_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/exit_code_test.ps1 -Wperf $<TARGET_FILE:wperf>)
 set_tests_properties(exit_code_test PROPERTIES TIMEOUT 30)
-add_test(NAME trace_limit_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/trace_limit_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)
+add_test(NAME trace_limit_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/trace_limit_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl)
 set_tests_properties(trace_limit_test PROPERTIES TIMEOUT 30)
-add_test(NAME buildid_list_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/buildid_list_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl)
+add_test(NAME buildid_list_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/buildid_list_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl)
 set_tests_properties(buildid_list_test PROPERTIES TIMEOUT 30)
 add_test(NAME priority_cli
          COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/priority_cli_test.ps1
-         -Wperf $<TARGET_FILE:wperf> -FixtureDirectory ${CMAKE_CURRENT_SOURCE_DIR}/tests/data
+         -Wperf $<TARGET_FILE:wperf> -FixtureDirectory ${WPERF_GENERATED_ETW_DIR}
          -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR}/priority-cli)
 set_tests_properties(priority_cli PROPERTIES TIMEOUT 30)
 add_test(NAME stat_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/stat_output_test.ps1 -Wperf $<TARGET_FILE:wperf>)
 set_tests_properties(stat_output_test PROPERTIES TIMEOUT 30)
-add_test(NAME sched_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/sched_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sched.etl)
+add_test(NAME sched_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/sched_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl)
 set_tests_properties(sched_output_test PROPERTIES TIMEOUT 30)
-add_test(NAME annotate_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/annotate_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl -SymbolPath $<TARGET_FILE_DIR:wperf>)
+add_test(NAME annotate_output_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/annotate_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl -SymbolPath $<TARGET_FILE_DIR:wperf>)
 set_tests_properties(annotate_output_test PROPERTIES TIMEOUT 30)
-add_test(NAME diff_options_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/diff_options_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cpu-stack.etl)
+add_test(NAME diff_options_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/diff_options_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl)
 set_tests_properties(diff_options_test PROPERTIES TIMEOUT 30)
 set_tests_properties(cli_provider_bad_guid cli_report_conflicting_formats
                      cli_annotate_conflicting_formats
                      cli_script_missing_value cli_trace_missing_value
                      cli_pmc_frequency_rejected cli_report_nan_rejected cli_negative_limit_rejected
                      PROPERTIES WILL_FAIL TRUE)
+
+
+
+set(WPERF_RUNTIME_ETW_ONLY_TESTS
+    diagnostic_contract_test
+    cli_report_io
+    cli_report_io_json
+    cli_folded_fixture
+    cli_folded_output
+    cli_off_cpu_fixture
+    cli_off_cpu_json
+    cli_off_cpu_folded_output
+    cli_off_cpu_missing_gate
+    cli_off_cpu_strict_gate
+    cli_report_conflicting_formats
+    cli_annotate_conflicting_formats
+    cli_sched_fixture
+    cli_syscall_fixture
+    cli_script_fixture
+    cli_script_csv
+    archive_manifest_test
+    replay_contract
+    json_contract_test
+    trace_limit_test
+    buildid_list_test
+    priority_cli
+    sched_output_test
+    annotate_output_test
+    diff_options_test
+)
+
+set_tests_properties(wperf_unit_tests wperf_regression_tests PROPERTIES
+    ENVIRONMENT "_NT_SYMBOL_PATH=")
+if(WPERF_RUNTIME_ETW_TESTS)
+    add_test(NAME generate_etw_fixtures
+             COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/generate_etw_fixtures.ps1
+                     -Wperf $<TARGET_FILE:wperf>
+                     -Workload $<TARGET_FILE:wperf_etw_fixture_workload>
+                     -OutputDirectory ${WPERF_GENERATED_ETW_DIR} -ElevateIfNeeded)
+    set_tests_properties(generate_etw_fixtures PROPERTIES
+        FIXTURES_SETUP wperf_generated_etw
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+        LABELS integration
+        TIMEOUT 120)
+
+    add_test(NAME cleanup_etw_fixtures
+             COMMAND ${CMAKE_COMMAND} -E remove_directory ${WPERF_GENERATED_ETW_DIR})
+    set_tests_properties(cleanup_etw_fixtures PROPERTIES
+        FIXTURES_CLEANUP wperf_generated_etw
+        RUN_SERIAL TRUE
+        TIMEOUT 30)
+
+    set_tests_properties(wperf_unit_tests wperf_regression_tests ${WPERF_RUNTIME_ETW_ONLY_TESTS}
+                         PROPERTIES FIXTURES_REQUIRED wperf_generated_etw ENVIRONMENT "_NT_SYMBOL_PATH=")
+else()
+    set_tests_properties(${WPERF_RUNTIME_ETW_ONLY_TESTS} PROPERTIES DISABLED TRUE)
+endif()

@@ -11,6 +11,8 @@ on:
 jobs:
   windows:
     runs-on: windows-2022
+    env:
+      WPERF_REQUIRE_LIVE_TESTS: "1"
     steps:
       - uses: actions/checkout@v5
       - name: Fetch vcpkg baseline
@@ -37,6 +39,8 @@ jobs:
 
   windows-no-disasm:
     runs-on: windows-2022
+    env:
+      WPERF_REQUIRE_LIVE_TESTS: "1"
     steps:
       - uses: actions/checkout@v5
       - name: Fetch vcpkg baseline

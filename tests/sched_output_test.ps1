@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$Wperf,[Parameter(Mandatory=$true)][string]$Fixture)
 $ErrorActionPreference='Stop'
+$fixturePid=(Get-Content -LiteralPath ($Fixture + ".pid") -Raw).Trim()
 $jsonText = & $Wperf sched -i $Fixture --json 2>$null
 if ($LASTEXITCODE -ne 0) { throw "sched --json failed: $LASTEXITCODE" }
 $doc = (($jsonText -join "`n") | ConvertFrom-Json)

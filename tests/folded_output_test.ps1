@@ -9,8 +9,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$fixturePid = (Get-Content -LiteralPath ($Fixture + ".pid") -Raw).Trim()
 $output = Join-Path $OutputDirectory $(if ($OffCpu) { "offcpu-folded-output.folded" } else { "folded-output.folded" })
-$arguments = @("report", "-i", $Fixture, "--symbol-path", $SymbolPath, "--folded", "--quiet", "-o", $output)
+$arguments = @("report", "-i", $Fixture, "-p", $fixturePid, "--symbol-path", $SymbolPath, "--folded", "--quiet", "-o", $output)
 if ($OffCpu) {
     $arguments += @("--off-cpu", "--percent-limit", "0")
 }

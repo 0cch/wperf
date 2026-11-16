@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$Wperf,[Parameter(Mandatory=$true)][string]$Fixture)
 $ErrorActionPreference='Stop'
+$fixturePid=(Get-Content -LiteralPath ($Fixture + ".pid") -Raw).Trim()
 $jsonText = & $Wperf buildid-list -i $Fixture --json 2>$null
 if ($LASTEXITCODE -ne 0) { throw "buildid-list --json failed: $LASTEXITCODE" }
 $rows = (($jsonText -join "`n") | ConvertFrom-Json)
