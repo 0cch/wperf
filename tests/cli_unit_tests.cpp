@@ -88,6 +88,7 @@ void TestPublicOptions() {
         {{L"record", L"-d", L"1000"}, L"record"},
         {{L"record", L"--duration", L"1000"}, L"record"},
         {{L"record", L"-o", L"trace.etl"}, L"record"},
+        {{L"record", L"--json"}, L"record"},
         {{L"record", L"--output", L"trace.etl"}, L"record"},
         {{L"record", L"-e", L"cpu"}, L"record"},
         {{L"record", L"--event", L"cpu"}, L"record"},
@@ -313,7 +314,7 @@ void TestHelpSurfaces() {
     for (const wchar_t* command : {L"record", L"report", L"script", L"stat", L"top",
                                    L"trace", L"annotate", L"diff", L"sched", L"archive",
                                    L"buildid-list", L"list", L"doctor", L"test", L"recover",
-                                   L"help", L"version"}) {
+                                   L"capabilities", L"help", L"version"}) {
         Check(general.find(command) != std::wstring::npos,
               std::wstring(L"general help is missing command: ") + command);
     }
@@ -334,6 +335,11 @@ void TestHelpSurfaces() {
         Check(reference.find(wperf::ToUtf8(option)) != std::string::npos,
               std::wstring(L"markdown reference is missing option: ") + option);
     }
+    const auto capabilities = wperf::cli::CapabilitiesJson();
+    Check(capabilities.find("\"schema_version\"") != std::string::npos &&
+              capabilities.find("\"--json-errors\"") != std::string::npos &&
+              capabilities.find("\"record\"") != std::string::npos,
+          L"agent capabilities JSON is missing required metadata");
 }
 
 }  // namespace

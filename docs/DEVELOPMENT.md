@@ -299,6 +299,7 @@ Durable documentation is intentionally small:
   schema compatibility policy;
 - [schemas/](schemas/) — versioned machine-readable output contracts;
 - [ARCHITECTURE.md](ARCHITECTURE.md) — system design and trust boundaries;
+- [AGENT.md](AGENT.md) — Agent discovery, structured errors, safe automation, and artifact-first workflows;
 - [COMPATIBILITY.md](COMPATIBILITY.md) — platform/semantic limits;
 - [TODO.md](TODO.md) — open work and acceptance criteria;
 - [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md) — hardware evidence.

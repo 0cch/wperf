@@ -28,6 +28,16 @@ inline int ExitStatus(ExitCode code) { return static_cast<int>(code); }
 
 namespace wperf::commands {
 
+inline thread_local bool g_json_errors = false;
+inline thread_local std::wstring g_last_error;
+
+inline void SetJsonErrors(bool enabled) {
+    g_json_errors = enabled;
+    g_last_error.clear();
+}
+
+inline std::wstring LastErrorMessage() { return g_last_error; }
+
 inline std::wstring FormatGuid(const GUID& guid) {
     wchar_t buffer[64]{};
     swprintf_s(buffer, L"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
@@ -62,7 +72,8 @@ inline bool ParseUint32(const std::wstring& value, uint32_t& result) {
 }
 
 inline void PrintError(const std::wstring& message) {
-    std::wcerr << L"wperf: " << message << L"\n";
+    g_last_error = message;
+    if (!g_json_errors) std::wcerr << L"wperf: " << message << L"\n";
 }
 
 inline std::wstring ClampText(std::wstring value, size_t maximum) {

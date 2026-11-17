@@ -293,6 +293,21 @@ Quality fields answer different questions:
 Unresolved stack gaps are visible rather than silently assigned to another
 thread or time.
 
+### Agent automation
+
+```powershell
+wperf capabilities --json
+wperf --json-errors record --elevate --duration 5000 -o cpu.etl -- .\app.exe
+wperf --json-errors report -i cpu.etl --json --metadata --strict-quality -o report.json
+```
+
+`--json-errors` changes failures on stderr to one schema-versioned JSON object.
+`record --json` emits a structured capture result but intentionally leaves trace
+quality unevaluated; inspect `report --json --metadata` before relying on the
+capture. Prefer bounded `--duration`, `--max`, `--limit`, or `--iterations`
+values and write large results to files. See [AGENT.md](AGENT.md) for the full
+workflow and remediation fields.
+
 ### Off-CPU analysis
 
 Scheduler-stack capture is requested by `record --profile sched`,

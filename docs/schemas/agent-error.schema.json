@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/0cch/wperf/schemas/agent-error.schema.json",
+  "title": "wperf structured command error",
+  "type": "object",
+  "required": ["ok", "schema_version", "tool_version", "command", "error"],
+  "properties": {
+    "ok": { "const": false },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "tool_version": { "type": "string" },
+    "command": { "type": "string" },
+    "error": {
+      "type": "object",
+      "required": ["code", "exit_code", "retryable", "action", "message"],
+      "properties": {
+        "code": {
+          "enum": ["invalid_arguments", "permission_required", "capture_failed", "capability_unavailable", "replay_or_quality_failed", "target_launch_failed", "target_failed", "internal_error", "unknown_error"]
+        },
+        "exit_code": { "type": "integer" },
+        "retryable": { "type": "boolean" },
+        "action": {
+          "enum": ["fix_arguments", "request_elevation", "retry_or_run_doctor", "run_capabilities", "inspect_quality", "check_target", "inspect_target_exit", "retry_or_collect_doctor", "inspect_error"]
+        },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -36,7 +36,7 @@ void TestDefaults() {
     if (const auto* value = Get<wperf::RecordRequest>(request)) {
         Check(value->profile == L"cpu", L"record profile default must be cpu");
         Check(value->call_graph, L"record call graph must default on");
-        Check(!value->elevate && !value->stack_cache && !value->lbr,
+        Check(!value->elevate && !value->stack_cache && !value->lbr && !value->json,
               L"record flags must default off");
     } else {
         Check(false, L"record must produce RecordRequest");
@@ -111,7 +111,7 @@ void TestPublicMappings() {
     const wperf::OptionFlags record_flags{
         {"--elevate", true}, {"--no-call-graph", true},
         {"--stack-cache", true}, {"--lbr", true},
-        {"--context-registers", true},
+        {"--context-registers", true}, {"--json", true},
     };
     Check(Build("record", record_values, record_flags, request, nullptr,
                 {target_command}),
@@ -130,7 +130,7 @@ void TestPublicMappings() {
         Check(value->target == std::vector<std::wstring>({target_command}),
               L"record target forwarding is wrong");
         Check(value->elevate && !value->call_graph && value->stack_cache &&
-                  value->lbr && value->context_registers,
+                  value->lbr && value->context_registers && value->json,
               L"record flag mapping is wrong");
     }
 

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 set(WPERF_VERSION_MAJOR 0 CACHE STRING "wperf major version")
-set(WPERF_VERSION_MINOR 10 CACHE STRING "wperf minor version")
+set(WPERF_VERSION_MINOR 11 CACHE STRING "wperf minor version")
 set(WPERF_VERSION_PATCH 0 CACHE STRING "wperf patch version")
 set(WPERF_BUILD_NUMBER 0 CACHE STRING "wperf build number")
 foreach(part WPERF_VERSION_MAJOR WPERF_VERSION_MINOR WPERF_VERSION_PATCH WPERF_BUILD_NUMBER)
@@ -299,6 +299,11 @@ add_test(NAME cli_report_nan_rejected COMMAND wperf report --percent-limit nan)
 add_test(NAME cli_negative_limit_rejected COMMAND wperf script --limit -1)
 add_test(NAME exit_code_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/exit_code_test.ps1 -Wperf $<TARGET_FILE:wperf>)
 set_tests_properties(exit_code_test PROPERTIES TIMEOUT 30)
+add_test(NAME agent_friendly_test
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent_friendly_test.ps1
+         -Wperf $<TARGET_FILE:wperf>
+         -SchemaDirectory ${CMAKE_CURRENT_SOURCE_DIR}/docs/schemas)
+set_tests_properties(agent_friendly_test PROPERTIES TIMEOUT 30)
 add_test(NAME trace_limit_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/trace_limit_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl)
 set_tests_properties(trace_limit_test PROPERTIES TIMEOUT 30)
 add_test(NAME buildid_list_test COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/buildid_list_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl)

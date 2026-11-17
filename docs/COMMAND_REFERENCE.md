@@ -9,6 +9,7 @@ Generated from the same command catalog used by wperf runtime validation. Do not
 - `--` ends wperf option parsing and forwards the remaining arguments to a launched command.
 - `wperf help <command>` and `wperf <command> --help` render the same text help.
 - System capture commands require an elevated hidden worker; offline analysis does not.
+- `--json-errors` is a global option before the command or before `--` and emits one structured error object on failure.
 
 ## Command index
 
@@ -29,6 +30,7 @@ Generated from the same command catalog used by wperf runtime validation. Do not
 | `doctor` | - | Check elevation, ETW capabilities, state and recent runs. |
 | `test` | - | Run a lightweight non-invasive self-test. |
 | `recover` | - | Stop stale wperf-owned ETW sessions. |
+| `capabilities` | - | Print the machine-readable command and Agent capability catalog. |
 | `help` | - | Show general help or help for one command. |
 | `version` | - | Print the wperf version. |
 
@@ -55,6 +57,7 @@ Aliases: `rec`
 | `-p, --pid PID` | Attach to an existing process. |
 | `-d, --duration MS` | Capture duration in milliseconds; default is until Ctrl-C. |
 | `-o, --output FILE` | Write the ETL trace to FILE. |
+| `--json` | Print one success object with capture identity and artifact metadata. |
 | `-e, --event NAME\|ID` | Select a CPU profile, ETW source name or source ID. |
 | `--profile NAME` | cpu, cpu-sched, sched, syscall, vm, io, kernel, all, pmu, dpc, isr, heap, pool, or driver. |
 | `--pmc-source ID` | Select an ETW PMC profile source. |
@@ -538,6 +541,32 @@ Examples:
 ```powershell
 Recovery requires elevation and only stops ETW sessions recorded as wperf-owned stale state.
 ```
+
+## `capabilities`
+
+Print the machine-readable command and Agent capability catalog.
+
+```text
+wperf capabilities [--json]
+```
+
+Elevation: not required
+
+| Option | Description |
+|---|---|
+| `--json` | Print the capability catalog as JSON. |
+| `-h, --help` | Show this help. |
+
+Examples:
+
+```powershell
+wperf capabilities --json
+```
+
+Notes:
+
+- The catalog is generated from the same command definitions as help and runtime validation.
+- Use it to discover commands, options, aliases, elevation requirements, and Agent hints.
 
 ## `help`
 

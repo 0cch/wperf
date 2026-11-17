@@ -5,6 +5,7 @@
 #include "common.h"
 
 #include <CLI/CLI.hpp>
+#include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -72,6 +73,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("-p,--pid", "PID", "Attach to an existing process."),
             Value("-d,--duration", "MS", "Capture duration in milliseconds; default is until Ctrl-C."),
             Value("-o,--output", "FILE", "Write the ETL trace to FILE."),
+            Flag("--json", "Print one success object with capture identity and artifact metadata."),
             Value("-e,--event", "NAME|ID", "Select a CPU profile, ETW source name or source ID."),
             Value("--profile", "NAME", "cpu, cpu-sched, sched, syscall, vm, io, kernel, all, pmu, dpc, isr, heap, pool, or driver."),
             Value("--pmc-source", "ID", "Select an ETW PMC profile source."),
@@ -362,6 +364,17 @@ std::vector<CommandSpec> BuildCatalog() {
             "Recovery requires elevation and only stops ETW sessions recorded as wperf-owned stale state.",
         });
 
+    AddCommand(catalog, "capabilities", {},
+        "Print the machine-readable command and Agent capability catalog.",
+        "wperf capabilities [--json]", false,
+        {
+            Flag("--json", "Print the capability catalog as JSON."),
+        }, {
+            "wperf capabilities --json",
+        }, {
+            "The catalog is generated from the same command definitions as help and runtime validation.",
+            "Use it to discover commands, options, aliases, elevation requirements, and Agent hints."
+        });
     AddCommand(catalog, "help", {},
         "Show general help or help for one command.",
         "wperf help [command] [--format text|markdown]", false,
@@ -415,7 +428,8 @@ std::wstring RenderGeneralHelp(const std::vector<CommandSpec>& catalog) {
         << L"  -p PID        Restrict analysis to one process\n"
         << L"  -g            Capture or print call stacks\n"
         << L"  --folded      Emit collapsed stacks (alias: --collapsed)\n"
-        << L"  --csv|--json  Machine-readable output (mutually exclusive in report)\n\n"
+        << L"  --csv|--json  Machine-readable output (mutually exclusive in report)\n"
+        << L"  --json-errors Emit one structured JSON error object on failure\n\n"
         << L"Flame graph:\n"
         << L"  wperf report -i trace.etl --symbol-path DIR --folded --quiet -o stacks.folded\n"
         << L"  flamegraph.pl stacks.folded > flamegraph.svg\n\n"
@@ -473,7 +487,8 @@ std::wstring RenderMarkdown(const std::vector<CommandSpec>& catalog) {
         << L"- Values may be separated (`-F 99`) or attached (`-F99`); long values may use `--name=value`.\n"
         << L"- `--` ends wperf option parsing and forwards the remaining arguments to a launched command.\n"
         << L"- `wperf help <command>` and `wperf <command> --help` render the same text help.\n"
-        << L"- System capture commands require an elevated hidden worker; offline analysis does not.\n\n"
+        << L"- System capture commands require an elevated hidden worker; offline analysis does not.\n"
+        << L"- `--json-errors` is a global option before the command or before `--` and emits one structured error object on failure.\n\n"
         << L"## Command index\n\n"
         << L"| Command | Aliases | Purpose |\n|---|---|---|\n";
     for (const auto& spec : catalog) {
@@ -580,6 +595,101 @@ const OptionSpec* FindOption(const CommandSpec& command, std::string_view name) 
     return nullptr;
 }
 
+std::vector<std::string> SplitOptionNames(const std::string& names) {
+    std::vector<std::string> result;
+    size_t start = 0;
+    while (start <= names.size()) {
+        const size_t comma = names.find(',', start);
+        result.push_back(names.substr(start, comma == std::string::npos
+                                                   ? std::string::npos
+                                                   : comma - start));
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return result;
+}
+
+bool SupportsJson(const CommandSpec& command) {
+    return FindOption(command, "--json") != nullptr;
+}
+
+bool MayMutateGlobalState(const std::string& name) {
+    return name == "record" || name == "top" || name == "stat" ||
+           name == "trace" || name == "recover";
+}
+
+std::vector<std::string> AgentHints(const std::string& name) {
+    if (name == "record") {
+        return {"set --duration for bounded automation",
+                "use a unique output path; existing files are not overwritten",
+                "use --json with --json-errors for structured success and failure"};
+    }
+    if (name == "top") {
+        return {"set --iterations for bounded automation",
+                "expect an elevation prompt unless the runner is pre-authorized"};
+    }
+    if (name == "trace" || name == "script") {
+        return {"set --max or --limit to bound machine-readable output"};
+    }
+    if (name == "report") {
+        return {"prefer --json --metadata --strict-quality",
+                "write large results to --output and consume the artifact separately"};
+    }
+    if (name == "capabilities") {
+        return {"call this command before relying on optional options or hardware"};
+    }
+    return {};
+}
+
+std::string RenderCapabilities(const std::vector<CommandSpec>& catalog) {
+    nlohmann::ordered_json root;
+    root["schema_version"] = 1;
+    root["tool_version"] = ToUtf8(kVersion);
+    root["commands"] = nlohmann::ordered_json::array();
+
+    for (const auto& command : catalog) {
+        nlohmann::ordered_json item;
+        item["name"] = command.name;
+        item["aliases"] = command.aliases;
+        item["description"] = command.description;
+        item["usage"] = command.usage;
+        item["requires_elevation"] = command.needs_elevation;
+        item["supports_json"] = SupportsJson(command);
+        item["may_mutate_global_state"] = MayMutateGlobalState(command.name);
+        item["agent_hints"] = AgentHints(command.name);
+
+        item["options"] = nlohmann::ordered_json::array();
+        for (const auto& option : command.options) {
+            nlohmann::ordered_json option_item;
+            option_item["names"] = SplitOptionNames(option.names);
+            option_item["value"] = option.value;
+            option_item["description"] = option.description;
+            option_item["optional_value"] = option.optional_value;
+            item["options"].push_back(std::move(option_item));
+        }
+        item["examples"] = command.examples;
+        item["notes"] = command.notes;
+        root["commands"].push_back(std::move(item));
+    }
+
+    root["global_options"] = nlohmann::ordered_json::array();
+    root["global_options"].push_back({
+        {"names", {"--json-errors"}},
+        {"description", "Emit one structured JSON error object on failure."},
+        {"position", "before the command or before the -- target separator"}
+    });
+
+    root["agent_guidance"] = {
+        {"artifact_first", true},
+        {"notes", {
+            "Check the process exit code before consuming success data.",
+            "Use --json-errors for machine-readable failures.",
+            "Use bounded commands and write large outputs to files.",
+            "Check quality.incomplete in report metadata before drawing conclusions."
+        }}
+    };
+    return root.dump(2);
+}
 std::vector<std::wstring> NormalizeArguments(const CommandSpec& command,
                                              const std::vector<std::wstring>& arguments) {
     std::vector<std::wstring> normalized;
@@ -682,12 +792,29 @@ int RunHelp(const std::vector<std::wstring>& arguments,
     return 0;
 }
 
+int RunCapabilities(const std::vector<std::wstring>& arguments,
+                    const std::vector<CommandSpec>& catalog) {
+    for (size_t index = 1; index < arguments.size(); ++index) {
+        const std::wstring& argument = arguments[index];
+        if (argument == L"-h" || argument == L"--help") {
+            const auto* spec = FindCommand(catalog, "capabilities");
+            if (spec != nullptr) std::wcout << RenderCommandHelp(*spec);
+            return 0;
+        }
+        if (argument == L"--json") continue;
+        PrintError(L"capabilities accepts only --json");
+        return 2;
+    }
+    std::wcout << ToUtf16(RenderCapabilities(catalog)) << L"\n";
+    return 0;
+}
 int Run(const std::vector<std::wstring>& arguments, const Dispatch& dispatch) {
     const auto catalog = BuildCatalog();
     if (arguments.empty()) {
         std::wcout << RenderGeneralHelp(catalog);
         return 0;
     }
+    if (arguments.front() == L"capabilities") return RunCapabilities(arguments, catalog);
     if (arguments.front() == L"help") return RunHelp(arguments, catalog);
     if (arguments.front() == L"-h" || arguments.front() == L"--help") {
         if (arguments.size() == 1) {
@@ -744,7 +871,7 @@ int Run(const std::vector<std::wstring>& arguments, const Dispatch& dispatch) {
     try {
         app.parse(utf8_arguments);
     } catch (const CLI::ParseError& error) {
-        std::wcerr << L"wperf: " << ToUtf16(error.what()) << L"\n";
+        PrintError(ToUtf16(error.what()));
         return 2;
     }
     for (const auto& [key, option] : value_options) {
@@ -788,6 +915,10 @@ std::wstring CommandHelp(const std::wstring& command) {
 
 std::string MarkdownReference() {
     return ToUtf8(RenderMarkdown(BuildCatalog()));
+}
+
+std::string CapabilitiesJson() {
+    return RenderCapabilities(BuildCatalog());
 }
 
 }  // namespace wperf::cli

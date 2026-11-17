@@ -8,14 +8,19 @@ wperf uses four numeric components:
 MAJOR.MINOR.PATCH.BUILD
 ```
 
-The CMake defaults define the first three. GitHub release workflows derive the
-fourth component from `GITHUB_RUN_NUMBER` unless a four-part tag explicitly
-provides it.
+The CMake defaults define the first three. Normal release tags must use exactly
+three components, for example `v0.11.0`. The GitHub release workflow always
+derives the fourth component from `GITHUB_RUN_NUMBER` and creates the final
+four-part release tag.
 
-Examples:
+Example:
 
-- tag `v0.10.0` on run 42 produces release `0.10.0.42`;
-- tag `v0.10.0.0` produces release `0.10.0.0` directly.
+- tag `v0.11.0` on workflow run 42 produces release `0.11.0.42`.
+
+The workflow rejects manually pushed four-part release tags such as
+`v0.11.0.42`; the fourth component is generated output, not an input. Re-running
+the same workflow keeps the same `GITHUB_RUN_NUMBER`. Run numbers are monotonic
+but not guaranteed to be contiguous.
 
 Release tags are immutable once published. Do not reuse or force-move a tag.
 
@@ -33,7 +38,7 @@ Override the output or version when needed:
 ```powershell
 pwsh -NoProfile -File .\scripts\build_release.ps1 `
   -OutputDirectory artifacts\release `
-  -VersionMajor 0 -VersionMinor 10 -VersionPatch 0 -BuildNumber 0
+  -VersionMajor 0 -VersionMinor 11 -VersionPatch 0 -BuildNumber 0
 ```
 
 ## Release contents
@@ -59,8 +64,8 @@ The workflow is `.github/workflows/release.yml` and triggers on tags matching
 `v*`.
 
 ```powershell
-git tag -a v0.10.0.0 -m "wperf 0.10.0.0"
-git push origin v0.10.0.0
+git tag -a v0.11.0 -m "wperf 0.11.0"
+git push origin v0.11.0
 ```
 
 The workflow:
@@ -88,7 +93,7 @@ unsupported hardware step must not be treated as a pass.
 ## Post-release verification
 
 ```powershell
-gh release view v0.10.0.0
+gh release list --limit 5
 gh run list --workflow release.yml --limit 5
 ```
 

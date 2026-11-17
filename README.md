@@ -23,6 +23,7 @@ developer loop:
 
 - **Fast command line:** record, report, top, trace, diff, annotate.
 - **Scriptable output:** deterministic exits, JSON schemas, CSV, folded stacks.
+- **Agent surface:** capability discovery, structured errors, and `record --json`.
 - **Clear semantics:** missing, approximate, lost, and estimated data stay visible.
 - **Small trust boundary:** only a hidden worker runs elevated.
 - **No kernel component:** ETW only; no driver, patching, or PMU MSR access.
@@ -114,9 +115,13 @@ wperf report -i sched.etl --off-cpu --symbol-path .\symbols
 ### Machine-readable automation
 
 ```powershell
-wperf report -i app.etl --json --metadata --strict-quality
+wperf capabilities --json
+wperf --json-errors report -i app.etl --json --metadata --strict-quality
 wperf trace -i sched.etl -e sched --json --max 100
 ```
+
+Agent-oriented discovery, error handling, bounded-output rules, and structured
+capture results are documented in [AGENT.md](docs/AGENT.md).
 
 ### Hardware counters and branch history
 
@@ -174,6 +179,7 @@ See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) and the
 - [Command reference](docs/COMMAND_REFERENCE.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Architecture and trust boundaries](docs/ARCHITECTURE.md)
+- [Agent usage and machine contract](docs/AGENT.md)
 - [Public contract and versioning](docs/PUBLIC_CONTRACT.md)
 - [JSON schemas](docs/schemas)
 - [Compatibility matrix](docs/COMPATIBILITY.md)

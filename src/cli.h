@@ -16,5 +16,6 @@ int Run(const std::vector<std::wstring>& arguments, const Dispatch& dispatch);
 std::wstring GeneralHelp();
 std::wstring CommandHelp(const std::wstring& command);
 std::string MarkdownReference();
+std::string CapabilitiesJson();
 
 }  // namespace wperf::cli

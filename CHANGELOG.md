@@ -1,5 +1,12 @@
 # wperf Changelog
 
+## 0.11.0 - 2026-11-17
+
+- Added `capabilities --json` as a schema-versioned Agent discovery surface generated from the command catalog.
+- Added global `--json-errors` with stable error codes, retryability, remediation actions, and a JSON schema.
+- Added `record --json` capture results with session/correlation identity, trace metadata, target status, and explicit unevaluated quality.
+- Added Agent usage guidance and contract coverage for discovery, structured errors, bounded automation, and artifact-first workflows.
+
 ## 0.10.0.0 - 2026-11-16
 
 - Added dedicated DPC, ISR, native heap, kernel pool, and driver ETW capture profiles and text/JSON/CSV diagnostic reports.

@@ -18,6 +18,7 @@ struct RecordRequest {
     std::optional<uint32_t> pid;
     std::optional<uint64_t> duration_ms;
     std::filesystem::path output;
+    bool json = false;
     std::wstring event;
     std::wstring profile = L"cpu";
     std::optional<uint32_t> pmc_source;

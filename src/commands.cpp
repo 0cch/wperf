@@ -930,6 +930,7 @@ bool BuildRecordOptions(const RecordRequest& request, RecordOptions& options,
     return true;
 }
 int RunRecord(const RecordRequest& request, uint32_t* captured_pid = nullptr, bool quiet = false) {
+    const bool suppress_text = quiet || request.json;
     RecordOptions options;
     std::wstring error;
     if (!BuildRecordOptions(request, options, error)) {
@@ -1092,7 +1093,7 @@ int RunRecord(const RecordRequest& request, uint32_t* captured_pid = nullptr, bo
     state_store.Write(state, nullptr);
     if (options.profile == L"heap" && !WriteHeapAttachSnapshot(*options.pid, session_name, &error))
         std::wcerr << L"wperf: " << error << L"; allocation counters remain usable with unresolved module sites\n";
-    if (!quiet) std::wcout << L"capturing: " << session_name << L"\n" << std::flush;
+    if (!suppress_text) std::wcout << L"capturing: " << session_name << L"\n" << std::flush;
 
     ProcessLaunchResult target_launch;
     HANDLE observed_process = nullptr;
@@ -1158,11 +1159,11 @@ int RunRecord(const RecordRequest& request, uint32_t* captured_pid = nullptr, bo
                 state.phase = L"CAPTURING";
                 state_store.Write(state, nullptr);
             } else if (StartsWith(line, L"READY ")) {
-                if (!quiet) std::wcout << L"capturing: " << session_name << L"\n" << std::flush;
+                if (!suppress_text) std::wcout << L"capturing: " << session_name << L"\n" << std::flush;
             } else if (StartsWith(line, L"STATUS ")) {
-                if (!quiet) std::wcout << L"status: " << line.substr(7) << L"\n";
+                if (!suppress_text) std::wcout << L"status: " << line.substr(7) << L"\n";
             } else if (StartsWith(line, L"ERROR ")) {
-                std::wcerr << line << L"\n";
+                PrintError(line.substr(6));
             } else if (StartsWith(line, L"FINISHED ")) {
                 uint64_t parsed = 0;
                 if (ParseUnsigned(AfterSpace(line), parsed)) {
@@ -1219,7 +1220,42 @@ int RunRecord(const RecordRequest& request, uint32_t* captured_pid = nullptr, bo
     state.error_code = static_cast<uint32_t>(worker_result);
     state_store.Write(state, nullptr);
     if (worker_result == 0 && finished) {
-        if (!quiet) std::wcout << L"trace: " << output.wstring() << L"\n";
+        if (request.json && !quiet) {
+            nlohmann::ordered_json result;
+            result["ok"] = true;
+            result["schema_version"] = 1;
+            result["tool_version"] = ToUtf8(kVersion);
+            result["command"] = "record";
+            result["status"] = "complete";
+            result["session"] = ToUtf8(session_name);
+            result["correlation_id"] = ToUtf8(correlation_id);
+            result["trace"] = ToUtf8(output.wstring());
+            result["profile"] = ToUtf8(options.profile);
+            if (!request.event.empty()) result["event"] = ToUtf8(request.event);
+            if (request.frequency) result["sample_frequency_hz"] = *request.frequency;
+            else result["sample_frequency_hz"] = nullptr;
+            if (request.duration_ms) result["duration_ms"] = *request.duration_ms;
+            else result["duration_ms"] = nullptr;
+            if (observed_pid != 0) {
+                result["target_pid"] = observed_pid;
+                result["target_exit_code"] =
+                    target_exit_code == STILL_ACTIVE ? nlohmann::ordered_json(nullptr)
+                                                     : nlohmann::ordered_json(target_exit_code);
+            } else {
+                result["target_pid"] = nullptr;
+                result["target_exit_code"] = nullptr;
+            }
+            std::error_code size_error;
+            const auto trace_size = std::filesystem::file_size(output, size_error);
+            result["trace_size_bytes"] = size_error ? 0 : static_cast<uint64_t>(trace_size);
+            result["quality"] = {
+                {"evaluated", false},
+                {"note", "run report with --json --metadata to evaluate trace quality"}
+            };
+            std::wcout << ToUtf16(result.dump(2)) << L"\n";
+        } else if (!quiet) {
+            std::wcout << L"trace: " << output.wstring() << L"\n";
+        }
     }
     if (target_exit_code != 0 && target_exit_code != STILL_ACTIVE) {
         PrintError(L"target exited with code " + std::to_wstring(target_exit_code));

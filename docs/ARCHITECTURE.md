@@ -207,6 +207,14 @@ large trace/report output is not assembled as one string. Quality metadata is
 intentionally verbose in JSON so callers can decide whether
 a result is usable.
 
+The Agent surface is deliberately thin. `capabilities --json` serializes the
+same command catalog used by help and runtime validation. The top-level
+`--json-errors` adapter suppresses text errors, maps the process exit code to a
+stable error code/action pair, and emits one JSON object on stderr. `record
+--json` emits a success envelope but does not replay the ETL solely to populate
+quality; report metadata remains the source of quality gates. See
+[AGENT.md](AGENT.md) for the workflow contract.
+
 See [USAGE.md](USAGE.md) for command behavior and [COMPATIBILITY.md](COMPATIBILITY.md)
 for platform and semantic limits.
 

@@ -15,7 +15,10 @@ The following are public:
 - machine-readable enums such as `exact`, `stack_quality`, and boundary state;
 - quality counters that distinguish exact, estimated, missing, unsupported, and
   incomplete data;
-- the privilege model and whether a command requires elevation.
+- the privilege model and whether a command requires elevation;
+- the capability catalog emitted by `capabilities --json`;
+- the structured failure object emitted by `--json-errors`;
+- the success object emitted by `record --json`.
 
 These are **not** stable:
 
@@ -63,10 +66,54 @@ For commands that launch a target process, wperf reports a target launch failure
 A caller should not infer success from report content alone: check the exit code
 and, for JSON, the `quality.incomplete` field.
 
+## Agent machine surface
+
+`wperf capabilities --json` emits a schema-versioned catalog generated from the
+same command definitions used by help and runtime validation. Command entries
+identify aliases, options, elevation requirements, JSON support, global-state
+side effects, examples, notes, and Agent hints.
+
+The global `--json-errors` option replaces human error text with one JSON object
+on stderr when a command fails:
+
+```json
+{
+  "ok": false,
+  "schema_version": 1,
+  "tool_version": "0.11.0.42",
+  "command": "report",
+  "error": {
+    "code": "invalid_arguments",
+    "exit_code": 2,
+    "retryable": false,
+    "action": "fix_arguments",
+    "message": "report requires -i FILE"
+  }
+}
+```
+
+`error.code`, `error.exit_code`, `error.retryable`, and `error.action` are the
+stable machine fields. `error.message` is diagnostic text and may change.
+`--json-errors` is recognized before the command or before the `--` target
+separator; after `--` it is forwarded to the target process.
+
+`record --json` suppresses human progress output and emits one success object
+with the trace path, session and correlation identity, requested capture
+settings, target status, output size, and an explicit
+`quality.evaluated:false`. Capture does not replay the ETL just to populate
+quality metadata; consumers should use a report with `--json --metadata` and
+check `quality.incomplete`.
+
+The recommended bounded-output and artifact-first workflow is documented in
+[AGENT.md](AGENT.md).
+
 ## JSON schemas
 
 Versioned schemas live in [`schemas/`](schemas/):
 
+- `capabilities.schema.json` — `capabilities --json`;
+- `agent-error.schema.json` — `--json-errors`;
+- `record.schema.json` — `record --json`;
 - `report-cpu.schema.json` — `report --json --metadata`;
 - `report-off-cpu.schema.json` — `report --off-cpu --json --metadata`;
 - `report-io.schema.json` — `report --kind io --json --metadata`;

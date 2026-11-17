@@ -122,6 +122,7 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
         value.elevate = Has(flags, "--elevate");
         value.call_graph = !Has(flags, "--no-call-graph");
         value.output = W(values, "--output");
+        value.json = Has(flags, "--json");
         value.event = W(values, "--event");
         value.profile = TextOr(values, "--profile", L"cpu");
         value.stack_cache = Has(flags, "--stack-cache");
