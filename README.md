@@ -190,19 +190,36 @@ See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) and the
 
 ## Contributing
 
-Contributions are welcome across code, documentation, replay fixtures, decoder
-tests, and hardware validation. Good entry points:
+Contributions are welcome across ETW capture and decoding, analysis, symbols,
+diagnostics, machine-readable contracts, documentation, and hardware validation.
+High-value areas include:
 
-- add a sanitized ETL fixture or regression case;
-- test a CPU/Windows/VBS combination;
-- improve symbolization or output diagnostics;
-- implement an item from [docs/TODO.md](docs/TODO.md);
-- improve examples and troubleshooting;
-- extend CLI conformance cases and generated command documentation.
+- test Windows/CPU/VBS/HVCI/WOW64/multi-group combinations;
+- contribute sanitized replay fixtures and decoder boundary tests;
+- improve cached/scheduler stacks, symbolization, heap/pool/driver diagnostics,
+  profiler coexistence, and sampling overhead evidence;
+- extend CLI conformance, JSON Schema, capabilities, structured-error, and Agent
+  contract coverage;
+- improve examples, troubleshooting, compatibility notes, and hardware evidence;
+- implement an item from [docs/TODO.md](docs/TODO.md).
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md) and
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). If wperf saves you time, a star helps
-other Windows performance engineers find the project.
+Before opening a pull request:
+
+- read [CONTRIBUTING.md](CONTRIBUTING.md) and
+  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md);
+- run the normal CTest suite and relevant elevated/live ETW tests;
+- regenerate `docs/COMMAND_REFERENCE.md` after changing the command catalog;
+- update schemas, public-contract/Agent docs, diagnostics, and hardware evidence
+  when the affected surface changes;
+- do not include raw traces, dumps, credentials, user names, host names, or
+  private machine paths in public issues or pull requests.
+
+See [docs/AGENT.md](docs/AGENT.md) for the Agent-facing contract and
+[docs/PUBLIC_CONTRACT.md](docs/PUBLIC_CONTRACT.md) for compatibility rules. For
+vulnerabilities, use the private process in [SECURITY.md](SECURITY.md).
+
+If wperf saves you time, a star helps other Windows performance engineers find
+the project.
 
 ## License
 

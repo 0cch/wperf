@@ -9,10 +9,12 @@ behavior is documented in [USAGE.md](USAGE.md); system design is in
 | If you want to... | Start here |
 |---|---|
 | Fix a capture/replay bug | `src/etl_reader.cpp`, `src/etw_decode.cpp`, regression tests |
-| Add a command or option | `src/commands/`, `CMakeLists.txt`, USAGE |
+| Add a command or option | `src/cli.cpp`, `src/requests.*`, `src/commands/`, schemas, USAGE |
 | Improve symbolization | `src/symbolizer.cpp`, fixture tests |
 | Work on live top/trace | `src/live_top.cpp`, `src/live_data.cpp`, live IPC tests |
 | Improve reports | `src/cpu_report.cpp`, `src/off_cpu_report.cpp`, `src/analysis.cpp` |
+| Improve diagnostics | `src/diagnostic_*`, `tests/diagnostic*`, DIAGNOSTICS.md |
+| Improve Agent/automation | `src/cli.cpp`, `src/main.cpp`, AGENT.md, schemas, `tests/agent_friendly_test.ps1` |
 | Improve documentation | README, USAGE, DEVELOPMENT, ARCHITECTURE, TODO |
 | Validate hardware | hardware issue template + `HARDWARE_VALIDATION.md` |
 
@@ -100,6 +102,7 @@ an access-denied or empty capture cannot be mistaken for a pass.
 | Diagnostic regression/contracts | `tests/diagnostic_tests.cpp`, `tests/diagnostic_contract_test.ps1` | Interrupt/memory/driver payloads, lifetimes, interval semantics and schemas |
 | Live diagnostics | `tests/live_diagnostics_smoke.ps1` | Real interrupts, heap/pool allocation events and driver I/O calls |
 | Live controller smoke | `tests/live_top_smoke.ps1` | Worker/controller decode and rendering |
+| Agent contract | `tests/agent_friendly_test.ps1`, `docs/schemas/agent-*.json` | Capabilities, structured errors, option placement, and schema checks |
 | Replay contract | `scripts/replay_contract.ps1` | Runtime-generated report/JSON contract checks |
 
 Runtime ETW fixtures are generated into the CMake build directory by
@@ -282,9 +285,10 @@ Versions are four-part numeric values: `MAJOR.MINOR.PATCH.BUILD`.
 - `SHA256SUMS.txt`
 - README, changelog, LICENSE, contributing/security guides, notices, and durable docs
 
-The GitHub workflow triggers on `vMAJOR.MINOR.PATCH` tags and publishes a
-release with the GitHub run number as the fourth component. A full four-part
-tag is accepted as an explicit override. See [RELEASE.md](RELEASE.md).
+The GitHub workflow accepts only three-part release tags such as `v0.11.0`.
+It derives the fourth build component from `GITHUB_RUN_NUMBER` and creates the
+final four-part release tag. Manually pushed four-part release tags are rejected.
+See [RELEASE.md](RELEASE.md).
 
 Before tagging, run the normal CTest suite and the elevated live tests. Hardware
 claims must already have evidence in [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md).
@@ -317,7 +321,8 @@ The highest-value contribution areas are tracked in [TODO.md](TODO.md):
 - sanitized replay fixtures and decoder boundary tests;
 - hardware validation reports for PMC/LBR/context-register behavior;
 - soak, fault-injection, and sampling-overhead measurements;
-- documentation examples and troubleshooting.
+- documentation examples, troubleshooting, and Agent/structured-output contracts;
+- Windows/CPU compatibility reports and sanitized hardware evidence.
 
 ## Definition of done
 
@@ -325,7 +330,7 @@ The highest-value contribution areas are tracked in [TODO.md](TODO.md):
 - [ ] A focused test or hardware evidence exists.
 - [ ] Normal CTest passes.
 - [ ] Elevated live tests pass when capture behavior changed.
-- [ ] JSON/CSV/exit-code compatibility is considered.
+- [ ] JSON/CSV/exit-code and Agent-contract compatibility is considered.
 - [ ] Relevant durable docs are updated.
 - [ ] No sensitive evidence or machine-specific paths are committed.
 
