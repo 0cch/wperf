@@ -34,7 +34,7 @@ device configuration.
 |---|---|
 | CPU sampling | ETW system logger; sample weights are nanosecond periods |
 | Call stacks | Direct StackWalk and modern StackWalkRef/Def where supported |
-| Symbols | DbgHelp, local PDBs, optional symbol-server configuration, identity-aware symcache |
+| Symbols | DbgHelp, local PDBs, optional symbol-server configuration, identity-aware symcache, verbose/JSON cache diagnostics |
 | Scheduler | CSwitch/ReadyThread; scheduler stacks requested for sched profiles |
 | Syscall | Enter/exit duration only when identity is trustworthy; arguments are not synthesized |
 | Page faults | Classic ETW page-fault events |
@@ -49,6 +49,7 @@ device configuration.
 | Intel LBR | Supported on capable Intel systems; depth is finite and not Intel PT |
 | Context registers | AMD64 payload decoding validated; ARM64 decoding not claimed |
 | Private providers | Raw ETL capture; arbitrary TDH schema rendering not implemented |
+| FlameGraph | Self-contained interactive HTML from CPU/off-CPU reports or standalone folded input |
 | Archives | SHA256 module/PDB identity and symbol-store layout |
 | Disassembly | Optional Zydis, Intel syntax |
 

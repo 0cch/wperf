@@ -2,6 +2,10 @@
 param([Parameter(Mandatory)][string]$Wperf, [string]$OutputDirectory = '',
       [string[]]$Profiles = @('dpc','isr','heap','pool','driver'))
 $ErrorActionPreference = 'Stop'
+# Keep this live test hermetic: report symbolization uses the local build
+# directory and must not block on a machine-level symbol server.
+$previousSymbolPath = $env:_NT_SYMBOL_PATH
+$env:_NT_SYMBOL_PATH = ''
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Output 'SKIP: live diagnostic capture requires elevation'
@@ -80,4 +84,5 @@ try {
         foreach ($file in Get-ChildItem -LiteralPath $directory -File) { Remove-Item -LiteralPath $file.FullName -Force }
         Remove-Item -LiteralPath $directory
     }
+    $env:_NT_SYMBOL_PATH = $previousSymbolPath
 }

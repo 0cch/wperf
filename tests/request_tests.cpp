@@ -42,6 +42,11 @@ void TestDefaults() {
         Check(false, L"record must produce RecordRequest");
     }
 
+    Check(Build("flamegraph", {}, {}, request), L"flamegraph request should build");
+    if (const auto* value = Get<wperf::FlameGraphRequest>(request)) {
+        Check(value->countname == L"samples", L"flamegraph countname default is wrong");
+    }
+
     Check(Build("script", {}, {}, request), L"script request should build");
     if (const auto* value = Get<wperf::ScriptRequest>(request)) {
         Check(value->fields == L"timestamp,cpu,pid,tid,ip,comm,dso,symbol",
@@ -143,11 +148,12 @@ void TestPublicMappings() {
         {"--max-lost-events", "3"}, {"--max-missing-stacks", "4"},
         {"--cpu", "7"}, {"--time-start", "10"}, {"--time-end", "20"},
         {"--scope", "kernel"}, {"--kind", "cpu"},
+        {"--title", "CPU profile"}, {"--countname", "nanoseconds"},
     };
     const wperf::OptionFlags report_flags{
         {"--metadata", true}, {"--strict-quality", true}, {"--exact-stacks", true},
         {"--stream", true}, {"--include-children", true}, {"--folded", true},
-        {"--off-cpu", true}, {"--off-cpu-include-inferred", true},
+        {"--flamegraph", true}, {"--off-cpu", true}, {"--off-cpu-include-inferred", true},
         {"--stdio", true}, {"--quiet", true}, {"--verbose", true},
         {"--csv", true}, {"--json", true},
     };
@@ -166,10 +172,24 @@ void TestPublicMappings() {
               L"report string mapping is wrong");
         Check(value->metadata && value->strict_quality && value->exact_stacks &&
                   value->stream && value->include_children && value->folded &&
+                  value->flamegraph && value->flamegraph_title == L"CPU profile" &&
+                  value->flamegraph_countname == L"nanoseconds" &&
                   value->off_cpu && value->off_cpu_include_inferred &&
                   value->stdio_output && value->quiet && value->verbose &&
                   value->csv && value->json,
               L"report flag mapping is wrong");
+    }
+
+    const wperf::OptionValues flamegraph_values{
+        {"--input", "stacks.folded"}, {"--output", "stacks.html"},
+        {"--title", "Profile"}, {"--countname", "events"},
+    };
+    Check(Build("flamegraph", flamegraph_values, {}, request),
+          L"flamegraph mapping should build");
+    if (const auto* value = Get<wperf::FlameGraphRequest>(request)) {
+        Check(value->input == L"stacks.folded" && value->output == L"stacks.html" &&
+                  value->title == L"Profile" && value->countname == L"events",
+              L"flamegraph mapping is wrong");
     }
 
     const wperf::OptionValues stat_values{
@@ -269,6 +289,7 @@ void TestInvalidValues() {
         {"report", {"--call-graph", "sideways"}},
         {"report", {"--weight", "bogus"}},
         {"report", {"--source", "-1"}},
+        {"flamegraph", {"--countname", ""}},
         {"report", {"--sort", "bogus"}},
         {"report", {"--time-start", "18446744073709551615"}},
         {"diff", {"--match", "bogus"}},

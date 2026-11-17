@@ -1,5 +1,18 @@
 # wperf Changelog
 
+## 0.12.0 - 2026-11-17
+
+- Added `report --flamegraph` and standalone `wperf flamegraph` support for self-contained interactive HTML FlameGraphs from CPU, off-CPU, PMC, or existing folded-stack data.
+- Added automatic weight labels and trace-quality detail to generated FlameGraph HTML; the format requires no Perl, external JavaScript, or network access.
+- Preserved the standard `report --folded` output and documented `flamegraph.pl stacks.folded > stacks.svg` as a parallel SVG workflow.
+- Fixed `--symbol-path` incorrectly replacing `_NT_SYMBOL_PATH`; explicit local paths now augment the environment symbol path, restoring Microsoft module PDB resolution.
+- Added repeatable/semicolon-separated `--symbol-path` values for local PDB searches.
+- Expanded interactive HTML FlameGraphs with frame details, newline-separated stack display/copy, horizontal stack scrolling, folded-stack copy, drag range zoom, search navigation, zoom navigation, minimum-percentage filtering, and SVG/PNG export of the current view.
+- Split folded parsing, HTML presentation, and inline web assets into separate components and redesigned the HTML workspace with a persistent details sidebar, breadcrumbs, and current-view export.
+- Added detailed symbol diagnostics to `report --verbose` and `report --json --metadata`, separating memory cache, persistent `.symcache`, and DbgHelp resolution work while exposing module rejection and PDB state.
+- Added full DbgHelp, symbol-path, symcache, module, cache-byte, eviction, and unresolved-address diagnostics without redacting local user paths.
+- Clarified that `doctor --bundle` produces a diagnostic bundle for review before sharing rather than performing automatic redaction.
+
 ## 0.11.0 - 2026-11-17
 
 - Added `capabilities --json` as a schema-versioned Agent discovery surface generated from the command catalog.

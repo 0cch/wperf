@@ -17,7 +17,8 @@ int RunDiagnosticReport(const ReportRequest& request) {
                         request.kind == L"isr" || request.kind == L"interrupt";
     if (request.input.empty() || (request.json && request.csv) ||
         (request.metadata && !request.json) || (request.stdio_output && (request.json || request.csv)) ||
-        (request.quiet && request.verbose) || request.stream || request.folded || request.call_graph ||
+        (request.quiet && request.verbose) || request.stream || request.folded || request.flamegraph ||
+        !request.flamegraph_title.empty() || !request.flamegraph_countname.empty() || request.call_graph ||
         request.off_cpu || request.off_cpu_include_inferred || request.source || request.weight_explicit ||
         request.scope != L"all" || request.percent_limit || !request.sort_fields.empty() ||
         (!memory && (request.exact_stacks || request.max_missing_stacks)) ||

@@ -61,7 +61,7 @@ On failure, stderr contains one compact JSON line:
 {
   "ok": false,
   "schema_version": 1,
-  "tool_version": "0.11.0.42",
+  "tool_version": "0.12.0.42",
   "command": "report",
   "error": {
     "code": "invalid_arguments",
@@ -88,7 +88,7 @@ interpreted by wperf.
 {
   "ok": true,
   "schema_version": 1,
-  "tool_version": "0.11.0.42",
+  "tool_version": "0.12.0.42",
   "command": "record",
   "status": "complete",
   "session": "wperf-...",
@@ -138,6 +138,11 @@ capture. The object follows
 5. Treat equal-valued row ordering as unspecified.
 6. Do not parse human-readable tables when a JSON schema exists.
 7. Use `recover --all-stale` only for stale sessions owned by wperf.
+8. Use `report --flamegraph -o FILE.html` for a self-contained visual artifact,
+   or `flamegraph -i FILE.folded -o FILE.html` when folded data already exists.
+9. `report --json --metadata` includes a `symbols` object with local DbgHelp,
+   symcache, symbol-path, cache-layer, and module diagnostics. Treat these paths
+   as host-local troubleshooting data rather than portable build metadata.
 
 ## Elevation
 

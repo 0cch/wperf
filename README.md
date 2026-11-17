@@ -10,8 +10,9 @@ without a custom driver.**
 
 `wperf` captures CPU samples, call stacks, scheduler events, page faults, I/O,
 off-CPU time, PMC samples, Intel LBR branches, and AMD64 context registers. It
-then gives you perf-style tables, call trees, JSON/CSV, and FlameGraph folded
-stacks — with explicit quality and compatibility metadata.
+then gives you perf-style tables, call trees, JSON/CSV, folded stacks, and
+self-contained interactive HTML FlameGraphs — with explicit quality,
+symbolization, and compatibility metadata.
 
 > Pre-1.0: useful today, but CLI and machine-readable fields can still evolve.
 > Compatibility rules are documented in [PUBLIC_CONTRACT.md](docs/PUBLIC_CONTRACT.md).
@@ -34,7 +35,7 @@ developer loop:
 | Workflow | Commands |
 |---|---|
 | Find CPU hotspots | `record`, `report`, `top` |
-| Inspect call trees and FlameGraphs | `report --call-graph`, `report --folded` |
+| Inspect call trees and FlameGraphs | `report --call-graph`, `report --folded`, `report --flamegraph`, `flamegraph` |
 | Diagnose stalls and scheduling | `record --profile sched`, `report --off-cpu`, `trace -e sched` |
 | Inspect syscalls, faults, and I/O | `trace -e syscall`, `trace -e pagefault`, `trace -e io` |
 | Diagnose interrupts, native allocations, and driver calls | `report --kind dpc\|isr\|heap\|pool\|driver` |
@@ -76,13 +77,35 @@ Overhead  Samples  Command     Module       Symbol
   11.8%      516   ntdll.dll   ntdll.dll    RtlAllocateHeap
 ```
 
-Generate flame graph input:
+Generate a self-contained interactive flame graph:
 
 ```powershell
 .\build\Release\wperf.exe report -i app.etl `
-  --symbol-path .\build\Release --weight samples --folded --quiet -o stacks.folded
+  --symbol-path .\build\Release --flamegraph --quiet -o app.html
+```
+
+The HTML contains inline CSS and JavaScript and does not require Perl, a network
+connection, or an external FlameGraph repository. The standalone converter can
+also render an existing folded file:
+
+```powershell
+.\build\Release\wperf.exe flamegraph -i stacks.folded `
+  --countname nanoseconds -o stacks.html
+```
+
+The external `flamegraph.pl` SVG workflow remains supported. For sample-count
+weights:
+
+```powershell
+.\build\Release\wperf.exe report -i app.etl `
+  --symbol-path .\build\Release --weight samples --folded --quiet `
+  -o stacks.folded
 perl flamegraph.pl stacks.folded > stacks.svg
 ```
+
+For period weights, pass the matching `--countname nanoseconds` for CPU or
+`--countname events` for PMC to `flamegraph.pl`, and check for the documented
+unknown-period fallback.
 
 CPU tables, call trees and folded stacks default to sampling-period weights
 (CPU nanoseconds or PMC event counts). Use `--weight samples` for counts;
@@ -92,6 +115,21 @@ single source when an ETL contains multiple sample domains.
 `diff --match symbol` aligns resolved module/function names across builds;
 `--match identity` requires strict build identity. `buildid-list` distinguishes
 recorded and local module identity; use `--hash` for cached local-file SHA256.
+
+`report --verbose` also prints the DbgHelp and `.symcache` paths, cache-layer
+hit/miss counts, DbgHelp work, unresolved addresses, and per-module rejection or
+missing-PDB details. `report --json --metadata` exposes the same diagnostics
+under `symbols`, including full local paths for troubleshooting.
+
+`--symbol-path` augments rather than replaces `_NT_SYMBOL_PATH`. Repeat the
+option or use a semicolon-separated value to search multiple local PDB
+directories before the configured symbol server.
+
+Generated HTML FlameGraphs support click-to-inspect frame details, stack copying,
+double-click zoom, drag-select range zoom, searchable frames with Enter /
+Shift+Enter navigation, Backspace/Up navigation, Escape reset, and a minimum
+percentage filter for decluttering. The current zoomed view can be downloaded
+directly as SVG or PNG from the HTML toolbar.
 
 ## Common workflows
 

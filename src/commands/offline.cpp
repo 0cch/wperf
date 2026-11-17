@@ -16,6 +16,7 @@
 #include "off_cpu_report.h"
 #include "trace_model.h"
 #include "diagnostic_report.h"
+#include "flamegraph.h"
 
 #include <algorithm>
 #include <atomic>
@@ -35,6 +36,66 @@ namespace wperf {
 using namespace commands;
 
 bool WriteReportFile(const std::filesystem::path&, const std::wstring&, std::wstring*);
+
+void WriteSymbolDiagnosticsText(const SymbolizerDiagnostics& diagnostics,
+                                std::wostream& output) {
+    output << L"symbols: dbghelp="
+           << (diagnostics.dbghelp_path.empty() ? L"<system-default>" : diagnostics.dbghelp_path);
+    if (!diagnostics.dbghelp_version.empty()) {
+        output << L" (" << diagnostics.dbghelp_version << L")";
+    }
+    output << L"\n";
+    output << L"symbols: symcache="
+           << (diagnostics.symcache_path.empty() ? L"<unavailable>" : diagnostics.symcache_path)
+           << L"\n";
+    output << L"symbols: symbol_path="
+           << (diagnostics.symbol_path.empty() ? L"<empty>" : diagnostics.symbol_path)
+           << L" source=" << diagnostics.symbol_path_source << L"\n";
+    if (!diagnostics.explicit_symbol_path.empty()) {
+        output << L"symbols: explicit_symbol_path=" << diagnostics.explicit_symbol_path << L"\n";
+    }
+    if (!diagnostics.environment_symbol_path.empty()) {
+        output << L"symbols: environment_symbol_path="
+               << diagnostics.environment_symbol_path << L"\n";
+    }
+    output << L"symbols: modules=" << diagnostics.stats.modules_total
+           << L" loaded=" << diagnostics.stats.modules_loaded
+           << L" rejected=" << diagnostics.stats.modules_rejected << L"\n";
+    output << L"symbols: resolved memory=" << diagnostics.stats.memory_hits
+           << L" persistent=" << diagnostics.stats.persistent_hits
+           << L" dbghelp=" << diagnostics.stats.dbghelp_resolved
+           << L" dbghelp_calls=" << diagnostics.stats.dbghelp_resolves
+           << L" unresolved=" << diagnostics.stats.unresolved << L"\n";
+    output << L"symbols: cache_bytes=" << diagnostics.stats.cache_bytes
+           << L" evictions=" << diagnostics.stats.cache_evictions << L"\n";
+    constexpr size_t kMaximumDetailedModules = 64;
+    size_t emitted = 0;
+    size_t omitted = 0;
+    for (const auto& module : diagnostics.modules) {
+        const bool interesting = module.status != L"loaded" ||
+                                 module.unresolved != 0 ||
+                                 module.pdb_status == L"mismatched";
+        if (!interesting) continue;
+        if (emitted >= kMaximumDetailedModules) {
+            ++omitted;
+            continue;
+        }
+        ++emitted;
+        output << L"  " << module.module << L": status=" << module.status
+               << L" pdb=" << (module.pdb_status.empty() ? L"unknown" : module.pdb_status)
+               << L" resolved=" << module.resolved
+               << L" unresolved=" << module.unresolved << L"\n";
+        if (!module.reason.empty()) output << L"    reason: " << module.reason << L"\n";
+        if (!module.path.empty()) output << L"    local: " << module.path << L"\n";
+        if (!module.recorded_path.empty() && module.recorded_path != module.path)
+            output << L"    recorded: " << module.recorded_path << L"\n";
+        if (!module.pdb_path.empty()) output << L"    pdb_path: " << module.pdb_path << L"\n";
+    }
+    if (omitted != 0) {
+        output << L"  symbols: " << omitted
+               << L" additional module detail rows omitted from verbose text; use JSON metadata for all rows\n";
+    }
+}
 
 int RunScript(const ScriptRequest& request) {
     std::filesystem::path input = request.input;
@@ -885,6 +946,50 @@ bool WriteReportFile(const std::filesystem::path& path, const std::wstring& text
     return true;
 }
 
+int RunFlameGraph(const FlameGraphRequest& request) {
+    if (request.input.empty()) {
+        PrintError(L"flamegraph requires -i FILE");
+        return 2;
+    }
+    std::filesystem::path input = request.input;
+    if (input.is_relative()) input = std::filesystem::absolute(input);
+    std::ifstream file(input, std::ios::binary);
+    if (!file) {
+        PrintError(L"cannot read folded input: " + input.wstring());
+        return 9;
+    }
+    std::ostringstream bytes;
+    bytes << file.rdbuf();
+    if (!file) {
+        PrintError(L"cannot read folded input: " + input.wstring());
+        return 9;
+    }
+
+    FlameGraphOptions options;
+    options.title = request.title.empty()
+        ? L"wperf flame graph - " + input.filename().wstring()
+        : request.title;
+    options.weight_name = request.countname.empty() ? L"samples" : request.countname;
+    options.source = input.wstring();
+
+    FlameGraphResult result;
+    std::wstring error;
+    if (!RenderFoldedFlameGraph(ToUtf16(bytes.str()), options, result, &error)) {
+        PrintError(error);
+        return 6;
+    }
+    if (request.output.empty()) {
+        std::wcout << result.html;
+        std::wcout.flush();
+        return 0;
+    }
+    if (!WriteReportFile(request.output, result.html, &error)) {
+        PrintError(error);
+        return 9;
+    }
+    return 0;
+}
+
 int RunReport(const ReportRequest& request) {
     if (IsDiagnosticKind(request.kind)) return RunDiagnosticReport(request);
     std::filesystem::path input = request.input;
@@ -928,11 +1033,24 @@ int RunReport(const ReportRequest& request) {
     const bool metadata = request.metadata;
     const bool stream = request.stream;
     const bool off_cpu = request.off_cpu;
+    const bool flamegraph = request.flamegraph;
     const bool strict_quality = request.strict_quality;
     const std::optional<uint64_t> maximum_lost = request.max_lost_events;
     const std::optional<uint64_t> maximum_missing = request.max_missing_stacks;
     if (report_options.folded && report_options.call_tree) {
         PrintError(L"--folded and --call-graph are mutually exclusive");
+        return 2;
+    }
+    if (flamegraph && (report_options.folded || report_options.call_tree)) {
+        PrintError(L"--flamegraph cannot be combined with --folded or --call-graph");
+        return 2;
+    }
+    if (!flamegraph && (!request.flamegraph_title.empty() || !request.flamegraph_countname.empty())) {
+        PrintError(L"--title and --countname require --flamegraph");
+        return 2;
+    }
+    if (flamegraph && (report_options.json || report_options.csv || stream || metadata)) {
+        PrintError(L"--flamegraph cannot be combined with --json, --csv, --stream, or --metadata");
         return 2;
     }
     if (report_options.json && report_options.csv) {
@@ -955,13 +1073,13 @@ int RunReport(const ReportRequest& request) {
         PrintError(L"--off-cpu --metadata requires --json");
         return 2;
     }
-    if ((report_options.folded || report_options.call_tree) &&
+    if ((report_options.folded || report_options.call_tree || flamegraph) &&
         (report_options.json || report_options.csv)) {
         PrintError(L"graph output cannot be combined with --json or --csv");
         return 2;
     }
     if (kind == L"io" &&
-        (report_options.folded || report_options.call_tree ||
+        (report_options.folded || report_options.call_tree || flamegraph ||
          report_options.csv)) {
         PrintError(L"--kind io supports text or --json output");
         return 2;
@@ -987,7 +1105,7 @@ int RunReport(const ReportRequest& request) {
 
     if ((kind == L"io" || kind == L"pmc") &&
         (!request.dso.empty() || !request.symbol.empty() || request.scope != L"all" ||
-         request.call_graph || request.folded || request.exact_stacks || request.max_missing_stacks ||
+         request.call_graph || request.folded || flamegraph || request.exact_stacks || request.max_missing_stacks ||
          request.percent_limit || !request.sort_fields.empty() || request.weight_explicit ||
          !request.archive.empty() || !request.symbol_path.empty())) {
         PrintError(L"I/O and PMC snapshot reports do not support symbol, stack, scope, weight, sort, or percent options");
@@ -1020,10 +1138,14 @@ int RunReport(const ReportRequest& request) {
         envelope->BeginObject();
         envelope->Key(L"rows");
     }
-    const auto close_envelope = [&]() {
+    const auto close_envelope = [&](const Symbolizer* symbolizer = nullptr) {
         if (envelope) {
             envelope->Key(L"quality");
             envelope->Item(QualityJson(trace));
+            if (symbolizer != nullptr) {
+                envelope->Key(L"symbols");
+                envelope->Item(SymbolDiagnosticsJson(symbolizer->Diagnostics()));
+            }
             envelope->EndObject();
             std::wcout << L"\n";
         }
@@ -1104,7 +1226,83 @@ int RunReport(const ReportRequest& request) {
         symbolizer.AddModule(image);
     }
 
+    int flamegraph_exit_code = 0;
+    const auto write_flamegraph = [&](const std::wstring& folded,
+                                      const std::wstring& weight_name,
+                                      bool off_cpu_mode,
+                                      const CpuReportWeightInfo* weight_info) {
+        FlameGraphOptions options;
+        options.title = request.flamegraph_title.empty()
+            ? (off_cpu_mode ? L"wperf off-CPU flame graph" : L"wperf CPU flame graph")
+            : request.flamegraph_title;
+        options.weight_name = request.flamegraph_countname.empty()
+            ? weight_name : request.flamegraph_countname;
+        options.source = input.wstring();
+        options.details.push_back({L"samples", std::to_wstring(trace.quality.samples_total)});
+        options.details.push_back({L"events", std::to_wstring(trace.quality.events_total)});
+        options.details.push_back({L"lost events", std::to_wstring(trace.quality.lost_events)});
+        options.details.push_back({
+            L"missing stacks",
+            std::to_wstring(off_cpu_mode ? trace.quality.off_cpu_stack_missing
+                                         : trace.quality.samples_without_stack)});
+        options.details.push_back({L"decode errors", std::to_wstring(trace.quality.decode_errors)});
+        options.details.push_back({L"status", trace.quality.incomplete ? L"incomplete" : L"complete"});
+        if (off_cpu_mode) {
+            options.details.push_back({L"blocked intervals",
+                                       std::to_wstring(trace.quality.off_cpu_blocked_intervals)});
+            options.details.push_back({L"ready intervals",
+                                       std::to_wstring(trace.quality.off_cpu_ready_intervals)});
+        } else if (weight_info != nullptr) {
+            options.details.push_back({L"weight basis",
+                                       weight_info->use_period ? L"period" : L"samples"});
+            options.details.push_back({L"normalization fallback",
+                                       weight_info->fallback ? L"true" : L"false"});
+        }
+
+        FlameGraphResult result;
+        std::wstring flamegraph_error;
+        if (!RenderFoldedFlameGraph(folded, options, result, &flamegraph_error)) {
+            PrintError(flamegraph_error);
+            flamegraph_exit_code = 6;
+            return false;
+        }
+        if (output_path.empty()) {
+            std::wcout << result.html;
+            std::wcout.flush();
+        } else if (!WriteReportFile(output_path, result.html, &error)) {
+            PrintError(error);
+            flamegraph_exit_code = 9;
+            return false;
+        }
+        if (verbose && !quiet) WriteSymbolDiagnosticsText(symbolizer.Diagnostics(), std::wcerr);
+        return true;
+    };
+
     if (off_cpu) {
+        if (flamegraph) {
+            CpuReportOptions folded_options = report_options;
+            folded_options.folded = true;
+            folded_options.call_tree = false;
+            folded_options.json = false;
+            folded_options.csv = false;
+            std::wostringstream folded;
+            WriteOffCpuReport(trace, symbolizer, folded_options, folded);
+            if (!write_flamegraph(folded.str(), L"nanoseconds", true, nullptr)) {
+                return flamegraph_exit_code;
+            }
+            const bool exceeds_loss =
+                maximum_lost && trace.quality.lost_events > *maximum_lost;
+            const bool exceeds_missing =
+                maximum_missing && trace.quality.off_cpu_stack_missing > *maximum_missing;
+            const bool strict_failure =
+                strict_quality &&
+                (trace.quality.incomplete || trace.quality.off_cpu_inferred_intervals != 0 ||
+                 trace.quality.off_cpu_evicted != 0);
+            return trace.off_cpu_intervals.empty() || exceeds_loss || exceeds_missing ||
+                           strict_failure
+                       ? 6
+                       : 0;
+        }
         if (!output_path.empty()) {
             std::wostringstream result;
             std::unique_ptr<JsonStreamWriter> file_envelope;
@@ -1117,6 +1315,8 @@ int RunReport(const ReportRequest& request) {
             }
             WriteOffCpuReport(trace, symbolizer, report_options, result, file_envelope.get());
             if (file_envelope) {
+                file_envelope->Key(L"symbols");
+                file_envelope->Item(SymbolDiagnosticsJson(symbolizer.Diagnostics()));
                 file_envelope->EndObject();
                 result << L"\n";
             }
@@ -1126,8 +1326,9 @@ int RunReport(const ReportRequest& request) {
             }
         } else {
             WriteOffCpuReport(trace, symbolizer, report_options, std::wcout, envelope.get());
-            close_envelope();
+            close_envelope(&symbolizer);
         }
+        if (verbose && !quiet) WriteSymbolDiagnosticsText(symbolizer.Diagnostics(), std::wcerr);
         const bool exceeds_loss =
             maximum_lost && trace.quality.lost_events > *maximum_lost;
         const bool exceeds_missing =
@@ -1190,13 +1391,25 @@ int RunReport(const ReportRequest& request) {
                        << L"\n";
         }
     }
-    if (stream) {
+    if (flamegraph) {
+        CpuReportOptions folded_options = report_options;
+        folded_options.folded = true;
+        folded_options.call_tree = false;
+        folded_options.json = false;
+        folded_options.csv = false;
+        CpuReportWeightInfo weight_info;
+        std::wostringstream folded;
+        WriteCpuReport(trace, symbolizer, folded_options, folded, nullptr, &weight_info);
+        if (!write_flamegraph(folded.str(), weight_info.unit, false, &weight_info)) {
+            return flamegraph_exit_code;
+        }
+    } else if (stream) {
         WriteCpuReportFeed(trace, symbolizer, report_options, std::wcout,
                            [&](const auto& observe) {
                                if (!StreamEtwSamples(input, trace, observe, &error))
                                    throw std::runtime_error(ToUtf8(error));
                            }, envelope.get());
-        close_envelope();
+        close_envelope(&symbolizer);
     } else if (!output_path.empty()) {
         std::wostringstream result;
         WriteCpuReport(trace, symbolizer, report_options, result);
@@ -1218,8 +1431,10 @@ int RunReport(const ReportRequest& request) {
         }
     } else {
         WriteCpuReport(trace, symbolizer, report_options, std::wcout, envelope.get());
-        close_envelope();
+        close_envelope(&symbolizer);
     }
+    if (!flamegraph && verbose && !quiet)
+        WriteSymbolDiagnosticsText(symbolizer.Diagnostics(), std::wcerr);
     const bool exceeds_loss=maximum_lost&&trace.quality.lost_events>*maximum_lost;
     const bool exceeds_missing=maximum_missing&&trace.quality.samples_without_stack>*maximum_missing;
     return trace.quality.samples_total==0 || exceeds_loss || exceeds_missing || quality_failed(trace)?6:0;

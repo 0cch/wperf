@@ -9,6 +9,7 @@
 #include "common.h"
 #include "trace_model.h"
 #include "pool_tags.h"
+#include "symbolizer.h"
 
 namespace wperf {
 
@@ -87,6 +88,45 @@ inline nlohmann::ordered_json QualityJson(const TraceData& trace) {
 
 inline void WriteQualityJson(const TraceData& trace, std::wostream& output) {
     output << ToUtf16(QualityJson(trace).dump());
+}
+
+inline nlohmann::ordered_json SymbolDiagnosticsJson(const SymbolizerDiagnostics& diagnostics) {
+    nlohmann::ordered_json value;
+    value["symbol_path"] = ToUtf8(diagnostics.symbol_path);
+    value["explicit_symbol_path"] = ToUtf8(diagnostics.explicit_symbol_path);
+    value["environment_symbol_path"] = ToUtf8(diagnostics.environment_symbol_path);
+    value["symbol_path_source"] = ToUtf8(diagnostics.symbol_path_source);
+    value["symcache_path"] = ToUtf8(diagnostics.symcache_path);
+    value["dbghelp_path"] = ToUtf8(diagnostics.dbghelp_path);
+    value["dbghelp_version"] = ToUtf8(diagnostics.dbghelp_version);
+    value["cache_hits"] = diagnostics.stats.cache_hits;
+    value["memory_hits"] = diagnostics.stats.memory_hits;
+    value["persistent_hits"] = diagnostics.stats.persistent_hits;
+    value["cache_misses"] = diagnostics.stats.cache_misses;
+    value["dbghelp_resolves"] = diagnostics.stats.dbghelp_resolves;
+    value["dbghelp_resolved"] = diagnostics.stats.dbghelp_resolved;
+    value["unresolved"] = diagnostics.stats.unresolved;
+    value["cache_bytes"] = diagnostics.stats.cache_bytes;
+    value["cache_evictions"] = diagnostics.stats.cache_evictions;
+    value["modules_total"] = diagnostics.stats.modules_total;
+    value["modules_loaded"] = diagnostics.stats.modules_loaded;
+    value["modules_rejected"] = diagnostics.stats.modules_rejected;
+    nlohmann::ordered_json modules = nlohmann::ordered_json::array();
+    for (const auto& module : diagnostics.modules) {
+        nlohmann::ordered_json item;
+        item["module"] = ToUtf8(module.module);
+        item["path"] = ToUtf8(module.path);
+        item["recorded_path"] = ToUtf8(module.recorded_path);
+        item["pdb_path"] = ToUtf8(module.pdb_path);
+        item["pdb_status"] = ToUtf8(module.pdb_status);
+        item["status"] = ToUtf8(module.status);
+        item["reason"] = ToUtf8(module.reason);
+        item["resolved"] = module.resolved;
+        item["unresolved"] = module.unresolved;
+        modules.push_back(std::move(item));
+    }
+    value["module_details"] = std::move(modules);
+    return value;
 }
 
 }  // namespace wperf

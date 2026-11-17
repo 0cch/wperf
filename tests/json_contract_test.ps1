@@ -6,6 +6,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
+$env:_NT_SYMBOL_PATH = ""
 
 function Assert-JsonContract {
     param(
@@ -19,8 +22,17 @@ function Assert-JsonContract {
         throw "$Name command failed with exit code $LASTEXITCODE"
     }
     $json = $output -join "`n"
-    if (-not (Test-Json -Json $json -SchemaFile $SchemaFile -ErrorAction Stop)) {
-        throw "$Name output does not match $SchemaFile"
+    try {
+        if (-not (Test-Json -Json $json -SchemaFile $SchemaFile -ErrorAction Stop)) {
+            throw "schema validation returned false"
+        }
+    } catch {
+        $preview = if ($json.Length -gt 4000) {
+            $json.Substring(0, 4000) + "`n...[truncated]"
+        } else {
+            $json
+        }
+        throw "$Name output does not match ${SchemaFile}: $($_.Exception.Message)`nJSON preview:`n$preview"
     }
 }
 
@@ -70,6 +82,16 @@ foreach ($field in @("events_total", "stack_events_total", "stack_key_mismatch",
                      "lbr_branches", "samples_dropped", "unknown_events")) {
     if ($null -eq $cpuJson.quality.$field) {
         throw "quality JSON is missing '$field'"
+    }
+}
+foreach ($field in @("symbol_path", "explicit_symbol_path", "environment_symbol_path",
+                     "symbol_path_source", "symcache_path",
+                     "dbghelp_path", "dbghelp_version", "memory_hits",
+                     "persistent_hits", "dbghelp_resolves", "unresolved",
+                     "modules_total", "modules_loaded", "modules_rejected",
+                     "module_details")) {
+    if ($null -eq $cpuJson.symbols.$field) {
+        throw "symbol diagnostics JSON is missing '$field'"
     }
 }
 

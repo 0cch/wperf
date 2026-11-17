@@ -96,6 +96,7 @@ an access-denied or empty capture cannot be mistaken for a pass.
 | Regression | `tests/regression_tests.cpp` | Raw event replay, quality gates, IPC, report contracts |
 | CLI parser | `tests/cli_unit_tests.cpp` | Every public command/option, aliases, arity, conflicts, and target forwarding |
 | CLI conformance | `tests/cli_conformance_test.ps1` | Process-level help consistency and checked-in generated reference |
+| FlameGraph output | `tests/flamegraph_output_test.ps1`, `tests/report_flamegraph_test.ps1` | Folded parsing, HTML escaping, CPU/off-CPU integration, UTF-8/LF output |
 | Runtime CLI fixtures | `tests/generate_etw_fixtures.ps1`, `tests/workloads/etw_fixture_workload.cpp` | Option validation and end-to-end ETW workflows with no committed trace data |
 | Live integration | `tests/live_integration_tests.cpp` | Real ETW capture, STOP, orphan cleanup |
 | Live JSON | `tests/live_trace_json_smoke.ps1`, `tests/live_pmc_json_smoke.ps1` | Streaming trace and PMC JSON contracts |
@@ -285,7 +286,7 @@ Versions are four-part numeric values: `MAJOR.MINOR.PATCH.BUILD`.
 - `SHA256SUMS.txt`
 - README, changelog, LICENSE, contributing/security guides, notices, and durable docs
 
-The GitHub workflow accepts only three-part release tags such as `v0.11.0`.
+The GitHub workflow accepts only three-part release tags such as `v0.12.0`.
 It derives the fourth build component from `GITHUB_RUN_NUMBER` and creates the
 final four-part release tag. Manually pushed four-part release tags are rejected.
 See [RELEASE.md](RELEASE.md).

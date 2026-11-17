@@ -119,9 +119,13 @@ limitations are all recorded.
 
 ### Output and analysis improvements
 
-- [ ] Native FlameGraph SVG/HTML output, or a supported external workflow.
+- [x] Native self-contained HTML FlameGraph output and a supported external
+  folded-stack workflow.
 - [ ] Richer call-tree aggregation for multi-process traces.
-- [ ] Better symbol-server proxy configuration, cache diagnostics, and partial-download recovery.
+- [x] Symbol cache diagnostics for memory, persistent `.symcache`, DbgHelp,
+  module rejection, PDB state, and unresolved addresses.
+- [ ] Better symbol-server proxy configuration.
+- [ ] Partial-download recovery for symbol-server failures.
 - [ ] Additional provider-schema rendering beyond raw ETW capture.
 
 ## Contribution entry points
@@ -145,4 +149,5 @@ data, and evidence plan. See [CONTRIBUTING.md](../CONTRIBUTING.md) and
 The current tree includes CPU sampling and symbols, scheduler/syscall/I/O and
 off-CPU analysis, live top/trace, PMC sampling and estimated snapshots, Intel
 LBR, AMD64 context-register decoding, Zydis annotation, weighted diff, verified
-archives, and low-privilege live symbolization. See `CHANGELOG.md` for details.
+archives, low-privilege live symbolization, native HTML FlameGraphs, and layered
+symbol-cache diagnostics. See `CHANGELOG.md` for details.

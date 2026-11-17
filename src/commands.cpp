@@ -1816,6 +1816,7 @@ int RunPublicCommand(const CommandRequest& request) {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, RecordRequest>) return RunRecord(value);
         else if constexpr (std::is_same_v<T, ReportRequest>) return RunReport(value);
+        else if constexpr (std::is_same_v<T, FlameGraphRequest>) return RunFlameGraph(value);
         else if constexpr (std::is_same_v<T, ScriptRequest>) return RunScript(value);
         else if constexpr (std::is_same_v<T, TraceRequest>) return RunTrace(value);
         else if constexpr (std::is_same_v<T, SchedRequest>) return RunSched(value);

@@ -25,6 +25,7 @@ struct OptionSpec {
     std::string value;
     std::string description;
     bool optional_value = false;
+    bool join_values = false;
 };
 
 struct CommandSpec {
@@ -39,12 +40,19 @@ struct CommandSpec {
 };
 
 OptionSpec Flag(std::string names, std::string description) {
-    return {std::move(names), {}, std::move(description), false};
+    return {std::move(names), {}, std::move(description), false, false};
 }
 
 OptionSpec Value(std::string names, std::string value, std::string description,
                  bool optional_value = false) {
-    return {std::move(names), std::move(value), std::move(description), optional_value};
+    return {std::move(names), std::move(value), std::move(description),
+            optional_value, false};
+}
+
+OptionSpec MultiValue(std::string names, std::string value,
+                      std::string description) {
+    return {std::move(names), std::move(value), std::move(description),
+            false, true};
 }
 
 void AddCommand(std::vector<CommandSpec>& catalog, std::string name,
@@ -110,7 +118,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("--comm", "TEXT", "Filter by process name substring."),
             Value("--dso", "TEXT", "Filter by module/shared-object substring."),
             Value("--symbol", "TEXT", "Filter by symbol substring."),
-            Value("--symbol-path", "DIR", "Add a local PDB search directory."),
+            MultiValue("--symbol-path", "DIR", "Add a local PDB search directory; repeatable or semicolon-separated."),
             Value("--archive", "DIR", "Resolve unavailable paths through verified modules.tsv."),
             Value("--percent-limit", "N", "Hide rows below N percent."),
             Value("-s,--sort", "FIELD", "Sort by weight, samples, comm, dso, or symbol."),
@@ -129,6 +137,9 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("--time-end", "MS", "Select data before capture-relative time."),
             Value("--scope", "SCOPE", "Select all, user, or kernel address space."),
             Flag("--folded,--collapsed", "Print collapsed stacks with counts."),
+            Flag("--flamegraph", "Write a self-contained interactive HTML flame graph."),
+            Value("--title", "TEXT", "FlameGraph HTML title."),
+            Value("--countname", "NAME", "FlameGraph weight label; defaults to the report unit."),
             Flag("--off-cpu", "Report blocked/ready intervals weighted by wait time."),
             Flag("--off-cpu-include-inferred", "Include end-of-capture truncated intervals."),
             Flag("--stdio", "Text output (default)."),
@@ -142,9 +153,12 @@ std::vector<CommandSpec> BuildCatalog() {
             "wperf report -i cpu.etl --symbol-path .\\build\\Release --call-graph",
             "wperf report -i cpu.etl --json --metadata",
             "wperf report -i sched.etl --off-cpu --folded --quiet -o offcpu.folded",
+            "wperf report -i cpu.etl --symbol-path .\\symbols --flamegraph -o cpu.html",
         }, {
             "Quality diagnostics go to stderr; --quiet suppresses them and --verbose prints every counter.",
-            "--folded/--collapsed and --call-graph cannot be combined with --json or --csv.",
+            "--folded/--collapsed, --flamegraph and --call-graph are mutually exclusive with each other and with --json/--csv.",
+            "--flamegraph emits one self-contained HTML file with inline CSS/JavaScript and no network dependencies.",
+            "--folded remains the standard collapsed-stack input for flamegraph.pl or other external SVG/HTML renderers.",
             "CPU overhead and folded output use periods (CPU ns or PMC events); --weight samples uses counts. Unknown periods fall back to counts with a warning.",
             "Mixed sample sources require --source ID. Off-CPU weights remain nanoseconds.",
             "I/O and PMC snapshots support PID/TID/comm/children/CPU/time selection and loss/strict gates; symbol, stack, scope, weight, sort and percent options are rejected.",
@@ -155,6 +169,25 @@ std::vector<CommandSpec> BuildCatalog() {
             "-o writes UTF-8 without BOM and LF line endings.",
         });
 
+    AddCommand(catalog, "flamegraph", {"flame"},
+        "Convert folded stacks to a self-contained interactive HTML flame graph.",
+        "wperf flamegraph -i FILE [options]", false,
+        {
+            Value("-i,--input", "FILE", "Read folded stacks from FILE."),
+            Value("-o,--output", "FILE", "Write HTML to FILE; otherwise print HTML to stdout."),
+            Value("--title", "TEXT", "HTML document title."),
+            Value("--countname", "NAME", "Weight label (default: samples)."),
+        },
+        {
+            "wperf report -i cpu.etl --folded --quiet -o cpu.folded",
+            "wperf flamegraph -i cpu.folded --countname nanoseconds -o cpu.html",
+        }, {
+            "Input is the standard semicolon-separated folded-stack format.",
+            "The output is one self-contained HTML document with inline CSS and JavaScript.",
+            "Use --countname nanoseconds, events, or samples to label the weights accurately.",
+            "Use report --folded when an external flamegraph.pl SVG workflow is preferred.",
+        });
+
     AddCommand(catalog, "script", {"scr"},
         "Export one line per sample.",
         "wperf script -i FILE [options]", false,
@@ -163,7 +196,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("-o,--output", "FILE", "Write output to FILE."),
             Value("-p,--pid", "PID", "Include only PID."),
             Value("-F,--fields", "LIST", "Comma-separated fields (default: timestamp,cpu,pid,tid,ip,comm,dso,symbol)."),
-            Value("--symbol-path", "DIR", "Add a local PDB search directory."),
+            MultiValue("--symbol-path", "DIR", "Add a local PDB search directory; repeatable or semicolon-separated."),
             Value("--archive", "DIR", "Resolve unavailable paths through verified modules.tsv."),
             Value("--limit", "N", "Emit at most N samples; 0 means unlimited."),
             Flag("--csv", "Use comma-separated output and CSV quoting."),
@@ -242,7 +275,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("--interval", "MS", "Refresh interval (default: 1000)."),
             Value("--iterations", "N", "Number of snapshots; 0 means until Ctrl-C."),
             Value("--sort", "FIELD", "Sort by samples, comm, dso, or symbol."),
-            Value("--symbol-path", "DIR", "Add a local PDB search directory."),
+            MultiValue("--symbol-path", "DIR", "Add a local PDB search directory; repeatable or semicolon-separated."),
             Value("--archive", "DIR", "Resolve unavailable paths through verified modules.tsv."),
             Value("--percent-limit", "N", "Hide rows below N percent (default: 1)."),
             Flag("--elevate", "Start the hidden elevated worker."),
@@ -256,7 +289,7 @@ std::vector<CommandSpec> BuildCatalog() {
         "wperf annotate -i FILE [options]", false,
         {
             Value("-i,--input", "FILE", "Read FILE."),
-            Value("--symbol-path", "DIR", "Add a local PDB search directory."),
+            MultiValue("--symbol-path", "DIR", "Add a local PDB search directory; repeatable or semicolon-separated."),
             Value("--archive", "DIR", "Resolve unavailable paths through verified modules.tsv."),
             Value("-p,--pid", "PID", "Include only PID."),
             Value("--limit", "N", "Limit rows (default: 50)."),
@@ -279,7 +312,7 @@ std::vector<CommandSpec> BuildCatalog() {
         {
             Value("-1,--first", "FILE", "Read the baseline profile from FILE."),
             Value("-2,--second", "FILE", "Read the comparison profile from FILE."),
-            Value("--symbol-path", "DIR", "Add a local PDB search directory."),
+            MultiValue("--symbol-path", "DIR", "Add a local PDB search directory; repeatable or semicolon-separated."),
             Value("--archive", "DIR", "Resolve unavailable paths through verified modules.tsv."),
             Value("--pid", "PID", "Include only PID."),
             Value("--dso", "TEXT", "Filter by module/shared-object substring."),
@@ -304,7 +337,7 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("-i,--input", "FILE", "Read FILE."),
             Value("-o,--output", "DIRECTORY", "Write the archive to DIRECTORY."),
             Value("-p,--pid", "PID", "Include only modules referenced by PID."),
-            Value("--symbol-path", "DIR", "Add a local PDB search directory."),
+            MultiValue("--symbol-path", "DIR", "Add a local PDB search directory; repeatable or semicolon-separated."),
             Value("--max-size-mb", "N", "Skip copied files larger than N MiB."),
             Flag("--include-trace", "Copy the input ETL as trace.etl."),
         }, {
@@ -345,8 +378,8 @@ std::vector<CommandSpec> BuildCatalog() {
             Value("--bundle", "DIR", "Write a diagnostic bundle to DIR."),
             Flag("--include-dumps", "Include .dmp files in the bundle."),
             Flag("--json", "Print JSON diagnostics."),
-        }, {
-            "--bundle writes a redacted diagnostic bundle. Crash dumps are included only with --include-dumps.",
+        }, {}, {
+            "--bundle writes a diagnostic bundle. Crash dumps are included only with --include-dumps; review contents before sharing.",
         });
 
     AddCommand(catalog, "test", {},
@@ -428,11 +461,14 @@ std::wstring RenderGeneralHelp(const std::vector<CommandSpec>& catalog) {
         << L"  -p PID        Restrict analysis to one process\n"
         << L"  -g            Capture or print call stacks\n"
         << L"  --folded      Emit collapsed stacks (alias: --collapsed)\n"
+        << L"  --flamegraph  Emit a self-contained interactive HTML flame graph\n"
         << L"  --csv|--json  Machine-readable output (mutually exclusive in report)\n"
         << L"  --json-errors Emit one structured JSON error object on failure\n\n"
         << L"Flame graph:\n"
-        << L"  wperf report -i trace.etl --symbol-path DIR --folded --quiet -o stacks.folded\n"
-        << L"  flamegraph.pl stacks.folded > flamegraph.svg\n\n"
+        << L"  wperf report -i trace.etl --symbol-path DIR --flamegraph -o trace.html\n"
+        << L"  wperf flamegraph -i stacks.folded --countname nanoseconds -o graph.html\n"
+        << L"  wperf report -i trace.etl --symbol-path DIR --folded -o stacks.folded\n"
+        << L"  flamegraph.pl --countname nanoseconds stacks.folded > trace.svg\n\n"
         << L"Run \"wperf help <command>\" for complete options and examples.\n";
     return out.str();
 }
@@ -576,6 +612,10 @@ void AddOption(CLI::App& command, const OptionSpec& spec, OptionValues& values,
     auto* option = command.add_option(spec.names, iterator->second, spec.description);
     option->type_name(spec.value);
     if (spec.optional_value) option->expected(0, 1);
+    if (spec.join_values) {
+        option->multi_option_policy(CLI::MultiOptionPolicy::Join);
+        option->delimiter(';');
+    }
     value_options.emplace_back(key, option);
 }
 

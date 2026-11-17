@@ -3,7 +3,7 @@ param(
     [string]$Configuration = "Release",
     [string]$OutputDirectory = "",
     [string]$VersionMajor = "0",
-    [string]$VersionMinor = "10",
+    [string]$VersionMinor = "12",
     [string]$VersionPatch = "0",
     [string]$BuildNumber = "0",
     [string]$VcpkgRoot = ""

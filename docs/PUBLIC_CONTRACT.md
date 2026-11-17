@@ -80,7 +80,7 @@ on stderr when a command fails:
 {
   "ok": false,
   "schema_version": 1,
-  "tool_version": "0.11.0.42",
+  "tool_version": "0.12.0.42",
   "command": "report",
   "error": {
     "code": "invalid_arguments",
@@ -161,6 +161,29 @@ layouts and dropped analysis state affect `incomplete`. Empty selections exit 5.
   Any selected unknown period causes a whole-report count fallback, identified
   by `overhead_basis` and `normalization_fallback`. Different sample domains are
   rejected unless narrowed with `--source`.
+- `report --flamegraph` applies the same selection, stack, percentage and weight
+  semantics as folded output, then emits one self-contained interactive HTML
+  document. `--countname` changes only the displayed weight label; it does not
+  rescale values. `report --flamegraph` is incompatible with `--folded`,
+  `--call-graph`, `--json`, `--csv`, `--stream`, and `--metadata`.
+- `wperf flamegraph -i FILE` converts standard integer-weight folded stacks to
+  the same self-contained HTML format. Malformed folded data exits 6; input or
+  output filesystem failures exit 9.
+- `report --folded` remains a stable standard collapsed-stack output for external
+  consumers such as `flamegraph.pl stacks.folded > stacks.svg`. Native HTML and
+  external SVG workflows are parallel options, not replacements.
+- CPU and off-CPU `report --json --metadata` include a `symbols` object with the
+  effective symbol path and source, DbgHelp and symcache paths, cache-layer
+  counters, unresolved counts, module totals, and interesting per-module
+  diagnostics. These fields describe the local analysis host and intentionally
+  retain full local paths. The DbgHelp version may be empty when unavailable.
+- `--symbol-path` is repeatable and also accepts semicolon-separated values.
+  Explicit paths augment `_NT_SYMBOL_PATH` instead of replacing it. The
+  effective search path and both sources are visible in symbol diagnostics.
+- Generated FlameGraph HTML is a local artifact. Its click, double-click, drag
+  range selection, search, navigation, copy-stack, minimum-percentage, and
+  SVG/PNG export interactions are presentation behavior, not JSON/CSV
+  compatibility surface.
 - Streaming report quality is finalized after sample consumption. With
   `stacks_loaded:false`, `stack_assessment:"not-loaded"` means no stack quality
   was evaluated, and omitted stacks are not reported as missing.

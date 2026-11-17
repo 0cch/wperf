@@ -222,3 +222,16 @@ CPU aggregation tracks counts and periods separately and rejects mixed units.
 Streaming output emits final quality after rows. Build identity remains strict
 for symbol loading/cache; cross-build diff matching uses a separate symbol key.
 Module-list file metadata and optional hashes are cached within each invocation.
+
+Flame graphs are generated from the same folded-stack representation used by
+CPU and off-CPU reports. `flamegraph.cpp` owns folded parsing and tree
+aggregation, `flamegraph_html.cpp` owns the self-contained HTML presentation,
+and `flamegraph_assets.h` contains the inline CSS/JavaScript assets. The writer
+embeds a compact tree, quality counters, filters, and the selected weight label;
+it does not call a symbolizer or download assets at render time. The standalone
+`flamegraph` command applies the same renderer to an existing folded file.
+
+Symbol diagnostics are copied out of the controller-side `Symbolizer` after
+resolution. They separate in-memory cache hits, persistent `.symcache` hits, and
+DbgHelp work, and retain module rejection reasons plus DbgHelp/PDB paths. Text
+verbose output is bounded; JSON metadata retains the structured module detail.

@@ -163,8 +163,8 @@ or Windows builds.
 
 The highest-value open areas are listed in [TODO.md](docs/TODO.md), including
 platform coverage, cached/scheduler stacks, profiler coexistence, JIT method
-lifetimes, provider-schema rendering, native FlameGraph output, and soak or
-perturbation measurements.
+lifetimes, provider-schema rendering, richer multi-process call trees, and soak
+or perturbation measurements.
 
 ## Pull request checklist
 

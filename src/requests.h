@@ -50,11 +50,21 @@ struct ReportRequest {
     std::optional<uint64_t> time_start_ms, time_end_ms;
     std::wstring scope = L"all";
     bool folded = false, off_cpu = false, off_cpu_include_inferred = false;
+    bool flamegraph = false;
+    std::wstring flamegraph_title;
+    std::wstring flamegraph_countname;
     bool stdio_output = false, quiet = false, verbose = false, csv = false, json = false;
     std::wstring kind;
     std::wstring weight = L"period";
     bool weight_explicit = false;
     std::optional<uint32_t> source;
+};
+
+struct FlameGraphRequest {
+    std::filesystem::path input;
+    std::filesystem::path output;
+    std::wstring title;
+    std::wstring countname = L"samples";
 };
 
 struct ScriptRequest {
@@ -160,7 +170,7 @@ struct TestRequest {};
 using OptionValues = std::unordered_map<std::string, std::string>;
 using OptionFlags = std::unordered_map<std::string, bool>;
 using CommandRequest = std::variant<
-    RecordRequest, ReportRequest, ScriptRequest, TraceRequest, SchedRequest,
+    RecordRequest, ReportRequest, FlameGraphRequest, ScriptRequest, TraceRequest, SchedRequest,
     StatRequest, TopRequest, AnnotateRequest, DiffRequest, ArchiveRequest,
     BuildIdListRequest, ListRequest, DoctorRequest, RecoverRequest, TestRequest>;
 

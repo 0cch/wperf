@@ -9,16 +9,16 @@ MAJOR.MINOR.PATCH.BUILD
 ```
 
 The CMake defaults define the first three. Normal release tags must use exactly
-three components, for example `v0.11.0`. The GitHub release workflow always
+three components, for example `v0.12.0`. The GitHub release workflow always
 derives the fourth component from `GITHUB_RUN_NUMBER` and creates the final
 four-part release tag.
 
 Example:
 
-- tag `v0.11.0` on workflow run 42 produces release `0.11.0.42`.
+- tag `v0.12.0` on workflow run 42 produces release `0.12.0.42`.
 
 The workflow rejects manually pushed four-part release tags such as
-`v0.11.0.42`; the fourth component is generated output, not an input. Re-running
+`v0.12.0.42`; the fourth component is generated output, not an input. Re-running
 the same workflow keeps the same `GITHUB_RUN_NUMBER`. Run numbers are monotonic
 but not guaranteed to be contiguous.
 
@@ -38,7 +38,7 @@ Override the output or version when needed:
 ```powershell
 pwsh -NoProfile -File .\scripts\build_release.ps1 `
   -OutputDirectory artifacts\release `
-  -VersionMajor 0 -VersionMinor 11 -VersionPatch 0 -BuildNumber 0
+  -VersionMajor 0 -VersionMinor 12 -VersionPatch 0 -BuildNumber 0
 ```
 
 ## Release contents
@@ -64,8 +64,8 @@ The workflow is `.github/workflows/release.yml` and triggers on tags matching
 `v*`.
 
 ```powershell
-git tag -a v0.11.0 -m "wperf 0.11.0"
-git push origin v0.11.0
+git tag -a v0.12.0 -m "wperf 0.12.0"
+git push origin v0.12.0
 ```
 
 The workflow:
@@ -74,14 +74,14 @@ The workflow:
 2. builds and tests Release x64;
 3. generates SHA256 checksums for exe, PDB, and manifest;
 4. uploads the workflow artifact;
-5. creates a non-draft, non-prerelease GitHub Release.
+5. creates a non-draft, non-prerelease GitHub Release with generated GitHub notes.
 
 The live integration tests are required by the workflow. A skipped or
 unsupported hardware step must not be treated as a pass.
 
 ## Pre-release checklist
 
-- [ ] Changelog updated and version values reviewed.
+- [ ] Changelog updated, version values reviewed, and the release-note body prepared locally.
 - [ ] Normal CTest passes.
 - [ ] Elevated live tests pass with `WPERF_REQUIRE_LIVE_TESTS=1`.
 - [ ] Hardware-dependent claims have evidence in `docs/HARDWARE_VALIDATION.md`.
@@ -89,6 +89,20 @@ unsupported hardware step must not be treated as a pass.
 - [ ] No raw ETLs, dumps, secrets, or machine-specific paths are committed.
 - [ ] Release notes identify known limitations and unverified platforms.
 - [ ] `LICENSE` exists before the repository is made public.
+
+## Update release notes with gh
+
+The workflow creates the release automatically so that tags remain immutable
+and no credentials are needed outside GitHub Actions. Replace the generated
+notes with the reviewed release-note body after the workflow succeeds:
+
+```powershell
+gh release list --limit 5
+gh release edit <release-tag> --notes-file .\out\release-notes-<version>.md
+```
+
+The note file is intentionally a local release artifact rather than a committed
+repository file.
 
 ## Post-release verification
 

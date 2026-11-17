@@ -20,6 +20,10 @@ if($emptyCpu.file_io -ne 0) { throw 'I/O CPU selection was ignored' }
 Invoke-Case @('report','-i',$io,'--kind','io','--max-missing-stacks','0') 2|Out-Null
 Invoke-Case @('report','-i',$io,'--kind','io','--scope','kernel') 2|Out-Null
 Invoke-Case @('report','-i',$io,'--kind','pmc','--folded') 2|Out-Null
+Invoke-Case @('report','--flamegraph','--folded') 2|Out-Null
+Invoke-Case @('report','--flamegraph','--json') 2|Out-Null
+Invoke-Case @('report','--title','orphan title') 2|Out-Null
+Invoke-Case @('flamegraph') 2|Out-Null
 Invoke-Case @('report','-i',$cpu,'-p',$cpuPid,'--stream','--max-missing-stacks','0') 2|Out-Null
 Invoke-Case @('report','--weight','bogus') 2|Out-Null
 Invoke-Case @('diff','--match','bogus') 2|Out-Null

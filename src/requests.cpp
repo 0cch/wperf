@@ -198,6 +198,9 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
         value.include_children = Has(flags, "--include-children");
         value.scope = TextOr(values, "--scope", L"all");
         value.folded = Has(flags, "--folded");
+        value.flamegraph = Has(flags, "--flamegraph");
+        value.flamegraph_title = W(values, "--title");
+        value.flamegraph_countname = W(values, "--countname");
         value.off_cpu = Has(flags, "--off-cpu");
         value.off_cpu_include_inferred = Has(flags, "--off-cpu-include-inferred");
         value.stdio_output = Has(flags, "--stdio");
@@ -227,6 +230,18 @@ bool BuildCommandRequest(const std::string& command, const Values& values,
         if ((value.time_start_ms && *value.time_start_ms > UINT64_MAX / 1000000) ||
             (value.time_end_ms && *value.time_end_ms > UINT64_MAX / 1000000))
             return Bad(error, L"report time offset exceeds nanosecond range");
+        request = std::move(value);
+        return true;
+    }
+    if (command == "flamegraph") {
+        FlameGraphRequest value;
+        value.input = W(values, "--input");
+        value.output = W(values, "--output");
+        value.title = W(values, "--title");
+        value.countname = TextOr(values, "--countname", L"samples");
+        if (value.countname.empty()) {
+            return Bad(error, L"--countname requires a non-empty value");
+        }
         request = std::move(value);
         return true;
     }

@@ -4,6 +4,7 @@
 
 #include <dbghelp.h>
 #include <combaseapi.h>
+#include <winver.h>
 
 #include <algorithm>
 #include <cstring>
@@ -219,6 +220,38 @@ std::wstring FileNameForImage(const ImageRecord& image) {
     return std::filesystem::path(image.path).filename().wstring();
 }
 
+std::wstring LoadedModulePath(const wchar_t* module_name) {
+    HMODULE module = GetModuleHandleW(module_name);
+    if (module == nullptr) return {};
+    std::wstring buffer(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(module, buffer.data(),
+                                            static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) return {};
+    buffer.resize(length);
+    return buffer;
+}
+
+std::wstring FileVersionString(const std::wstring& path) {
+    if (path.empty()) return {};
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &ignored);
+    if (size == 0) return {};
+    std::vector<BYTE> data(size);
+    if (!GetFileVersionInfoW(path.c_str(), 0, size, data.data())) return {};
+    VS_FIXEDFILEINFO* info = nullptr;
+    UINT info_size = 0;
+    if (!VerQueryValueW(data.data(), L"\\", reinterpret_cast<void**>(&info),
+                        &info_size) ||
+        info == nullptr || info_size < sizeof(VS_FIXEDFILEINFO)) {
+        return {};
+    }
+    wchar_t text[128]{};
+    swprintf_s(text, L"%u.%u.%u.%u",
+               HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS),
+               HIWORD(info->dwFileVersionLS), LOWORD(info->dwFileVersionLS));
+    return text;
+}
+
 }  // namespace
 
 ModuleIdentity PublicIdentity(const PeImageIdentity& identity) {
@@ -248,8 +281,32 @@ bool Symbolizer::Initialize(std::wstring symbol_path, std::wstring* error, std::
         if (error) *error = L"cannot allocate symbol session: " + FormatWindowsError(GetLastError());
         return false;
     }
+    explicit_symbol_path_ = symbol_path;
+    const DWORD required = GetEnvironmentVariableW(L"_NT_SYMBOL_PATH", nullptr, 0);
+    if (required != 0) {
+        std::wstring value(required, L'\0');
+        const DWORD written = GetEnvironmentVariableW(
+            L"_NT_SYMBOL_PATH", value.data(), required);
+        if (written != 0 && written < required) {
+            value.resize(written);
+            environment_symbol_path_ = std::move(value);
+        }
+    }
+    if (!explicit_symbol_path_.empty() && !environment_symbol_path_.empty()) {
+        symbol_path_ = explicit_symbol_path_ + L";" + environment_symbol_path_;
+        symbol_path_source_ = L"option+environment";
+    } else if (!explicit_symbol_path_.empty()) {
+        symbol_path_ = explicit_symbol_path_;
+        symbol_path_source_ = L"option";
+    } else if (!environment_symbol_path_.empty()) {
+        symbol_path_ = environment_symbol_path_;
+        symbol_path_source_ = L"environment";
+    } else {
+        symbol_path_.clear();
+        symbol_path_source_ = L"empty";
+    }
     if (!SymInitializeW(session_key_,
-                        symbol_path.empty() ? nullptr : symbol_path.c_str(), FALSE)) {
+                        symbol_path_.empty() ? nullptr : symbol_path_.c_str(), FALSE)) {
         if (error != nullptr) {
             *error = L"SymInitializeW failed: " + FormatWindowsError(GetLastError());
         }
@@ -258,6 +315,8 @@ bool Symbolizer::Initialize(std::wstring symbol_path, std::wstring* error, std::
         return false;
     }
     cache_directory_ = cache_directory.empty() ? GetWperfRootDirectory()/L".symcache" : std::move(cache_directory);
+    dbghelp_path_ = LoadedModulePath(L"dbghelp.dll");
+    dbghelp_version_ = FileVersionString(dbghelp_path_);
     initialized_ = true;
     return true;
 }
@@ -375,10 +434,32 @@ void Symbolizer::AddModule(const ImageRecord& image) {
         return;
     }
 
+    auto [diagnostic, inserted] = module_diagnostics_.try_emplace(key);
+    if (inserted) {
+        diagnostic->second.module = FileNameForImage(image);
+        diagnostic->second.path = path;
+        diagnostic->second.recorded_path = image.path;
+        diagnostic->second.status = L"pending";
+        ++stats_.modules_total;
+    }
+    auto& module_diagnostic = diagnostic->second;
+
     PeImageIdentity identity;
-    if (!ReadPeImageIdentity(path, identity) ||
-        !ModuleIdentityMatches(image, PublicIdentity(identity))) {
+    if (!ReadPeImageIdentity(path, identity)) {
+        std::error_code error;
+        module_diagnostic.status = L"rejected";
+        module_diagnostic.reason = std::filesystem::exists(path, error)
+                                      ? L"cannot-read-local-pe"
+                                      : L"local-file-missing";
         rejected_modules_.insert(key);
+        ++stats_.modules_rejected;
+        return;
+    }
+    if (!ModuleIdentityMatches(image, PublicIdentity(identity))) {
+        module_diagnostic.status = L"rejected";
+        module_diagnostic.reason = L"pe-identity-mismatch";
+        rejected_modules_.insert(key);
+        ++stats_.modules_rejected;
         return;
     }
 
@@ -391,7 +472,11 @@ void Symbolizer::AddModule(const ImageRecord& image) {
         static_cast<DWORD>(std::min<uint64_t>(image.size, UINT32_MAX)), nullptr,
         0);
     if (loaded_base == 0) {
+        module_diagnostic.status = L"rejected";
+        module_diagnostic.reason = L"dbghelp-load-failed: " +
+                                   FormatWindowsError(GetLastError());
         rejected_modules_.insert(key);
+        ++stats_.modules_rejected;
         return;
     }
 
@@ -399,6 +484,16 @@ void Symbolizer::AddModule(const ImageRecord& image) {
     module_info.SizeOfStruct = sizeof(module_info);
     const bool have_module_info =
         SymGetModuleInfoW64(session_key_, loaded_base, &module_info) != FALSE;
+    if (have_module_info) {
+        if (module_info.LoadedPdbName != nullptr && module_info.LoadedPdbName[0] != L'\0') {
+            module_diagnostic.pdb_path = module_info.LoadedPdbName;
+            module_diagnostic.pdb_status = L"loaded";
+        } else {
+            module_diagnostic.pdb_status = L"not-loaded";
+        }
+    } else {
+        module_diagnostic.pdb_status = L"unknown";
+    }
     const bool identity_mismatch =
         have_module_info &&
         (module_info.PdbUnmatched != FALSE || module_info.DbgUnmatched != FALSE ||
@@ -408,7 +503,11 @@ void Symbolizer::AddModule(const ImageRecord& image) {
           identity.pdb_age != module_info.PdbAge));
     if (identity_mismatch) {
         SymUnloadModule64(session_key_, loaded_base);
+        module_diagnostic.status = L"rejected";
+        module_diagnostic.reason = L"pdb-identity-mismatch";
+        module_diagnostic.pdb_status = L"mismatched";
         rejected_modules_.insert(key);
+        ++stats_.modules_rejected;
         return;
     }
 
@@ -418,6 +517,8 @@ void Symbolizer::AddModule(const ImageRecord& image) {
     wchar_t guid[64]{}; StringFromGUID2(pe.pdb_guid,guid,64);
     module.cache_identity=TextSha256(key+L"|"+guid+L"|"+std::to_wstring(pe.pdb_age)+L"|"+std::to_wstring(pe.machine));
     ReadCache(module);
+    module_diagnostic.status = L"loaded";
+    ++stats_.modules_loaded;
     loaded_modules_.emplace(key,std::move(module));
 }
 
@@ -469,6 +570,7 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
         result.symbol = result.module == L"[unknown]"
                             ? L"[unknown]"
                             : result.module + L"+0x" + ToHex(result.displacement);
+        RecordResolution(key, false);
         return result;
     }
 
@@ -476,6 +578,8 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
     const auto cached = symbol_cache_.find(symbol_address);
     if (cached != symbol_cache_.end()) {
         ++stats_.cache_hits;
+        ++stats_.memory_hits;
+        RecordResolution(key, cached->second.resolved);
         return cached->second;
     }
     const auto persisted=module->second.persistent_symbols.find(result.rva);
@@ -483,10 +587,13 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
         auto value=persisted->second;
         value.module=result.module; value.module_identity=result.module_identity; value.module_path=result.module_path;
         ++stats_.cache_hits;
+        ++stats_.persistent_hits;
+        RecordResolution(key, true);
         CacheSymbol(symbol_address,value);
         return value;
     }
     ++stats_.cache_misses;
+    ++stats_.dbghelp_resolves;
 
     BYTE buffer[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t)]{};
     auto* symbol = reinterpret_cast<SYMBOL_INFOW*>(buffer);
@@ -500,9 +607,11 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
         result.resolved = true;
         result.function_rva = result.rva - displacement;
         result.function_size = symbol->Size;
+        ++stats_.dbghelp_resolved;
     } else {
         result.symbol = result.module + L"+0x" + ToHex(result.displacement);
     }
+    RecordResolution(key, result.resolved);
 
     IMAGEHLP_LINEW64 line{};
     line.SizeOfStruct = sizeof(line);
@@ -542,9 +651,22 @@ ResolvedSymbol Symbolizer::Resolve(const TraceData& trace, uint32_t pid,
 void Symbolizer::CacheSymbol(uint64_t address,const ResolvedSymbol& value) {
     const auto symbol_bytes=SymbolBytes(value);
     if(symbol_cache_bytes_+symbol_bytes>kSymbolCacheBudget || symbol_cache_.size()>=200000) {
+        stats_.cache_evictions += symbol_cache_.size();
         symbol_cache_.clear(); symbol_cache_bytes_=0;
     }
     if(symbol_bytes<=kSymbolCacheBudget && symbol_cache_.emplace(address,value).second)symbol_cache_bytes_+=symbol_bytes;
+}
+
+void Symbolizer::RecordResolution(const std::wstring& module_key, bool resolved) {
+    if (module_key.empty()) return;
+    const auto found = module_diagnostics_.find(module_key);
+    if (found == module_diagnostics_.end()) return;
+    if (resolved) {
+        ++found->second.resolved;
+    } else {
+        ++found->second.unresolved;
+        ++stats_.unresolved;
+    }
 }
 
 void Symbolizer::ReadCache(ModuleLoad& module) {
@@ -620,6 +742,40 @@ SymbolizerStats Symbolizer::Stats() const {
     auto stats=stats_; stats.cache_bytes=symbol_cache_bytes_+persistent_cache_bytes_; return stats;
 }
 
+SymbolizerDiagnostics Symbolizer::Diagnostics() const {
+    std::scoped_lock lock(mutex_, g_dbghelp_mutex);
+    SymbolizerDiagnostics result;
+    result.symbol_path = symbol_path_;
+    result.explicit_symbol_path = explicit_symbol_path_;
+    result.environment_symbol_path = environment_symbol_path_;
+    result.symbol_path_source = symbol_path_source_;
+    result.symcache_path = cache_directory_.wstring();
+    result.dbghelp_path = dbghelp_path_;
+    result.dbghelp_version = dbghelp_version_;
+    result.stats = stats_;
+    result.stats.cache_bytes = symbol_cache_bytes_ + persistent_cache_bytes_;
+    result.modules.reserve(module_diagnostics_.size());
+    for (const auto& [key, module] : module_diagnostics_) {
+        (void)key;
+        if (module.status == L"loaded" && module.resolved == 0 &&
+            module.unresolved == 0) {
+            continue;
+        }
+        result.modules.push_back(module);
+    }
+    std::sort(result.modules.begin(), result.modules.end(),
+              [](const SymbolModuleDiagnostic& left,
+                 const SymbolModuleDiagnostic& right) {
+                  const bool left_rejected = left.status == L"rejected";
+                  const bool right_rejected = right.status == L"rejected";
+                  if (left_rejected != right_rejected) return left_rejected;
+                  if (left.unresolved != right.unresolved)
+                      return left.unresolved > right.unresolved;
+                  return _wcsicmp(left.module.c_str(), right.module.c_str()) < 0;
+              });
+    return result;
+}
+
 void Symbolizer::Close() {
     std::scoped_lock lock(mutex_, g_dbghelp_mutex);
     if (initialized_) {
@@ -634,6 +790,7 @@ void Symbolizer::Close() {
     for(const auto& [key,module]:loaded_modules_) { (void)key; WriteCache(module); }
     loaded_modules_.clear();
     rejected_modules_.clear();
+    module_diagnostics_.clear();
     symbol_cache_.clear();
     symbol_cache_bytes_=persistent_cache_bytes_=0;
     stats_ = {};

@@ -23,6 +23,7 @@ std::wstring CommandName(const wperf::CommandRequest& request) {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, wperf::RecordRequest>) return L"record";
         else if constexpr (std::is_same_v<T, wperf::ReportRequest>) return L"report";
+        else if constexpr (std::is_same_v<T, wperf::FlameGraphRequest>) return L"flamegraph";
         else if constexpr (std::is_same_v<T, wperf::ScriptRequest>) return L"script";
         else if constexpr (std::is_same_v<T, wperf::TraceRequest>) return L"trace";
         else if constexpr (std::is_same_v<T, wperf::SchedRequest>) return L"sched";
@@ -137,6 +138,9 @@ void TestPublicOptions() {
         {{L"report", L"--scope", L"user"}, L"report"},
         {{L"report", L"--folded"}, L"report"},
         {{L"report", L"--collapsed"}, L"report"},
+        {{L"report", L"--flamegraph"}, L"report"},
+        {{L"report", L"--title", L"Profile"}, L"report"},
+        {{L"report", L"--countname", L"nanoseconds"}, L"report"},
         {{L"report", L"--off-cpu"}, L"report"},
         {{L"report", L"--off-cpu-include-inferred"}, L"report"},
         {{L"report", L"--stdio"}, L"report"},
@@ -145,6 +149,14 @@ void TestPublicOptions() {
         {{L"report", L"--csv"}, L"report"},
         {{L"report", L"--json"}, L"report"},
         {{L"report", L"--kind", L"cpu"}, L"report"},
+
+        {{L"flamegraph", L"-i", L"stacks.folded"}, L"flamegraph"},
+        {{L"flamegraph", L"--input", L"stacks.folded"}, L"flamegraph"},
+        {{L"flamegraph", L"-o", L"graph.html"}, L"flamegraph"},
+        {{L"flamegraph", L"--output", L"graph.html"}, L"flamegraph"},
+        {{L"flamegraph", L"--title", L"Profile"}, L"flamegraph"},
+        {{L"flamegraph", L"--countname", L"nanoseconds"}, L"flamegraph"},
+        {{L"flamegraph", L"--countname=events"}, L"flamegraph"},
 
         {{L"script", L"-i", L"trace.etl"}, L"script"},
         {{L"script", L"--input", L"trace.etl"}, L"script"},
@@ -245,7 +257,7 @@ void TestPublicOptions() {
 
 void TestCommandAliases() {
     const std::vector<std::pair<std::wstring, std::wstring>> aliases = {
-        {L"rec", L"record"}, {L"rep", L"report"}, {L"scr", L"script"},
+        {L"rec", L"record"}, {L"rep", L"report"}, {L"flame", L"flamegraph"}, {L"scr", L"script"},
         {L"ann", L"annotate"}, {L"dif", L"diff"},
     };
     for (const auto& [alias, canonical] : aliases) {
@@ -280,6 +292,10 @@ void TestNormalizedArguments() {
               std::get_if<wperf::ReportRequest>(&invocation.request) != nullptr &&
               std::get<wperf::ReportRequest>(invocation.request).percent_limit == 0.0,
           L"equals option value was not parsed");
+    Check(Run({L"report", L"--symbol-path", L"alpha", L"--symbol-path", L"beta"}, &invocation) == 0 &&
+              std::get_if<wperf::ReportRequest>(&invocation.request) != nullptr &&
+              std::get<wperf::ReportRequest>(invocation.request).symbol_path == L"alpha;beta",
+          L"repeated --symbol-path values were not joined");
     Check(Run({L"diff", L"-1", L"before.etl", L"-2", L"after.etl"}, &invocation) == 0 &&
               std::get_if<wperf::DiffRequest>(&invocation.request) != nullptr &&
               std::get<wperf::DiffRequest>(invocation.request).first == L"before.etl" &&
@@ -311,7 +327,7 @@ void TestErrorsAndSeparators() {
 
 void TestHelpSurfaces() {
     const auto general = wperf::cli::GeneralHelp();
-    for (const wchar_t* command : {L"record", L"report", L"script", L"stat", L"top",
+    for (const wchar_t* command : {L"record", L"report", L"flamegraph", L"script", L"stat", L"top",
                                    L"trace", L"annotate", L"diff", L"sched", L"archive",
                                    L"buildid-list", L"list", L"doctor", L"test", L"recover",
                                    L"capabilities", L"help", L"version"}) {
@@ -320,8 +336,9 @@ void TestHelpSurfaces() {
     }
     Check(general.find(L"Common perf-style options") != std::wstring::npos,
           L"general help is missing common option guidance");
-    Check(general.find(L"Flame graph") != std::wstring::npos,
-          L"general help is missing the flame graph workflow");
+    Check(general.find(L"Flame graph") != std::wstring::npos &&
+              general.find(L"flamegraph.pl") != std::wstring::npos,
+          L"general help is missing the flame graph workflows");
     const auto reference = wperf::cli::MarkdownReference();
     Check(reference.starts_with("# wperf Command Reference"),
           L"markdown reference heading is missing");
@@ -330,8 +347,11 @@ void TestHelpSurfaces() {
           L"markdown reference is missing generated navigation");
     Check(reference.find("-1, --first FILE") != std::string::npos,
           L"markdown reference does not render alias names consistently");
+    Check(reference.find("flamegraph.pl") != std::string::npos,
+          L"markdown reference is missing the external SVG workflow");
     for (const wchar_t* option : {L"--first", L"--second", L"--weighted", L"--json",
-                                  L"--csv", L"--off-cpu", L"--context-registers"}) {
+                                  L"--csv", L"--off-cpu", L"--flamegraph", L"--countname",
+                                  L"--context-registers"}) {
         Check(reference.find(wperf::ToUtf8(option)) != std::string::npos,
               std::wstring(L"markdown reference is missing option: ") + option);
     }

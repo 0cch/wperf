@@ -19,6 +19,14 @@ public:
     explicit CpuReportLimitError(const char* message) : std::runtime_error(message) {}
 };
 
+struct CpuReportWeightInfo {
+    bool use_period = false;
+    bool fallback = false;
+    std::wstring unit = L"samples";
+    uint64_t total_samples = 0;
+    uint64_t total_weight = 0;
+};
+
 struct CpuReportOptions {
     enum class WeightMode { Period, Samples } weight_mode = WeightMode::Period;
     bool quiet = false;
@@ -45,12 +53,14 @@ struct CpuReportOptions {
 
 void WriteCpuReport(const TraceData& trace, Symbolizer& symbolizer,
                     const CpuReportOptions& options, std::wostream& output,
-                    JsonStreamWriter* json_writer = nullptr);
+                    JsonStreamWriter* json_writer = nullptr,
+                    CpuReportWeightInfo* weight_info = nullptr);
 bool MatchesSampleSelection(const TraceData& trace, const SampleRecord& sample,
                              const CpuReportOptions& options);
 void WriteCpuReportFeed(const TraceData& metadata, Symbolizer& symbolizer,
                         const CpuReportOptions& options, std::wostream& output,
                         const std::function<void(const std::function<void(const SampleRecord&)>&)>& feed,
-                        JsonStreamWriter* json_writer = nullptr);
+                        JsonStreamWriter* json_writer = nullptr,
+                        CpuReportWeightInfo* weight_info = nullptr);
 
 }  // namespace wperf

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 set(WPERF_VERSION_MAJOR 0 CACHE STRING "wperf major version")
-set(WPERF_VERSION_MINOR 11 CACHE STRING "wperf minor version")
+set(WPERF_VERSION_MINOR 12 CACHE STRING "wperf minor version")
 set(WPERF_VERSION_PATCH 0 CACHE STRING "wperf patch version")
 set(WPERF_BUILD_NUMBER 0 CACHE STRING "wperf build number")
 foreach(part WPERF_VERSION_MAJOR WPERF_VERSION_MINOR WPERF_VERSION_PATCH WPERF_BUILD_NUMBER)
@@ -72,6 +72,8 @@ add_library(wperf_core STATIC
     src/symbolizer.cpp
     src/cpu_report.cpp
     src/off_cpu_report.cpp
+    src/flamegraph.cpp
+    src/flamegraph_html.cpp
 )
 target_include_directories(wperf_core PUBLIC src)
 target_compile_definitions(wperf_core PUBLIC
@@ -83,7 +85,7 @@ target_compile_definitions(wperf_core PUBLIC
     WPERF_VERSION_STRING="${WPERF_VERSION_STRING}"
 )
 target_compile_options(wperf_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
-target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi tdh ole32 nlohmann_json::nlohmann_json)
+target_link_libraries(wperf_core PUBLIC advapi32 bcrypt dbghelp shell32 psapi tdh ole32 version nlohmann_json::nlohmann_json)
 if(WPERF_ENABLE_DISASM)
     target_compile_definitions(wperf_core PUBLIC WPERF_HAVE_ZYDIS=1)
     target_link_libraries(wperf_core PUBLIC Zydis::Zydis)
@@ -206,6 +208,7 @@ add_test(NAME cli_doctor COMMAND wperf doctor)
 add_test(NAME cli_doctor_help COMMAND wperf doctor --help)
 add_test(NAME cli_help_report COMMAND wperf help report)
 add_test(NAME cli_report_help COMMAND wperf report --help)
+add_test(NAME cli_flamegraph_help COMMAND wperf flamegraph --help)
 add_test(NAME cli_buildid_help COMMAND wperf buildid-list --help)
 add_test(NAME cli_trace_help COMMAND wperf trace --help)
 add_test(NAME cli_sched_help COMMAND wperf sched --help)
@@ -229,6 +232,17 @@ add_test(NAME cli_folded_fixture
                  -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl
                  -Command report -ApplyPid --folded --percent-limit 5)
 add_test(NAME cli_folded_output COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/folded_output_test.ps1 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR})
+add_test(NAME cli_flamegraph_output
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/flamegraph_output_test.ps1
+                 -Wperf $<TARGET_FILE:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR}/flamegraph-output)
+add_test(NAME cli_report_flamegraph_cpu
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/report_flamegraph_test.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/cpu-stack.etl
+                 -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR}/report-flamegraph)
+add_test(NAME cli_report_flamegraph_offcpu
+         COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/report_flamegraph_test.ps1
+                 -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl
+                 -SymbolPath $<TARGET_FILE_DIR:wperf> -OutputDirectory ${CMAKE_CURRENT_BINARY_DIR}/report-flamegraph -OffCpu)
 add_test(NAME cli_off_cpu_fixture
          COMMAND pwsh -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fixture_case.ps1
                  -Wperf $<TARGET_FILE:wperf> -Fixture ${WPERF_GENERATED_ETW_DIR}/sched.etl
@@ -329,12 +343,17 @@ set_tests_properties(cli_provider_bad_guid cli_report_conflicting_formats
 
 
 
+set_tests_properties(cli_flamegraph_output PROPERTIES TIMEOUT 30)
+set_tests_properties(cli_report_flamegraph_cpu cli_report_flamegraph_offcpu PROPERTIES TIMEOUT 30)
+
 set(WPERF_RUNTIME_ETW_ONLY_TESTS
     diagnostic_contract_test
     cli_report_io
     cli_report_io_json
     cli_folded_fixture
     cli_folded_output
+    cli_report_flamegraph_cpu
+    cli_report_flamegraph_offcpu
     cli_off_cpu_fixture
     cli_off_cpu_json
     cli_off_cpu_folded_output

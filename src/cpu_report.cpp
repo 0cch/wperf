@@ -143,7 +143,7 @@ bool MatchesSampleSelection(const TraceData& trace,const SampleRecord& sample,co
 void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
                     const CpuReportOptions& options, std::wostream& output,
                     const std::function<void(const std::function<void(const SampleRecord&)>&)>& feed,
-                    JsonStreamWriter* json_writer) {
+                    JsonStreamWriter* json_writer, CpuReportWeightInfo* weight_info) {
     uint64_t total_samples = 0;
     uint64_t total_weight = 0, unknown_periods = 0;
     std::optional<std::pair<SampleKind, uint32_t>> domain;
@@ -231,6 +231,15 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
     const bool use_period = options.weight_mode == CpuReportOptions::WeightMode::Period && !fallback;
     const uint64_t denominator = use_period ? total_weight : total_samples;
     const wchar_t* unit = domain && domain->first == SampleKind::Pmc ? L"events" : L"ns";
+    if (weight_info != nullptr) {
+        weight_info->use_period = use_period;
+        weight_info->fallback = fallback;
+        weight_info->unit = use_period
+            ? (domain && domain->first == SampleKind::Pmc ? L"events" : L"nanoseconds")
+            : L"samples";
+        weight_info->total_samples = total_samples;
+        weight_info->total_weight = total_weight;
+    }
     if (fallback && !options.quiet)
         std::wcerr << L"wperf: unknown sample periods; overhead and folded weights fall back to samples\n";
     if (options.folded) {
@@ -349,8 +358,8 @@ void WriteCpuReportFeed(const TraceData& trace, Symbolizer& symbolizer,
 }
 
 void WriteCpuReport(const TraceData& trace,Symbolizer& symbols,const CpuReportOptions& options,std::wostream& output,
-                    JsonStreamWriter* json_writer) {
-    WriteCpuReportFeed(trace,symbols,options,output,[&](const auto& observe) { for(const auto& sample:trace.samples)observe(sample); }, json_writer);
+                    JsonStreamWriter* json_writer, CpuReportWeightInfo* weight_info) {
+    WriteCpuReportFeed(trace,symbols,options,output,[&](const auto& observe) { for(const auto& sample:trace.samples)observe(sample); }, json_writer, weight_info);
 }
 
 }  // namespace wperf

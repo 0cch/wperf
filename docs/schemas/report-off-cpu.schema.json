@@ -8,6 +8,77 @@
     "rows"
   ],
   "properties": {
+    "symbols": {
+      "type": "object",
+      "required": [
+        "symbol_path",
+        "explicit_symbol_path",
+        "environment_symbol_path",
+        "symbol_path_source",
+        "symcache_path",
+        "dbghelp_path",
+        "dbghelp_version",
+        "cache_hits",
+        "memory_hits",
+        "persistent_hits",
+        "cache_misses",
+        "dbghelp_resolves",
+        "dbghelp_resolved",
+        "unresolved",
+        "cache_bytes",
+        "cache_evictions",
+        "modules_total",
+        "modules_loaded",
+        "modules_rejected",
+        "module_details"
+      ],
+      "properties": {
+        "symbol_path": { "type": "string" },
+        "explicit_symbol_path": { "type": "string" },
+        "environment_symbol_path": { "type": "string" },
+        "symbol_path_source": {
+          "enum": ["option", "environment", "option+environment", "empty"]
+        },
+        "symcache_path": { "type": "string" },
+        "dbghelp_path": { "type": "string" },
+        "dbghelp_version": { "type": "string" },
+        "cache_hits": { "type": "integer", "minimum": 0 },
+        "memory_hits": { "type": "integer", "minimum": 0 },
+        "persistent_hits": { "type": "integer", "minimum": 0 },
+        "cache_misses": { "type": "integer", "minimum": 0 },
+        "dbghelp_resolves": { "type": "integer", "minimum": 0 },
+        "dbghelp_resolved": { "type": "integer", "minimum": 0 },
+        "unresolved": { "type": "integer", "minimum": 0 },
+        "cache_bytes": { "type": "integer", "minimum": 0 },
+        "cache_evictions": { "type": "integer", "minimum": 0 },
+        "modules_total": { "type": "integer", "minimum": 0 },
+        "modules_loaded": { "type": "integer", "minimum": 0 },
+        "modules_rejected": { "type": "integer", "minimum": 0 },
+        "module_details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "module", "path", "recorded_path", "pdb_path", "pdb_status",
+              "status", "reason", "resolved", "unresolved"
+            ],
+            "properties": {
+              "module": { "type": "string" },
+              "path": { "type": "string" },
+              "recorded_path": { "type": "string" },
+              "pdb_path": { "type": "string" },
+              "pdb_status": { "type": "string" },
+              "status": { "type": "string" },
+              "reason": { "type": "string" },
+              "resolved": { "type": "integer", "minimum": 0 },
+              "unresolved": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
     "quality": {
       "type": "object",
       "required": [

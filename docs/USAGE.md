@@ -198,6 +198,7 @@ wperf report -i FILE [options]
 | Human table | default |
 | Call tree | `--call-graph callee` or `caller` |
 | FlameGraph input | `--folded` / `--collapsed` |
+| Interactive FlameGraph | `--flamegraph` |
 | Scripts | `--json` or `--csv` |
 | Quality object | `--json --metadata` |
 | Blocked/ready wait time | `--off-cpu` |
@@ -211,6 +212,9 @@ These diagnostic kinds support text/JSON/CSV and file output. See
 [DIAGNOSTICS.md](DIAGNOSTICS.md) for capture examples, supported selectors,
 quality fields, and the distinction between inclusive time, observed live
 allocations, and measurable driver call spans.
+
+`wperf flamegraph -i FILE.folded -o FILE.html` converts an existing folded
+file without replaying an ETL.
 
 ### Flat CPU profile
 
@@ -253,6 +257,10 @@ wperf report -i cpu.etl --symbol-path .\build\Release --call-graph callee
 wperf report -i cpu.etl --symbol-path .\build\Release --call-graph caller
 wperf report -i cpu.etl --symbol-path .\build\Release `
   --weight samples --folded --quiet -o stacks.folded
+wperf report -i cpu.etl --symbol-path .\build\Release `
+  --flamegraph --quiet -o cpu.html
+wperf report -i sched.etl --off-cpu --symbol-path .\build\Release `
+  --flamegraph --quiet -o offcpu.html
 ```
 
 Folded output is the standard collapsed-stack format, rooted at the process
@@ -260,14 +268,46 @@ name. Weights are CPU nanosecond periods (PMC event counts for PMC samples), or
 sample counts with `--weight samples` or unknown-period fallback. Off-CPU weights
 remain nanoseconds. `-o` writes UTF-8 without BOM and LF line endings.
 
-Render with an external FlameGraph implementation:
-The example above explicitly selects sample counts for the renderer's default
-sample labels. For confirmed period weights, use `--countname nanoseconds` for
-CPU or `--countname events` for PMC, and check for unknown-period fallback.
+`--flamegraph` converts the same selected and weighted stacks into one
+self-contained interactive HTML document. It uses inline SVG rendering, CSS, and
+JavaScript; no Perl, external JavaScript, or network access is required. The
+HTML reports the weight unit and includes trace-quality counters. Use `--title`
+and `--countname` to override the document title and weight label.
+
+Interactive analysis supports:
+
+- click a frame to inspect inclusive/self weight, percentage, and call stack;
+- `Copy stack` copies one frame per line; `Copy folded` copies a
+  semicolon-separated stack with the current weight;
+- long stack frames remain on one line and use the stack panel's horizontal
+  scrollbar instead of wrapping;
+- double-click a frame to zoom, `Backspace` or `Up` to navigate outward, and
+  `Escape` to reset;
+- drag horizontally to select a weighted range and zoom into the selected
+  portion of the current flame graph;
+- search with match counts and `Enter` / `Shift+Enter` navigation;
+- a minimum-percentage slider to collapse small frames while making the hidden
+  count explicit;
+- `Download SVG` and `Download PNG` export the current zoomed/selected view as a
+  standalone image.
+
+An existing folded file can be converted independently:
 
 ```powershell
-perl flamegraph.pl stacks.folded > flamegraph.svg
+wperf flamegraph -i stacks.folded --countname nanoseconds -o stacks.html
 ```
+
+The external folded-stack and `flamegraph.pl` SVG workflow remains supported:
+
+```powershell
+wperf report -i cpu.etl --symbol-path .\build\Release `
+  --weight samples --folded --quiet -o stacks.folded
+perl flamegraph.pl stacks.folded > stacks.svg
+```
+
+For confirmed period weights, pass `--countname nanoseconds` for CPU or
+`--countname events` for PMC to `flamegraph.pl`; otherwise its default `samples`
+label would not describe the folded weights.
 
 ### JSON, CSV, and quality gates
 
@@ -393,7 +433,8 @@ wperf script -i cpu.etl `
 ```
 
 The text format is wperf-specific and is not intended as input to
-`stackcollapse-perf.pl`. Use `report --folded` for FlameGraph input.
+`stackcollapse-perf.pl`. Use `report --folded` for external FlameGraph input or
+`report --flamegraph` for native self-contained HTML output.
 
 `script -o FILE` writes the selected text/CSV to UTF-8 without BOM and LF line
 endings, with no duplicate stdout output. Parent directories are created and
@@ -455,6 +496,22 @@ describes the local file (`module_sha256_source=local-file`). Without `--hash`,
 Symbol resolution uses DbgHelp, local PDBs, optional symbol-server settings,
 and the project's identity-aware `.symcache`. Module timestamp/checksum/PDB
 identity mismatches are rejected rather than merged.
+
+`report --verbose` prints a `symbols:` diagnostic block to stderr. It includes
+the loaded DbgHelp path/version, effective symbol path and source, `.symcache`
+path, module load/rejection counts, memory/persistent/DbgHelp resolution counts,
+unresolved addresses, cache bytes/evictions, and detailed module failures. Full
+local paths are shown intentionally because the diagnostic is local and is not
+uploaded. `report --json --metadata` exposes the same data under `symbols` and
+includes all interesting module rows.
+
+`--symbol-path` augments `_NT_SYMBOL_PATH`; it does not replace it. Repeat the
+option or pass a semicolon-separated value to add multiple local PDB directories.
+Local explicit paths are searched before the environment-configured symbol
+server. A slow or unreachable symbol server can delay first-time resolution while
+DbgHelp waits for missing PDBs; populate `.symcache`/local symbol directories or
+temporarily use a local-only `_NT_SYMBOL_PATH` when offline responsiveness
+matters.
 
 For public Microsoft symbols, configure a local cache and server in
 `_NT_SYMBOL_PATH`:
@@ -533,8 +590,9 @@ wperf recover --all-stale
 
 - `doctor` reports elevation, profile sources, PMC capabilities, state, and
   recent runs.
-- `doctor --bundle` writes a redacted diagnostic bundle; crash dumps require
-  `--include-dumps`.
+- `doctor --bundle` writes a diagnostic bundle; crash dumps require
+  `--include-dumps`. Review paths, PIDs, session names, logs, and optional dumps
+  before sharing it.
 - `recover` stops stale wperf-owned ETW sessions and requires elevation.
 - `test` runs a lightweight non-invasive self-test.
 

@@ -17,6 +17,7 @@ Generated from the same command catalog used by wperf runtime validation. Do not
 |---|---|---|
 | `record` | `rec` | Capture ETW profile samples or trace events. |
 | `report` | `rep` | Produce CPU, I/O, PMC, off-CPU, interrupt, memory, or driver reports from an ETL trace. |
+| `flamegraph` | `flame` | Convert folded stacks to a self-contained interactive HTML flame graph. |
 | `script` | `scr` | Export one line per sample. |
 | `trace` | - | Print scheduler, syscall, page-fault, I/O, LBR, or context-register events. |
 | `sched` | - | Summarize scheduler activity and wakeup latency. |
@@ -109,7 +110,7 @@ Aliases: `rep`
 | `--comm TEXT` | Filter by process name substring. |
 | `--dso TEXT` | Filter by module/shared-object substring. |
 | `--symbol TEXT` | Filter by symbol substring. |
-| `--symbol-path DIR` | Add a local PDB search directory. |
+| `--symbol-path DIR` | Add a local PDB search directory; repeatable or semicolon-separated. |
 | `--archive DIR` | Resolve unavailable paths through verified modules.tsv. |
 | `--percent-limit N` | Hide rows below N percent. |
 | `-s, --sort FIELD` | Sort by weight, samples, comm, dso, or symbol. |
@@ -128,6 +129,9 @@ Aliases: `rep`
 | `--time-end MS` | Select data before capture-relative time. |
 | `--scope SCOPE` | Select all, user, or kernel address space. |
 | `--folded, --collapsed` | Print collapsed stacks with counts. |
+| `--flamegraph` | Write a self-contained interactive HTML flame graph. |
+| `--title TEXT` | FlameGraph HTML title. |
+| `--countname NAME` | FlameGraph weight label; defaults to the report unit. |
 | `--off-cpu` | Report blocked/ready intervals weighted by wait time. |
 | `--off-cpu-include-inferred` | Include end-of-capture truncated intervals. |
 | `--stdio` | Text output (default). |
@@ -144,12 +148,15 @@ Examples:
 wperf report -i cpu.etl --symbol-path .\build\Release --call-graph
 wperf report -i cpu.etl --json --metadata
 wperf report -i sched.etl --off-cpu --folded --quiet -o offcpu.folded
+wperf report -i cpu.etl --symbol-path .\symbols --flamegraph -o cpu.html
 ```
 
 Notes:
 
 - Quality diagnostics go to stderr; --quiet suppresses them and --verbose prints every counter.
-- --folded/--collapsed and --call-graph cannot be combined with --json or --csv.
+- --folded/--collapsed, --flamegraph and --call-graph are mutually exclusive with each other and with --json/--csv.
+- --flamegraph emits one self-contained HTML file with inline CSS/JavaScript and no network dependencies.
+- --folded remains the standard collapsed-stack input for flamegraph.pl or other external SVG/HTML renderers.
 - CPU overhead and folded output use periods (CPU ns or PMC events); --weight samples uses counts. Unknown periods fall back to counts with a warning.
 - Mixed sample sources require --source ID. Off-CPU weights remain nanoseconds.
 - I/O and PMC snapshots support PID/TID/comm/children/CPU/time selection and loss/strict gates; symbol, stack, scope, weight, sort and percent options are rejected.
@@ -158,6 +165,40 @@ Notes:
 - DPC/ISR/interrupt/pool are system-owned and reject PID/TID/comm/children filters. Heap/driver support these selectors.
 - Heap/pool time and thread/CPU filters select allocation cohorts; releases through the selected end are always consumed. Observed live bytes do not prove a leak.
 - -o writes UTF-8 without BOM and LF line endings.
+
+## `flamegraph`
+
+Convert folded stacks to a self-contained interactive HTML flame graph.
+
+```text
+wperf flamegraph -i FILE [options]
+```
+
+Elevation: not required
+
+Aliases: `flame`
+
+| Option | Description |
+|---|---|
+| `-i, --input FILE` | Read folded stacks from FILE. |
+| `-o, --output FILE` | Write HTML to FILE; otherwise print HTML to stdout. |
+| `--title TEXT` | HTML document title. |
+| `--countname NAME` | Weight label (default: samples). |
+| `-h, --help` | Show this help. |
+
+Examples:
+
+```powershell
+wperf report -i cpu.etl --folded --quiet -o cpu.folded
+wperf flamegraph -i cpu.folded --countname nanoseconds -o cpu.html
+```
+
+Notes:
+
+- Input is the standard semicolon-separated folded-stack format.
+- The output is one self-contained HTML document with inline CSS and JavaScript.
+- Use --countname nanoseconds, events, or samples to label the weights accurately.
+- Use report --folded when an external flamegraph.pl SVG workflow is preferred.
 
 ## `script`
 
@@ -177,7 +218,7 @@ Aliases: `scr`
 | `-o, --output FILE` | Write output to FILE. |
 | `-p, --pid PID` | Include only PID. |
 | `-F, --fields LIST` | Comma-separated fields (default: timestamp,cpu,pid,tid,ip,comm,dso,symbol). |
-| `--symbol-path DIR` | Add a local PDB search directory. |
+| `--symbol-path DIR` | Add a local PDB search directory; repeatable or semicolon-separated. |
 | `--archive DIR` | Resolve unavailable paths through verified modules.tsv. |
 | `--limit N` | Emit at most N samples; 0 means unlimited. |
 | `--csv` | Use comma-separated output and CSV quoting. |
@@ -308,7 +349,7 @@ Elevation: required
 | `--interval MS` | Refresh interval (default: 1000). |
 | `--iterations N` | Number of snapshots; 0 means until Ctrl-C. |
 | `--sort FIELD` | Sort by samples, comm, dso, or symbol. |
-| `--symbol-path DIR` | Add a local PDB search directory. |
+| `--symbol-path DIR` | Add a local PDB search directory; repeatable or semicolon-separated. |
 | `--archive DIR` | Resolve unavailable paths through verified modules.tsv. |
 | `--percent-limit N` | Hide rows below N percent (default: 1). |
 | `--elevate` | Start the hidden elevated worker. |
@@ -339,7 +380,7 @@ Aliases: `ann`
 | Option | Description |
 |---|---|
 | `-i, --input FILE` | Read FILE. |
-| `--symbol-path DIR` | Add a local PDB search directory. |
+| `--symbol-path DIR` | Add a local PDB search directory; repeatable or semicolon-separated. |
 | `--archive DIR` | Resolve unavailable paths through verified modules.tsv. |
 | `-p, --pid PID` | Include only PID. |
 | `--limit N` | Limit rows (default: 50). |
@@ -377,7 +418,7 @@ Aliases: `dif`
 |---|---|
 | `-1, --first FILE` | Read the baseline profile from FILE. |
 | `-2, --second FILE` | Read the comparison profile from FILE. |
-| `--symbol-path DIR` | Add a local PDB search directory. |
+| `--symbol-path DIR` | Add a local PDB search directory; repeatable or semicolon-separated. |
 | `--archive DIR` | Resolve unavailable paths through verified modules.tsv. |
 | `--pid PID` | Include only PID. |
 | `--dso TEXT` | Filter by module/shared-object substring. |
@@ -417,7 +458,7 @@ Elevation: not required
 | `-i, --input FILE` | Read FILE. |
 | `-o, --output DIRECTORY` | Write the archive to DIRECTORY. |
 | `-p, --pid PID` | Include only modules referenced by PID. |
-| `--symbol-path DIR` | Add a local PDB search directory. |
+| `--symbol-path DIR` | Add a local PDB search directory; repeatable or semicolon-separated. |
 | `--max-size-mb N` | Skip copied files larger than N MiB. |
 | `--include-trace` | Copy the input ETL as trace.etl. |
 | `-h, --help` | Show this help. |
@@ -500,11 +541,9 @@ Elevation: not required
 | `--json` | Print JSON diagnostics. |
 | `-h, --help` | Show this help. |
 
-Examples:
+Notes:
 
-```powershell
---bundle writes a redacted diagnostic bundle. Crash dumps are included only with --include-dumps.
-```
+- --bundle writes a diagnostic bundle. Crash dumps are included only with --include-dumps; review contents before sharing.
 
 ## `test`
 

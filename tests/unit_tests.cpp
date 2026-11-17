@@ -6,6 +6,7 @@
 #include "elevation.h"
 #include "etl_reader.h"
 #include "etw.h"
+#include "flamegraph.h"
 #include "ipc.h"
 #include "lbr.h"
 #include "state.h"
@@ -110,12 +111,33 @@ void TestCpuReportSynthetic() {
     wperf::CpuReportOptions folded_options;
     folded_options.folded = true;
     std::wostringstream folded_output;
-    wperf::WriteCpuReport(trace, symbolizer, folded_options, folded_output);
+    wperf::CpuReportWeightInfo weight_info;
+    wperf::WriteCpuReport(trace, symbolizer, folded_options, folded_output,
+                          nullptr, &weight_info);
+    Check(weight_info.fallback && weight_info.unit == L"samples",
+          L"unknown-period folded weight reports sample fallback");
     Check(folded_output.str().rfind(L"app.exe[42@0];", 0) == 0,
           L"folded report starts with process name");
     Check(!folded_output.str().empty() &&
               folded_output.str().back() == L'\n',
           L"folded report uses one line per stack");
+
+    trace.samples.front().period = 1000000;
+    std::wostringstream period_output;
+    wperf::CpuReportWeightInfo period_info;
+    wperf::WriteCpuReport(trace, symbolizer, folded_options, period_output,
+                          nullptr, &period_info);
+    Check(!period_info.fallback && period_info.use_period &&
+              period_info.unit == L"nanoseconds",
+          L"CPU period weight reports nanosecond units");
+    trace.samples.front().kind = wperf::SampleKind::Pmc;
+    trace.samples.front().profile_source = 19;
+    std::wostringstream pmc_output;
+    wperf::CpuReportWeightInfo pmc_info;
+    wperf::WriteCpuReport(trace, symbolizer, folded_options, pmc_output,
+                          nullptr, &pmc_info);
+    Check(!pmc_info.fallback && pmc_info.use_period && pmc_info.unit == L"events",
+          L"PMC period weight reports event units");
 }
 void TestInvalidEtwFile() {
     const std::filesystem::path path =
@@ -424,9 +446,11 @@ void TestSymbolizerPdbIdentity() {
 
     wperf::TraceData trace;
     trace.images.push_back(image);
+    const std::filesystem::path cache =
+        std::filesystem::temp_directory_path() / (L"wperf-symbolizer-test-" + wperf::NewId());
     wperf::Symbolizer symbolizer;
     std::wstring error;
-    Check(symbolizer.Initialize(L"", &error), L"initialize symbolizer");
+    Check(symbolizer.Initialize(L"", &error, cache), L"initialize symbolizer");
     symbolizer.AddModule(trace.images.front());
     const uint64_t address =
         reinterpret_cast<uint64_t>(&TestSymbolizerPdbIdentity);
@@ -437,14 +461,25 @@ void TestSymbolizerPdbIdentity() {
     const auto hits_before = symbolizer.Stats().cache_hits;
     const auto cached = symbolizer.Resolve(trace, image.pid, address, 1);
     Check(cached.symbol == resolved.symbol, L"symbol cache returns stable result");
-    Check(symbolizer.Stats().cache_hits == hits_before+1, L"symbol cache records a hit");
+    const auto stats = symbolizer.Stats();
+    Check(stats.cache_hits == hits_before+1, L"symbol cache records a hit");
+    Check(stats.memory_hits >= 1 && stats.dbghelp_resolves >= 1,
+          L"symbol cache separates memory and DbgHelp work");
+    const auto diagnostics = symbolizer.Diagnostics();
+    Check(diagnostics.stats.modules_total >= 1 && diagnostics.stats.modules_loaded >= 1,
+          L"symbol diagnostics counts loaded modules");
+    Check(!diagnostics.dbghelp_path.empty() &&
+              !diagnostics.symcache_path.empty(),
+          L"symbol diagnostics exposes DbgHelp and symcache paths");
+    Check(!diagnostics.modules.empty() && diagnostics.modules.front().status == L"loaded",
+          L"symbol diagnostics exposes per-module status");
 
     wperf::TraceData stale_trace;
     wperf::ImageRecord stale = image;
     stale.timestamp = 1;
     stale_trace.images.push_back(stale);
     wperf::Symbolizer stale_symbolizer;
-    Check(stale_symbolizer.Initialize(L"", &error),
+    Check(stale_symbolizer.Initialize(L"", &error, cache),
           L"initialize stale symbolizer");
     stale_symbolizer.AddModule(stale_trace.images.front());
     const auto stale_resolved =
@@ -452,6 +487,97 @@ void TestSymbolizerPdbIdentity() {
     Check(!stale_resolved.resolved, L"stale PE identity is rejected");
     Check(stale_resolved.symbol.find(L"+0x") != std::wstring::npos,
           L"stale PE identity returns module offset");
+    const auto stale_diagnostics = stale_symbolizer.Diagnostics();
+    Check(stale_diagnostics.stats.modules_rejected >= 1 &&
+              !stale_diagnostics.modules.empty() &&
+              stale_diagnostics.modules.front().reason == L"pe-identity-mismatch",
+          L"symbol diagnostics records module rejection reason");
+    std::error_code ignored;
+    std::filesystem::remove_all(cache, ignored);
+}
+
+void TestSymbolPathComposition() {
+    const wchar_t* name = L"_NT_SYMBOL_PATH";
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    std::wstring previous;
+    if (required != 0) {
+        previous.resize(required, L'\0');
+        const DWORD written = GetEnvironmentVariableW(name, previous.data(), required);
+        if (written == 0 || written >= required) previous.clear();
+        else previous.resize(written);
+    }
+    const std::wstring environment =
+        L"srv*C:\\test-symbol-cache*https://example.invalid/symbols";
+    Check(SetEnvironmentVariableW(name, environment.c_str()) != FALSE,
+          L"set test symbol environment");
+    wperf::Symbolizer symbolizer;
+    std::wstring error;
+    const std::filesystem::path cache =
+        std::filesystem::temp_directory_path() / (L"wperf-symbol-path-test-" + wperf::NewId());
+    Check(symbolizer.Initialize(L"local-symbols", &error, cache),
+          L"initialize symbolizer with combined symbol path");
+    const auto diagnostics = symbolizer.Diagnostics();
+    Check(diagnostics.explicit_symbol_path == L"local-symbols" &&
+              diagnostics.environment_symbol_path == environment,
+          L"symbol diagnostics preserve explicit and environment paths");
+    Check(diagnostics.symbol_path == L"local-symbols;" + environment &&
+              diagnostics.symbol_path_source == L"option+environment",
+          L"explicit symbol path augments rather than replaces _NT_SYMBOL_PATH");
+    symbolizer.Close();
+    if (previous.empty()) {
+        SetEnvironmentVariableW(name, nullptr);
+    } else {
+        SetEnvironmentVariableW(name, previous.c_str());
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(cache, ignored);
+}
+
+void TestSymbolPersistentCacheDiagnostics() {
+    HMODULE module = GetModuleHandleW(nullptr);
+    MODULEINFO module_info{};
+    if (module == nullptr || !GetModuleInformation(GetCurrentProcess(), module,
+                                                   &module_info,
+                                                   sizeof(module_info))) {
+        Check(false, L"query module for persistent cache diagnostics");
+        return;
+    }
+    wperf::ImageRecord image;
+    image.pid = GetCurrentProcessId();
+    image.base = reinterpret_cast<uint64_t>(module);
+    image.size = module_info.SizeOfImage;
+    image.path = wperf::GetExecutablePath();
+    wperf::TraceData trace;
+    trace.images.push_back(image);
+    const uint64_t address =
+        reinterpret_cast<uint64_t>(&TestSymbolPersistentCacheDiagnostics);
+    const std::filesystem::path cache =
+        std::filesystem::temp_directory_path() / (L"wperf-symcache-test-" + wperf::NewId());
+
+    {
+        wperf::Symbolizer first;
+        std::wstring error;
+        Check(first.Initialize(L"", &error, cache), L"initialize first cache symbolizer");
+        first.AddModule(image);
+        const auto resolved = first.Resolve(trace, image.pid, address, 1);
+        Check(resolved.resolved, L"resolve symbol before writing persistent cache");
+        first.Close();
+    }
+    {
+        wperf::Symbolizer second;
+        std::wstring error;
+        Check(second.Initialize(L"", &error, cache), L"initialize warm cache symbolizer");
+        second.AddModule(image);
+        const auto resolved = second.Resolve(trace, image.pid, address, 1);
+        Check(resolved.resolved, L"resolve symbol from persistent cache");
+        const auto diagnostics = second.Diagnostics();
+        Check(diagnostics.stats.persistent_hits >= 1,
+              L"persistent cache hit is exposed in diagnostics");
+        Check(diagnostics.stats.cache_hits >= diagnostics.stats.persistent_hits,
+              L"aggregate cache hits include persistent hits");
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(cache, ignored);
 }
 
 void TestGoldenCpuStackReplay() {
@@ -695,6 +821,44 @@ void TestWorkerIpcFailurePath() {
 }
 }  // namespace
 
+void TestFlameGraph() {
+    const std::wstring folded =
+        L"app.exe[1@1];main;alpha 60\n"
+        L"app.exe[1@1];main;beta 40\n"
+        L"app.exe[1@1];main;alpha;<script> 5\n";
+    wperf::FlameGraphOptions options;
+    options.title = L"Smoke <graph>";
+    options.weight_name = L"nanoseconds";
+    options.source = L"C:\\traces\\cpu.folded";
+    options.details.push_back({L"mode", L"cpu"});
+    wperf::FlameGraphResult result;
+    std::wstring error;
+    Check(wperf::RenderFoldedFlameGraph(folded, options, result, &error),
+          L"render folded flame graph");
+    Check(result.total_weight == 105 && result.stacks == 3 && result.nodes == 5,
+          L"flame graph totals are wrong");
+    Check(result.html.starts_with(L"<!doctype html>") &&
+              result.html.find(L"<title>Smoke &lt;graph&gt;</title>") != std::wstring::npos,
+          L"flame graph HTML escaping is wrong");
+    Check(result.html.find(L"\\u003cscript\\u003e") != std::wstring::npos &&
+              result.html.find(L"\"weight_name\":\"nanoseconds\"") != std::wstring::npos,
+          L"flame graph embedded data is wrong");
+    Check(result.html.find(L"https://") == std::wstring::npos,
+          L"flame graph should not reference external resources");
+
+    error.clear();
+    Check(!wperf::RenderFoldedFlameGraph(L"broken line\n", options, result, &error) &&
+              !error.empty(),
+          L"malformed folded input must be rejected");
+    error.clear();
+    Check(!wperf::RenderFoldedFlameGraph(L"app;main -1\n", options, result, &error),
+          L"negative folded weight must be rejected");
+    error.clear();
+    Check(wperf::RenderFoldedFlameGraph(L"\ufeffapp;main 3\n", options, result, &error) &&
+              result.total_weight == 3,
+          L"UTF-8 BOM before folded data must be accepted");
+}
+
 void RunTest(const wchar_t* name, void (*test)()) {
     std::wcout << L"[ RUN      ] " << name << std::endl;
     const int failures_before = g_failures;
@@ -721,10 +885,13 @@ int wmain() {
     RunTest(L"DbgHelpDiscovery", TestDbgHelpDiscovery);
     RunTest(L"ModulePathNormalization", TestModulePathNormalization);
     RunTest(L"SymbolizerPdbIdentity", TestSymbolizerPdbIdentity);
+    RunTest(L"SymbolPathComposition", TestSymbolPathComposition);
+    RunTest(L"SymbolPersistentCacheDiagnostics", TestSymbolPersistentCacheDiagnostics);
     RunTest(L"LiveTraceFlags", TestLiveTraceFlags);
     RunTest(L"LiveWorkerControlPlane", TestLiveWorkerControlPlane);
     RunTest(L"GoldenR3Replay", TestGoldenR3Replay);
     RunTest(L"GoldenCpuStackReplay", TestGoldenCpuStackReplay);
+    RunTest(L"FlameGraph", TestFlameGraph);
     RunTest(L"WorkerIpcFailurePath", TestWorkerIpcFailurePath);
     if (g_failures == 0) {
         std::wcout << L"wperf unit tests: PASS\n";
