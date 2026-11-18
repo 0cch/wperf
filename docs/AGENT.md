@@ -1,4 +1,7 @@
-# Agent Usage
+# Agent Usage for CLI Callers
+
+This guide is for agents that invoke wperf to analyze programs. It covers CLI
+usage, capability discovery, capture workflows, errors, and result interpretation.
 
 wperf exposes a small machine-friendly surface for AI agents and automation.
 This is intentionally an opt-in layer over the existing CLI; it does not change
