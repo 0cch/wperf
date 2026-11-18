@@ -224,12 +224,16 @@ for symbol loading/cache; cross-build diff matching uses a separate symbol key.
 Module-list file metadata and optional hashes are cached within each invocation.
 
 Flame graphs are generated from the same folded-stack representation used by
-CPU and off-CPU reports. `flamegraph.cpp` owns folded parsing and tree
-aggregation, `flamegraph_html.cpp` owns the self-contained HTML presentation,
-and `flamegraph_assets.h` contains the inline CSS/JavaScript assets. The writer
-embeds a compact tree, quality counters, filters, and the selected weight label;
-it does not call a symbolizer or download assets at render time. The standalone
-`flamegraph` command applies the same renderer to an existing folded file.
+CPU and off-CPU reports. `flamegraph.cpp` owns folded parsing and an indexed tree
+arena, then serializes the tree iteratively so accepted deep stacks do not consume
+the native call stack. `flamegraph_html.cpp` owns the self-contained HTML
+presentation, and `flamegraph_assets.h` contains the inline CSS/JavaScript
+assets. The writer embeds exact decimal weight strings for JavaScript display and
+copy operations while using numbers only for geometry; range-selection derived
+weights are explicitly marked approximate. The writer embeds quality counters,
+filters, and the selected weight label; it does not call a symbolizer or download
+assets at render time. The standalone `flamegraph` command applies the same
+renderer to an existing folded file.
 
 Symbol diagnostics are copied out of the controller-side `Symbolizer` after
 resolution. They separate in-memory cache hits, persistent `.symcache` hits, and

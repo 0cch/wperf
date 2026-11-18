@@ -1,0 +1,16 @@
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "ProgramDatabase")
+add_compile_options(/Zi)
+add_link_options(/DEBUG)
+
+option(WPERF_ENABLE_DISASM "Build optional Zydis-based disassembly support" ON)
+option(WPERF_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+set(WPERF_RUNTIME_ETW_DEFAULT OFF)
+if("$ENV{WPERF_REQUIRE_LIVE_TESTS}" STREQUAL "1")
+    set(WPERF_RUNTIME_ETW_DEFAULT ON)
+endif()
+option(WPERF_RUNTIME_ETW_TESTS "Generate controlled ETW traces and run replay integration tests" ${WPERF_RUNTIME_ETW_DEFAULT})
+
+set(WPERF_GENERATED_ETW_DIR "${WPERF_BINARY_DIR}/generated-etw")

@@ -1,5 +1,13 @@
 # wperf Changelog
 
+## 0.12.1 - 2026-11-18
+
+- Fixed deep folded-stack input crashing the CLI by replacing the recursive flamegraph node/JSON representation with an indexed tree and iterative serializer.
+- Preserved exact uint64 weights in generated HTML/copy output and marked pixel-range selections as approximate rather than silently rounding them into invalid folded input.
+- Preserved canonical stack ancestors through zoom and range-selection views and corrected unresolved diagnostics for unmapped addresses.
+- Added process-level deep-depth, uint64-weight, and embedded JavaScript interaction regression coverage.
+- Refactored build configuration into focused CMake modules for project options, targets, test helpers, core tests, CLI tests, and fixture/runtime tests without changing test names or behavior.
+
 ## 0.12.0 - 2026-11-17
 
 - Added `report --flamegraph` and standalone `wperf flamegraph` support for self-contained interactive HTML FlameGraphs from CPU, off-CPU, PMC, or existing folded-stack data.

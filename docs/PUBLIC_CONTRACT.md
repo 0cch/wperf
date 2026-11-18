@@ -80,7 +80,7 @@ on stderr when a command fails:
 {
   "ok": false,
   "schema_version": 1,
-  "tool_version": "0.12.0.42",
+  "tool_version": "0.12.1.42",
   "command": "report",
   "error": {
     "code": "invalid_arguments",

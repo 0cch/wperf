@@ -658,14 +658,13 @@ void Symbolizer::CacheSymbol(uint64_t address,const ResolvedSymbol& value) {
 }
 
 void Symbolizer::RecordResolution(const std::wstring& module_key, bool resolved) {
-    if (module_key.empty()) return;
-    const auto found = module_diagnostics_.find(module_key);
-    if (found == module_diagnostics_.end()) return;
+    const auto found = module_key.empty() ? module_diagnostics_.end()
+                                          : module_diagnostics_.find(module_key);
     if (resolved) {
-        ++found->second.resolved;
+        if (found != module_diagnostics_.end()) ++found->second.resolved;
     } else {
-        ++found->second.unresolved;
         ++stats_.unresolved;
+        if (found != module_diagnostics_.end()) ++found->second.unresolved;
     }
 }
 

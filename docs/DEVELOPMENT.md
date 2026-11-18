@@ -62,6 +62,14 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
+### CMake layout
+
+The root `CMakeLists.txt` owns the version contract and includes the build
+modules. `cmake/ProjectOptions.cmake` owns compiler/feature options,
+`cmake/WperfTargets.cmake` owns production targets, and `cmake/tests/` contains
+the core, CLI, and runtime-fixture test registration. Test names remain stable
+across this layout so existing CTest selectors continue to work.
+
 No-disassembly build:
 
 ```powershell
@@ -286,7 +294,7 @@ Versions are four-part numeric values: `MAJOR.MINOR.PATCH.BUILD`.
 - `SHA256SUMS.txt`
 - README, changelog, LICENSE, contributing/security guides, notices, and durable docs
 
-The GitHub workflow accepts only three-part release tags such as `v0.12.0`.
+The GitHub workflow accepts only three-part release tags such as `v0.12.1`.
 It derives the fourth build component from `GITHUB_RUN_NUMBER` and creates the
 final four-part release tag. Manually pushed four-part release tags are rejected.
 See [RELEASE.md](RELEASE.md).

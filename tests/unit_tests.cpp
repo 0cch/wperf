@@ -492,6 +492,15 @@ void TestSymbolizerPdbIdentity() {
               !stale_diagnostics.modules.empty() &&
               stale_diagnostics.modules.front().reason == L"pe-identity-mismatch",
           L"symbol diagnostics records module rejection reason");
+    const auto unresolved_before = stale_diagnostics.stats.unresolved;
+    wperf::TraceData unmapped_trace;
+    const auto unmapped =
+        stale_symbolizer.Resolve(unmapped_trace, 1, 0x1234, 1);
+    Check(!unmapped.resolved && unmapped.symbol == L"[unknown]",
+          L"unmapped address remains unresolved");
+    const auto unresolved_after = stale_symbolizer.Diagnostics().stats.unresolved;
+    Check(unresolved_after == unresolved_before + 1,
+          L"unmapped addresses contribute to the global unresolved count");
     std::error_code ignored;
     std::filesystem::remove_all(cache, ignored);
 }
@@ -857,6 +866,18 @@ void TestFlameGraph() {
     Check(wperf::RenderFoldedFlameGraph(L"\ufeffapp;main 3\n", options, result, &error) &&
               result.total_weight == 3,
           L"UTF-8 BOM before folded data must be accepted");
+    error.clear();
+    const std::wstring max_weight = L"18446744073709551615";
+    Check(wperf::RenderFoldedFlameGraph(L"app;main " + max_weight + L"\n", options,
+                                       result, &error) &&
+              result.total_weight == UINT64_MAX,
+          L"uint64 maximum folded weight must be accepted");
+    Check(result.html.find(L"\"value\":\"18446744073709551615\"") !=
+              std::wstring::npos,
+          L"flame graph weights must remain exact decimal strings in embedded JSON");
+    Check(result.html.find(L"\"value\":18446744073709551615") ==
+              std::wstring::npos,
+          L"flame graph weights must not be emitted as imprecise JSON numbers");
 }
 
 void RunTest(const wchar_t* name, void (*test)()) {

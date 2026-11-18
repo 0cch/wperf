@@ -9,16 +9,16 @@ MAJOR.MINOR.PATCH.BUILD
 ```
 
 The CMake defaults define the first three. Normal release tags must use exactly
-three components, for example `v0.12.0`. The GitHub release workflow always
+three components, for example `v0.12.1`. The GitHub release workflow always
 derives the fourth component from `GITHUB_RUN_NUMBER` and creates the final
 four-part release tag.
 
 Example:
 
-- tag `v0.12.0` on workflow run 42 produces release `0.12.0.42`.
+- tag `v0.12.1` on workflow run 42 produces release `0.12.1.42`.
 
 The workflow rejects manually pushed four-part release tags such as
-`v0.12.0.42`; the fourth component is generated output, not an input. Re-running
+`v0.12.1.42`; the fourth component is generated output, not an input. Re-running
 the same workflow keeps the same `GITHUB_RUN_NUMBER`. Run numbers are monotonic
 but not guaranteed to be contiguous.
 
@@ -38,7 +38,7 @@ Override the output or version when needed:
 ```powershell
 pwsh -NoProfile -File .\scripts\build_release.ps1 `
   -OutputDirectory artifacts\release `
-  -VersionMajor 0 -VersionMinor 12 -VersionPatch 0 -BuildNumber 0
+  -VersionMajor 0 -VersionMinor 12 -VersionPatch 1 -BuildNumber 0
 ```
 
 ## Release contents
@@ -64,8 +64,8 @@ The workflow is `.github/workflows/release.yml` and triggers on tags matching
 `v*`.
 
 ```powershell
-git tag -a v0.12.0 -m "wperf 0.12.0"
-git push origin v0.12.0
+git tag -a v0.12.1 -m "wperf 0.12.1"
+git push origin v0.12.1
 ```
 
 The workflow:

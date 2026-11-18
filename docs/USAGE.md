@@ -284,7 +284,8 @@ Interactive analysis supports:
 - double-click a frame to zoom, `Backspace` or `Up` to navigate outward, and
   `Escape` to reset;
 - drag horizontally to select a weighted range and zoom into the selected
-  portion of the current flame graph;
+  portion of the current flame graph; range-derived weights are approximate
+  because the range is bounded by rendered pixels;
 - search with match counts and `Enter` / `Shift+Enter` navigation;
 - a minimum-percentage slider to collapse small frames while making the hidden
   count explicit;

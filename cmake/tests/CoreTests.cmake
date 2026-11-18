@@ -1,0 +1,42 @@
+wperf_add_cpp_test(wperf_unit_tests tests/unit_tests.cpp src/dbghelp_loader.cpp)
+target_compile_definitions(wperf_unit_tests PRIVATE
+    WPERF_TEST_DATA_DIR="${WPERF_GENERATED_ETW_DIR}")
+add_test(NAME wperf_unit_tests COMMAND wperf_unit_tests)
+
+wperf_add_cpp_test(wperf_cli_tests tests/cli_unit_tests.cpp src/cli.cpp)
+target_link_libraries(wperf_cli_tests PRIVATE CLI11::CLI11)
+add_test(NAME cli_unit_tests COMMAND wperf_cli_tests)
+
+wperf_add_cpp_test(wperf_request_tests tests/request_tests.cpp)
+add_test(NAME request_tests COMMAND wperf_request_tests)
+wperf_add_cpp_test(wperf_priority_fixes_tests tests/priority_fixes_tests.cpp)
+add_test(NAME priority_fixes COMMAND wperf_priority_fixes_tests)
+wperf_add_cpp_test(wperf_kernel_image_identity_tests tests/kernel_image_identity_tests.cpp)
+add_test(NAME kernel_image_identity COMMAND wperf_kernel_image_identity_tests)
+wperf_add_cpp_test(wperf_diagnostic_tests tests/diagnostic_tests.cpp)
+add_test(NAME diagnostic_tests COMMAND wperf_diagnostic_tests)
+
+wperf_add_cpp_test(wperf_regression_tests tests/regression_tests.cpp)
+target_compile_definitions(wperf_regression_tests PRIVATE WPERF_TEST_DATA_DIR="${WPERF_GENERATED_ETW_DIR}")
+add_test(NAME wperf_regression_tests COMMAND wperf_regression_tests)
+wperf_set_test_timeout(20 wperf_regression_tests)
+
+wperf_add_cpp_test(wperf_json_writer_tests tests/json_writer_tests.cpp)
+add_test(NAME json_writer_tests COMMAND wperf_json_writer_tests)
+wperf_add_cpp_test(wperf_decoder_fuzz_smoke tests/decoder_fuzz_smoke.cpp)
+add_test(NAME decoder_fuzz_smoke COMMAND wperf_decoder_fuzz_smoke)
+
+wperf_add_cpp_test(wperf_live_integration_tests tests/live_integration_tests.cpp)
+add_test(NAME live_integration COMMAND wperf_live_integration_tests)
+set_tests_properties(live_integration PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS integration)
+
+wperf_add_pwsh_test(live_top_controller_smoke tests/live_top_smoke.ps1 -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_top_controller_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS integration)
+wperf_add_pwsh_test(live_trace_json_smoke tests/live_trace_json_smoke.ps1 -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_trace_json_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS integration)
+wperf_add_pwsh_test(live_pmc_json_smoke tests/live_pmc_json_smoke.ps1 -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_pmc_json_smoke PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS integration)
+wperf_add_pwsh_test(live_kernel_image_smoke tests/live_kernel_image_smoke.ps1 -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_kernel_image_smoke PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS integration)
+wperf_add_pwsh_test(live_diagnostics_smoke tests/live_diagnostics_smoke.ps1 -Wperf $<TARGET_FILE:wperf>)
+set_tests_properties(live_diagnostics_smoke PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE SKIP_RETURN_CODE 77 LABELS integration)

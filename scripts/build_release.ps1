@@ -4,7 +4,7 @@ param(
     [string]$OutputDirectory = "",
     [string]$VersionMajor = "0",
     [string]$VersionMinor = "12",
-    [string]$VersionPatch = "0",
+    [string]$VersionPatch = "1",
     [string]$BuildNumber = "0",
     [string]$VcpkgRoot = ""
 )

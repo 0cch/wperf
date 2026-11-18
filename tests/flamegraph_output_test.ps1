@@ -43,6 +43,47 @@ foreach ($required in @(
 }
 if ($text.Contains('https://')) { throw "flamegraph HTML contains an external URL" }
 if ($text.Contains('class="primary"')) { throw "download buttons must use a consistent style" }
+foreach ($scriptContract in @(
+    'state.navigation.slice(0,-1)',
+    'state.selectedNode.valueText',
+    'exactWeightText',
+    'approximateWeightText'
+)) {
+    if (-not $text.Contains($scriptContract)) {
+        throw "flamegraph JavaScript is missing contract: $scriptContract"
+    }
+}
+if ($text.Contains('Math.round(state.selectedNode.value)')) {
+    throw "copy folded must not round the JavaScript Number weight"
+}
+
+$maxWeight = '18446744073709551615'
+$maxFolded = Join-Path $OutputDirectory "flamegraph-uint64.folded"
+$maxHtml = Join-Path $OutputDirectory "flamegraph-uint64.html"
+"app;main $maxWeight" | Set-Content -LiteralPath $maxFolded -Encoding utf8NoBOM
+& $Wperf flamegraph -i $maxFolded -o $maxHtml
+if ($LASTEXITCODE -ne 0) { throw "uint64 flamegraph failed with exit $LASTEXITCODE" }
+$maxText = Get-Content -LiteralPath $maxHtml -Raw
+if (-not $maxText.Contains('"value":"18446744073709551615"') -or
+    $maxText.Contains('"value":18446744073709551615')) {
+    throw "flamegraph HTML did not preserve uint64 weights as decimal strings"
+}
+
+$depth4096 = (0..4095 | ForEach-Object { "frame$_" }) -join ';'
+$depth4097 = (0..4096 | ForEach-Object { "frame$_" }) -join ';'
+$depthMaxFolded = Join-Path $OutputDirectory "flamegraph-depth-4096.folded"
+$depthOverFolded = Join-Path $OutputDirectory "flamegraph-depth-4097.folded"
+$depthMaxHtml = Join-Path $OutputDirectory "flamegraph-depth-4096.html"
+"$depth4096 1" | Set-Content -LiteralPath $depthMaxFolded -Encoding utf8NoBOM
+"$depth4097 1" | Set-Content -LiteralPath $depthOverFolded -Encoding utf8NoBOM
+& $Wperf flamegraph -i $depthMaxFolded -o $depthMaxHtml
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $depthMaxHtml)) {
+    throw "4096-level flamegraph should succeed, got exit $LASTEXITCODE"
+}
+& $Wperf flamegraph -i $depthOverFolded -o (Join-Path $OutputDirectory "flamegraph-depth-4097.html") 2>$null
+if ($LASTEXITCODE -ne 6) {
+    throw "4097-level flamegraph should return depth error 6, got $LASTEXITCODE"
+}
 
 $badFolded = Join-Path $OutputDirectory "flamegraph-invalid.folded"
 "broken line`n" | Set-Content -LiteralPath $badFolded -Encoding utf8NoBOM

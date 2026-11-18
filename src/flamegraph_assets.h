@@ -22,6 +22,34 @@ LR"JS(
 (() => {
   "use strict";
   const data = JSON.parse(document.getElementById("flame-data").textContent);
+  const UINT64_MAX_TEXT = "18446744073709551615";
+  function approximateWeightText(value) {
+    if (!Number.isFinite(value) || value <= 0) return "0";
+    const rounded = Math.round(value);
+    if (rounded >= Number(UINT64_MAX_TEXT)) return UINT64_MAX_TEXT;
+    return BigInt(rounded).toString();
+  }
+  function exactWeightText(value) {
+    if (typeof value === "string" && /^\d+$/.test(value)) return value;
+    const numeric = Number(value);
+    return Number.isSafeInteger(numeric) ? String(numeric) : approximateWeightText(numeric);
+  }
+  function normalizeTree(root) {
+    const pending = [root];
+    while (pending.length) {
+      const node = pending.pop();
+      node.valueText = exactWeightText(node.value);
+      node.selfText = exactWeightText(node.self);
+      node.value = Number(node.valueText);
+      node.self = Number(node.selfText);
+      if (!Array.isArray(node.children)) node.children = [];
+      for (const child of node.children) pending.push(child);
+    }
+    return root;
+  }
+  normalizeTree(data);
+)JS"
+LR"JS(
   const svg = document.getElementById("chart");
   const tooltip = document.getElementById("tooltip");
   const search = document.getElementById("search");
@@ -62,7 +90,13 @@ LR"JS(
   };
 
   function clamp(value, low, high) { return Math.min(high, Math.max(low, value)); }
-  function weightText(value) { return number.format(value) + " " + data.weight_name; }
+  function weightText(valueText) {
+    const text = String(valueText);
+    let formatted;
+    try { formatted = number.format(BigInt(text)); }
+    catch { formatted = number.format(Number(text)); }
+    return formatted + " " + data.weight_name;
+  }
   function percentText(value, total) { return total > 0 ? (100 * value / total).toFixed(2) + "%" : "0.00%"; }
   function shortLabel(value, max=80) { return value.length > max ? value.slice(0, max-1) + "…" : value; }
   function parseFrameName(value) {
@@ -107,16 +141,18 @@ LR"JS(
     detailsModule.textContent = parsed.module ? "Module: " + parsed.module : "";
     detailsIdentity.textContent = parsed.identity;
     detailsMeta.hidden = !parsed.identity;
-    detailsInclusive.textContent = number.format(node.value);
-    detailsInclusiveUnit.textContent = data.weight_name;
-    detailsSelf.textContent = number.format(node.self);
-    detailsSelfUnit.textContent = data.weight_name;
+    detailsInclusive.textContent = weightText(node.valueText);
+    detailsInclusiveUnit.textContent = "";
+    detailsSelf.textContent = weightText(node.selfText);
+    detailsSelfUnit.textContent = "";
     detailsShare.textContent = percentText(node.value, total);
     detailsStack.textContent = path.map((item, index) => "  ".repeat(Math.min(index, 16)) + frameDisplayName(item.name)).join("\n");
     detailsEmpty.hidden = true;
     zoomSelected.disabled = !(node.children && node.children.length);
     copyStack.disabled = false; copyFolded.disabled = false;
   }
+)JS"
+LR"JS(
   function updateBreadcrumb() {
     breadcrumb.replaceChildren();
     state.navigation.forEach((item, index) => {
@@ -131,9 +167,12 @@ LR"JS(
     state.focus=data; state.navigation=[data]; state.query=""; state.matchIndex=0; search.value="";
     state.minPercent=0; minPercent.value="0"; minPercentValue.value="0%"; state.lastActivation=null; clearDetails(); render();
   }
-  function zoomTo(node) {
+  function zoomTo(node, path) {
     if (!(node.children && node.children.length)) return;
-    state.focus=node; state.navigation.push(node); state.matchIndex=0; state.lastActivation=null; clearDetails(); render();
+    state.focus=node;
+    if (Array.isArray(path) && path.length) state.navigation=path.slice();
+    else state.navigation.push(node);
+    state.matchIndex=0; state.lastActivation=null; clearDetails(); render();
   }
   function goUp() {
     if (state.navigation.length <= 1) return;
@@ -146,22 +185,35 @@ LR"JS(
   }
 )JS"
 LR"JS(
+  function approximateNode(name, value) {
+    const valueText = approximateWeightText(value);
+    return {name, value, valueText, self:0, selfText:"0", children:[], approximate:true};
+  }
   function selectionRoot(focus, startFraction, endFraction) {
     const selectionValue=focus.value*(endFraction-startFraction);
-    function clip(node,nodeStart,nodeEnd) {
-      const a=Math.max(startFraction,nodeStart), b=Math.min(endFraction,nodeEnd);
-      if (b<=a) return null;
-      const value=focus.value*(b-a); const result={name:node.name,value,self:0,children:[]};
-      let cursor=nodeStart, childValue=0;
-      for (const child of (node.children||[])) {
-        const span=focus.value>0?child.value/focus.value:0; const clipped=clip(child,cursor,cursor+span);
-        if(clipped){result.children.push(clipped); childValue+=clipped.value;} cursor+=span;
+    const clipped=approximateNode(focus.name,selectionValue);
+    const pending=[{source:focus,sourceStart:0,sourceEnd:1,target:clipped}];
+    while(pending.length){
+      const item=pending.pop();
+      let cursor=item.sourceStart, childValue=0;
+      for(const child of(item.source.children||[])){
+        const span=item.source.value>0?child.value/item.source.value:0;
+        const a=Math.max(startFraction,cursor), b=Math.min(endFraction,cursor+span);
+        if(b>a){
+          const value=focus.value*(b-a), result=approximateNode(child.name,value);
+          item.target.children.push(result); childValue+=value;
+          pending.push({source:child,sourceStart:cursor,sourceEnd:cursor+span,target:result});
+        }
+        cursor+=span;
       }
-      result.self=Math.max(0,value-childValue); return result;
+      item.target.self=Math.max(0,item.target.value-childValue);
+      item.target.selfText=approximateWeightText(item.target.self);
     }
-    const clipped=clip(focus,0,1);
-    const selected={name:"selection "+(100*startFraction).toFixed(1)+"%–"+(100*endFraction).toFixed(1)+"%",value:selectionValue,self:0,children:clipped&&clipped.children?clipped.children:[]};
-    selected.self=Math.max(0,selectionValue-selected.children.reduce((sum,child)=>sum+child.value,0)); return selected;
+    const selected=approximateNode("selection "+(100*startFraction).toFixed(1)+"%–"+(100*endFraction).toFixed(1)+"% (approx)",selectionValue);
+    selected.children=clipped.children;
+    selected.self=Math.max(0,selectionValue-selected.children.reduce((sum,child)=>sum+child.value,0));
+    selected.selfText=approximateWeightText(selected.self);
+    return selected;
   }
   function eventPoint(event) {
     const bounds=svg.getBoundingClientRect(); const view=svg.viewBox.baseVal;
@@ -182,7 +234,7 @@ LR"JS(
   }
   function exportSubtitle() {
     const focus=state.navigation.map(item=>item.name||"root").join(" > ");
-    const parts=[focus,weightText(state.focus.value||0),state.lastVisible+" visible frames"];
+    const parts=[focus,weightText(state.focus.valueText),state.lastVisible+" visible frames"];
     if(state.lastHidden)parts.push(state.lastHidden+" hidden frames");
     if(state.minPercent)parts.push("minimum "+state.minPercent.toFixed(2).replace(/0+$/,"").replace(/\.$/,"")+"%");
     if(state.query)parts.push('search "'+state.query+'"');
@@ -209,24 +261,33 @@ LR"JS(
 )JS"
 LR"JS(
   function render() {
-    const focus=state.focus, total=focus.value||0; totalValue.textContent=weightText(total); updateBreadcrumb();
+    const focus=state.focus, total=focus.value||0; totalValue.textContent=weightText(focus.valueText); updateBreadcrumb();
     const width=Math.max(320,svg.parentElement.clientWidth||0); let maxDepth=0,visible=0,hidden=0; const matches=[]; state.frameAreas=[];
     const fragment=document.createDocumentFragment();
-    function visit(node,x,depth,path) {
+    const initialPath=state.navigation.slice(0,-1).filter(item=>!item.approximate);
+    const pending=[{node:focus,x:0,depth:0,path:initialPath}];
+    while(pending.length){
+      const {node,x,depth,path}=pending.pop();
       const nodeWidth=total>0?width*node.value/total:0, nodePercent=total>0?100*node.value/total:0;
-      if(nodeWidth<0.7||nodePercent<state.minPercent){hidden+=1;return;}
+      if(nodeWidth<0.7||nodePercent<state.minPercent){hidden+=1;continue;}
       maxDepth=Math.max(maxDepth,depth); ++visible;
       const currentPath=path.concat(node), lower=(node.name||"").toLowerCase(), matched=state.query&&lower.includes(state.query); let currentMatched=false;
       if(matched){currentMatched=matches.length===state.matchIndex;matches.push({node,path:currentPath});}
       const selected=state.selectedNode===node; const className="frame"+(matched?" match":"")+(currentMatched?" current-match":"")+(selected?" selected":"");
       const y=depth*ROW, rect=document.createElementNS(ns,"rect"); rect.setAttribute("x",x.toFixed(2)); rect.setAttribute("y",String(y)); rect.setAttribute("width",Math.max(0.4,nodeWidth).toFixed(2)); rect.setAttribute("height",String(ROW-1)); rect.setAttribute("rx","2"); rect.setAttribute("fill",color(node.name||"")); rect.setAttribute("stroke","#fff"); rect.setAttribute("stroke-width","1"); rect.setAttribute("class",className); rect.setAttribute("data-name",node.name||"");
       state.frameAreas.push({node,path:currentPath,total,rect,x,y,width:Math.max(0.4,nodeWidth),height:ROW-1});
-      rect.addEventListener("mousemove",event=>{tooltip.textContent=(node.name||"")+"\n"+weightText(node.value)+"  ("+percentText(node.value,total)+")\nself: "+weightText(node.self);tooltip.style.display="block";tooltip.style.left=Math.max(8,Math.min(event.clientX+14,window.innerWidth-320))+"px";tooltip.style.top=Math.max(8,event.clientY+14)+"px";});
+      rect.addEventListener("mousemove",event=>{tooltip.textContent=(node.name||"")+"\n"+weightText(node.valueText)+"  ("+percentText(node.value,total)+")\nself: "+weightText(node.selfText);tooltip.style.display="block";tooltip.style.left=Math.max(8,Math.min(event.clientX+14,window.innerWidth-320))+"px";tooltip.style.top=Math.max(8,event.clientY+14)+"px";});
       rect.addEventListener("mouseleave",()=>{tooltip.style.display="none";}); fragment.appendChild(rect);
       if(nodeWidth>=36){const text=document.createElementNS(ns,"text");text.setAttribute("x",(x+4).toFixed(2));text.setAttribute("y",String(y+13));text.setAttribute("class","frame-label"+(matched?" match":"")+(currentMatched?" current-match":""));text.setAttribute("fill","#1f2937");text.setAttribute("font-size","12");text.setAttribute("font-family",'"Segoe UI",sans-serif');const maxChars=Math.max(2,Math.floor(nodeWidth/7)),label=node.name||"";text.textContent=label.length>maxChars?label.slice(0,maxChars-1)+"…":label;fragment.appendChild(text);}
-      let childX=x; for(const child of(node.children||[])){const childWidth=total>0?width*child.value/total:0;visit(child,childX,depth+1,currentPath);childX+=childWidth;}
+      const children=[]; let childX=x;
+      for(const child of(node.children||[])){
+        const childWidth=total>0?width*child.value/total:0;
+        children.push({node:child,x:childX,depth:depth+1,path:currentPath});
+        childX+=childWidth;
+      }
+      for(let index=children.length-1;index>=0;--index)pending.push(children[index]);
     }
-    visit(focus,0,0,[]); state.matches=matches; state.lastVisible=visible; state.lastHidden=hidden;
+    state.matches=matches; state.lastVisible=visible; state.lastHidden=hidden;
     if(matches.length)state.matchIndex%=matches.length;else state.matchIndex=0;
     const height=Math.max(ROW,(maxDepth+1)*ROW+8); svg.setAttribute("viewBox","0 0 "+width+" "+height); svg.setAttribute("height",String(height)); svg.replaceChildren(fragment);
     const parts=[visible+" visible frames"]; if(hidden)parts.push(hidden+" hidden by width/minimum percent"); if(state.query)parts.push(matches.length?(state.matchIndex+1)+" / "+matches.length+" matches":"no matches");
@@ -240,9 +301,9 @@ LR"JS(
   prevMatch.addEventListener("click",()=>cycleMatch(-1)); nextMatch.addEventListener("click",()=>cycleMatch(1));
   minPercent.addEventListener("input",()=>{state.minPercent=Number(minPercent.value)||0;minPercentValue.value=state.minPercent?state.minPercent.toFixed(2).replace(/0+$/,"").replace(/\.$/,"")+"%":"0%";state.matchIndex=0;render();});
   reset.addEventListener("click",resetView); up.addEventListener("click",goUp);
-  zoomSelected.addEventListener("click",()=>{if(state.selectedNode)zoomTo(state.selectedNode);});
+  zoomSelected.addEventListener("click",()=>{if(state.selectedNode)zoomTo(state.selectedNode,state.selectedPath);});
   copyStack.addEventListener("click",()=>{if(state.selectedPath.length)copyText(state.selectedPath.map(item=>frameDisplayName(item.name)).join("\n"),copyStack);});
-  copyFolded.addEventListener("click",()=>{if(state.selectedNode)copyText(state.selectedPath.map(item=>frameDisplayName(item.name)).join(";")+" "+Math.round(state.selectedNode.value),copyFolded);});
+  copyFolded.addEventListener("click",()=>{if(state.selectedNode)copyText(state.selectedPath.map(item=>frameDisplayName(item.name)).join(";")+" "+state.selectedNode.valueText,copyFolded);});
   downloadSvg.addEventListener("click",()=>downloadBlob(svgBlob(),".svg")); downloadPng.addEventListener("click",downloadPngFile);
 
   svg.addEventListener("pointerdown",event=>{
@@ -271,7 +332,7 @@ LR"JS(
       const now=performance.now(), previous=state.lastActivation;
       const doubleClick=previous&&previous.node===drag.hit.node&&now-previous.time<450;
       selectNode(drag.hit.node,drag.hit.path,drag.hit.total,drag.hit.rect);
-      if(doubleClick){state.lastActivation=null;zoomTo(drag.hit.node);}else state.lastActivation={node:drag.hit.node,time:now};
+      if(doubleClick){state.lastActivation=null;zoomTo(drag.hit.node,drag.hit.path);}else state.lastActivation={node:drag.hit.node,time:now};
       return;
     }
     state.lastActivation=null;const width=Math.max(1,svg.viewBox.baseVal.width),a=clamp(Math.min(drag.startX,drag.currentX)/width,0,1),b=clamp(Math.max(drag.startX,drag.currentX)/width,0,1);
